@@ -12,7 +12,10 @@ from unittest import mock
 from hackbot.codex_backend import (
     _build_prompt,
     _fileop_continue_prompt,
+    _ops_are_notes_only,
+    _should_continue_after_fileops,
     _try_direct_file_create,
+    answer_looks_complete,
     codex_sandbox_mode,
     run_codex_turn,
 )
@@ -22,15 +25,14 @@ class CodexFileCreateTests(unittest.TestCase):
     def test_sandbox_default_allows_network_writes(self) -> None:
         with mock.patch.dict(os.environ, {"HACKBOT_CODEX_SANDBOX": ""}, clear=False):
             os.environ.pop("HACKBOT_CODEX_SANDBOX", None)
-            self.assertEqual(codex_sandbox_mode(), "danger-full-access")
+            with mock.patch("hackbot.yolo.is_yolo", return_value=False):
+                self.assertEqual(codex_sandbox_mode(), "workspace-write")
+            with mock.patch("hackbot.yolo.is_yolo", return_value=True):
+                self.assertEqual(codex_sandbox_mode(), "danger-full-access")
         with mock.patch.dict(
             os.environ, {"HACKBOT_CODEX_SANDBOX": "read-only"}, clear=False
         ):
             self.assertEqual(codex_sandbox_mode(), "read-only")
-        with mock.patch.dict(
-            os.environ, {"HACKBOT_CODEX_SANDBOX": "workspace-write"}, clear=False
-        ):
-            self.assertEqual(codex_sandbox_mode(), "workspace-write")
 
     def test_resume_prompt_restates_fileop_rules(self) -> None:
         prompt = _build_prompt(
@@ -89,6 +91,26 @@ class CodexFileCreateTests(unittest.TestCase):
         self.assertIn("SCOPE.md", text)
         self.assertIn("inicie o hunting no aylo", text)
         self.assertIn("Do NOT re-emit", text)
+
+    def test_no_continue_after_resume_notes_or_stop(self) -> None:
+        notes = [{"tool": "append_file", "path": "targets/aylo/RESUME.md", "ok": True}]
+        self.assertTrue(_ops_are_notes_only(notes))
+        self.assertFalse(_should_continue_after_fileops(notes, answer="notas ok"))
+        self.assertTrue(
+            answer_looks_complete(
+                "Stop criteria atingido. Submeter o Adultforce no Intigriti."
+            )
+        )
+        scope = [{"tool": "write_file", "path": "targets/aylo/SCOPE.md", "ok": True}]
+        self.assertTrue(
+            _should_continue_after_fileops(scope, answer="SCOPE criado, vou caçar")
+        )
+        self.assertFalse(
+            _should_continue_after_fileops(
+                scope,
+                answer="Stop criteria atingido. Draft pronto para submissão.",
+            )
+        )
 
     def test_fileop_auto_continues_after_approve(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

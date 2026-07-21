@@ -11,6 +11,7 @@ from .codex_backend import (
     _MAX_FILEOP_CONTINUES,
     _fileop_continue_prompt,
     _should_continue_after_fileops,
+    answer_looks_complete,
     file_mutation_result,
 )
 from .intent import is_chat_prompt, resolve_effort_for_prompt
@@ -95,8 +96,10 @@ operator to re-ask "now hunt".
 
 Lab autonomy: if `/tools` / capabilities shows Burp down or Go/gau missing, call
 `stack_prepare` and/or `burp_ensure` (and `lab_exec` with sudo when needed). Do not
-ask the operator to open Burp by hand. Under YOLO, approve is automatic — keep hunting.
-OUT_OF_SCOPE stays blocked.
+ask the operator to open Burp by hand. Under YOLO, approve is automatic — keep hunting
+until the deliverable is ready. OUT_OF_SCOPE stays blocked.
+When a finding is reportable / draft ready / stop criteria hit: output the result,
+ONE next-step suggestion, then STOP. No endless dry-run loops.
 
 Use tools instead of guessing file contents. Prefer open_playbook for a bug class
 before inventing steps. Prefer set_target when the user names a program folder.
@@ -203,11 +206,15 @@ def run_agent(
             if not response.tool_calls:
                 messages.append({"role": "assistant", "content": response.text})
                 # Same bug as Codex/Cursor fileop path: model writes SCOPE then
-                # idles. Nudge one more hunt round after successful mutations.
+                # idles. Nudge one more hunt round after successful mutations —
+                # but never after a finished finding / RESUME-only notes.
                 if (
                     not chat_mode
-                    and _should_continue_after_fileops(pending_fileops)
+                    and _should_continue_after_fileops(
+                        pending_fileops, answer=response.text or ""
+                    )
                     and fileop_continues < _MAX_FILEOP_CONTINUES
+                    and not answer_looks_complete(response.text or "")
                 ):
                     ui.info("file ops applied; continuing model (don't re-ask me)")
                     messages.append(

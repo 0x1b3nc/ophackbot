@@ -479,7 +479,7 @@ def run_cursor_turn(
 
     if (
         allow_file_ops
-        and _should_continue_after_fileops(applied)
+        and _should_continue_after_fileops(applied, answer=answer)
         and _fileop_depth < _MAX_FILEOP_CONTINUES
     ):
         ui.info("file ops applied; continuing cursor (don't re-ask me)")
@@ -494,6 +494,8 @@ def run_cursor_turn(
         combined = "\n\n".join(p for p in (answer, cont) if (p or "").strip()).strip()
         ui.turn_timing(time.perf_counter() - started, len(ops))
         return combined or answer
+    if applied and not _should_continue_after_fileops(applied, answer=answer):
+        ui.info("file ops done; turn complete (not auto-continuing)")
 
     ui.turn_timing(time.perf_counter() - started, len(ops))
     return answer

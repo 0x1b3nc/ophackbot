@@ -46,17 +46,19 @@ def ui_text(text: str, style: str) -> _Text:
 
 
 def codex_sandbox_mode() -> str:
-    """Pick Codex OS sandbox. read-only breaks live hunt (no net, no /tmp).
-
-    Default is ``danger-full-access`` on this bounty kit (operator Kali).
-    Override with ``HACKBOT_CODEX_SANDBOX=workspace-write|read-only``.
-    """
+    """Pick Codex OS sandbox. read-only breaks live hunt (no net, no /tmp)."""
     raw = (os.environ.get("HACKBOT_CODEX_SANDBOX") or "").strip().lower()
     if raw in _SANDBOX_OK:
         return raw
-    # Operator-owned box: hunt needs DNS, curl, /tmp caches (httpx). SCOPE still
-    # gates what hackbot tools may hit; Codex shell sandbox must not fake "no DNS".
-    return "danger-full-access"
+    try:
+        from .yolo import is_yolo
+
+        if is_yolo():
+            return "danger-full-access"
+    except Exception:  # noqa: BLE001
+        pass
+    # Default: write workspace + /tmp, and enable network (see cmd builder).
+    return "workspace-write"
 
 
 # Prefer hackbot-fileop for disk mutations (approve/YOLO audit). Shell may have
@@ -178,19 +180,76 @@ def _fileop_continue_prompt(
     return (
         "Hackbot applied your file-op proposal(s) (operator approve gate):\n"
         f"{body}\n\n"
-        "Continue the user's ORIGINAL task now. Do NOT re-emit the same file-op.\n"
-        "If they asked to hunt / start recon, proceed with the next concrete steps "
-        "(dry-run first, then ask for approve when you need live traffic).\n"
+        "Continue the user's ORIGINAL task only if setup is still incomplete "
+        "(e.g. SCOPE just created and hunt not started).\n"
+        "If you already have a reportable finding / submission draft / stop criteria, "
+        "do NOT invent more dry-runs. Give a short final summary + one next-step "
+        "suggestion, then STOP and wait for the operator.\n"
+        "Do NOT re-emit the same file-op.\n"
         f"Original task: {user_prompt.strip()}"
     )
 
 
-def _should_continue_after_fileops(applied: list[dict[str, Any]]) -> bool:
-    """Resume the brain after at least one successful write/edit."""
+_STOP_TURN_RE = re.compile(
+    r"(?is)\b("
+    r"stop criteria|crit[eé]rio[s]? de parada|"
+    r"submet(er|a|ido)|submission[- ]ready|intigriti-ready|report[- ]ready|"
+    r"pronto para (revis[aã]o|submiss|submit)|"
+    r"draft (pronto|ready)|finding principal|"
+    r"n[aã]o (h[aá]|tenho) mais|sem mais etapa|esgotado|"
+    r"aguard(e|ando) (o )?operador|wait for (the )?operator|"
+    r"pr[oó]xima a[cç][aã]o fora"
+    r")\b"
+)
+
+_NOTE_PATH_RE = re.compile(
+    r"(?i)(?:^|[/\\])(RESUME|FINDINGS|PLAN|DEMO)\.md$|(?:^|[/\\])reports[/\\]"
+)
+
+
+def answer_looks_complete(answer: str) -> bool:
+    """True when the model already wrapped up — do not auto-continue the turn."""
+    text = (answer or "").strip()
+    if not text:
+        return False
+    return bool(_STOP_TURN_RE.search(text))
+
+
+def _ops_are_notes_only(applied: list[dict[str, Any]]) -> bool:
+    """RESUME/FINDINGS appends must not restart an endless hunt loop."""
+    ok_rows = [r for r in applied if r.get("ok")]
+    if not ok_rows:
+        return False
+    for row in ok_rows:
+        tool = str(row.get("tool") or "")
+        path = str(row.get("path") or "").replace("\\", "/")
+        if tool == "append_file":
+            continue
+        if tool in {"write_file", "edit_file"} and _NOTE_PATH_RE.search(path):
+            continue
+        # SCOPE create / real code changes → may continue
+        if "SCOPE.md" in path or tool == "make_dir":
+            return False
+        return False
+    return True
+
+
+def _should_continue_after_fileops(
+    applied: list[dict[str, Any]],
+    *,
+    answer: str = "",
+) -> bool:
+    """Resume after setup writes — not after note-keeping or a finished finding."""
     if not applied or not any(row.get("ok") for row in applied):
         return False
     flag = os.environ.get("HACKBOT_FILEOP_CONTINUE", "1").strip().lower()
-    return flag not in {"0", "false", "off", "no"}
+    if flag in {"0", "false", "off", "no"}:
+        return False
+    if answer_looks_complete(answer):
+        return False
+    if _ops_are_notes_only(applied):
+        return False
+    return True
 
 
 def file_mutation_result(tool: str, result_json: str) -> dict[str, Any] | None:
@@ -256,6 +315,9 @@ Hard rules:
 """ + _FILEOP_RULES + """
 Only emit a file-op block when a file change is actually needed.
 After SCOPE/setup files land, keep going on the hunt — do not end the turn idle.
+When a finding is reportable / submission draft is ready / stop criteria hit:
+give the deliverable, ONE next-step suggestion, then STOP. Do not invent endless
+dry-run hypotheses or keep appending RESUME forever. Wait for the operator.
 
 Task:
 """
@@ -477,10 +539,6 @@ def run_codex_turn(
         + ("  resume" if resume else "")
         + (f"  after-fileop-{_fileop_depth}" if _fileop_depth else "")
     )
-    if sandbox == "read-only":
-        ui.warn("codex sandbox=read-only — curl/DNS will fail; unset HACKBOT_CODEX_SANDBOX")
-    elif sandbox == "danger-full-access":
-        ui.success("codex sandbox unlocked (network + /tmp)")
     started = time.perf_counter()
 
     with tempfile.NamedTemporaryFile(
@@ -586,7 +644,7 @@ def run_codex_turn(
 
     if (
         allow_file_ops
-        and _should_continue_after_fileops(applied)
+        and _should_continue_after_fileops(applied, answer=answer)
         and _fileop_depth < _MAX_FILEOP_CONTINUES
     ):
         ui.info("file ops applied; continuing codex (don't re-ask me)")
@@ -607,6 +665,8 @@ def run_codex_turn(
         combined = "\n\n".join(p for p in (answer, cont) if (p or "").strip()).strip()
         ui.turn_timing(time.perf_counter() - started, len(ops))
         return combined or answer
+    if applied and not _should_continue_after_fileops(applied, answer=answer):
+        ui.info("file ops done; turn complete (not auto-continuing)")
 
     ui.turn_timing(time.perf_counter() - started, len(ops))
     return answer
