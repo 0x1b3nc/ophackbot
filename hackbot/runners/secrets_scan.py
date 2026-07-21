@@ -48,6 +48,7 @@ def secrets_scan(
     approve: bool = False,
     force: bool = False,
     timeout: float = 12.0,
+    apply_session: bool = True,
 ) -> RunnerResult:
     require_in_scope(target_dir, base, action="secrets scan recon", force=force)
     origin = base if "://" in base else f"https://{base}"
@@ -61,7 +62,7 @@ def secrets_scan(
     if parsed.path and parsed.path not in {"", "/"}:
         scan_paths.insert(0, parsed.path)
 
-    plan = {"base": root, "paths": scan_paths[:20], "approve": approve}
+    plan = {"base": root, "paths": scan_paths[:20], "approve": approve, "apply_session": apply_session}
     ui.code_panel(json.dumps(plan, indent=2), title="secrets_scan", lexer="json")
     cmd = ["secrets_scan", root, f"paths={len(scan_paths)}"]
     if not approve:
@@ -70,6 +71,7 @@ def secrets_scan(
 
     findings: list[dict[str, Any]] = []
     fetched = 0
+    applied_session = ""
     for rel in scan_paths[:20]:
         url = rel if rel.startswith("http") else root + (rel if rel.startswith("/") else "/" + rel)
         try:
@@ -98,6 +100,18 @@ def secrets_scan(
                         "match_redacted": redact_text(snippet),
                     }
                 )
+                # Apply usable auth material into session LEAKED (never log raw)
+                if kind in {"jwt", "bearer_literal"} and apply_session:
+                    try:
+                        from ..identity import save_session
+
+                        raw_tok = match.group(0)
+                        if kind == "bearer_literal" and match.lastindex:
+                            raw_tok = match.group(1)
+                        save_session(target_dir, "LEAKED", authorization=raw_tok)
+                        applied_session = "LEAKED"
+                    except Exception:  # noqa: BLE001
+                        pass
                 break  # one hit per kind per URL is enough signal
 
     unique_kinds = sorted({f["kind"] for f in findings if "kind" in f})
@@ -106,6 +120,7 @@ def secrets_scan(
         "hit_count": len([f for f in findings if "kind" in f]),
         "kinds": unique_kinds,
         "findings": findings[:40],
+        "applied_session": applied_session or None,
     }
     ui.kv("hits", str(summary["hit_count"]))
     ui.kv("kinds", ", ".join(unique_kinds) or "(none)")

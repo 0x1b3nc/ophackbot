@@ -188,11 +188,17 @@ def idor_probe(
                 )
             )
         if matrix in {"bfla", "both"} and meth in WRITE_METHODS:
+            # BFLA: privileged path/method as lower-priv session B (admin-ish URL)
+            admin_url = url_a
+            if "/api/" in url_a and "/admin" not in url_a:
+                admin_url = url_a.replace("/api/", "/api/admin/", 1)
+            elif not url_a.rstrip("/").endswith("/admin"):
+                admin_url = url_a.rstrip("/") + "/admin"
             rows.append(
                 _one_pair(
                     target_dir,
-                    url_a,
-                    url_a,
+                    admin_url,
+                    admin_url,
                     session_a=session_a,
                     session_b=session_b,
                     method=meth,
@@ -203,7 +209,8 @@ def idor_probe(
                     label_prefix=f"idor_{meth}_bfla",
                 )
             )
-        if matrix in {"both", "swap"} and param and swap_value:
+        if matrix in {"both", "swap", "replay"} and param and swap_value:
+            # Cross-object: A on own URL, B on swapped object ID
             rows.append(
                 _one_pair(
                     target_dir,
@@ -217,6 +224,22 @@ def idor_probe(
                     use_jar=use_jar,
                     timeout=timeout,
                     label_prefix=f"idor_{meth}_swap",
+                )
+            )
+            # Authz replay (BAC): A's exact object URL+body replayed as session B
+            rows.append(
+                _one_pair(
+                    target_dir,
+                    url_a,
+                    url_a,
+                    session_a=session_a,
+                    session_b=session_b,
+                    method=meth,
+                    body=b,
+                    force=force,
+                    use_jar=use_jar,
+                    timeout=timeout,
+                    label_prefix=f"idor_{meth}_replay",
                 )
             )
 

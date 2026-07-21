@@ -117,6 +117,13 @@ def ssrf_probe(
         try:
             from ..oob import wait_and_poll
 
+            # Persist canary for hunt oob_poll acts
+            try:
+                canary_path = Path(target_dir) / "hunt" / "last_canary.json"
+                canary_path.parent.mkdir(parents=True, exist_ok=True)
+                canary_path.write_text(json.dumps(canary), encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                pass
             poll = wait_and_poll(canary, rounds=3, delay_sec=1.5)
             payload_out["oob_poll"] = poll
             if poll.get("signal"):

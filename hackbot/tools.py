@@ -61,6 +61,7 @@ from .runners import sqli_probe as sqli_probe_runner
 from .runners import ssti_probe as ssti_probe_runner
 from .runners import web_probes as web_probes_runner
 from .runners import xss_probe as xss_probe_runner
+from .runners import second_order_xss as second_order_xss_runner
 from .runners import xxe_probe as xxe_probe_runner
 from .session import get_active, set_active
 from . import oob as oob_mod
@@ -457,6 +458,26 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "target_dir": {"type": "string"},
                 "url": {"type": "string"},
                 "param": {"type": "string", "default": "q"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "second_order_xss",
+        "description": (
+            "Capped stored/second-order XSS: one inject + one trigger GET. Default dry-run."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string", "description": "store/inject URL"},
+                "trigger_url": {"type": "string"},
+                "param": {"type": "string", "default": "comment"},
+                "method": {"type": "string", "default": "POST"},
                 "approve": {"type": "boolean", "default": False},
                 "force": {"type": "boolean", "default": False},
             },
@@ -1134,6 +1155,22 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {"target_dir": {"type": "string"}},
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "submit_ready",
+        "description": (
+            "Mark RESUME that a draft finding is ready for HUMAN portal submit. "
+            "Never calls HackerOne/Bugcrowd APIs."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "finding_id": {"type": "string"},
+            },
             "required": ["target_dir"],
             "additionalProperties": False,
         },
@@ -2110,6 +2147,9 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
     if name == "xss_probe":
         return _tool_xss_probe(args, approve_fn=approve_fn)
 
+    if name == "second_order_xss":
+        return _tool_second_order_xss(args, approve_fn=approve_fn)
+
     if name == "map_surface":
         return _tool_map_surface(args, approve_fn=approve_fn)
 
@@ -2285,6 +2325,23 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         from .hunt_telemetry import telemetry_stats
 
         return json.dumps(telemetry_stats(_target_path(args["target_dir"])))
+    if name == "submit_ready":
+        from .findings import update_resume_next_step
+
+        target = _target_path(args["target_dir"])
+        fid = str(args.get("finding_id") or "latest")
+        update_resume_next_step(
+            target,
+            f"HUMAN SUBMIT GATE: draft ready for {fid} — review PoC, then submit manually to the program portal. Never auto-submit.",
+            accounts_note="Confirm A/B evidence still valid before submit.",
+        )
+        return json.dumps(
+            {
+                "ok": True,
+                "finding_id": fid,
+                "message": "RESUME marked submit-ready for human operator (no platform API call).",
+            }
+        )
     if name == "mass_assignment_probe":
         from .runners import advanced_http as adv
 
@@ -3248,6 +3305,7 @@ def _run_playbook(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
             "brute_login",
             "sqli_probe",
             "xss_probe",
+            "second_order_xss",
             "lfi_probe",
             "ssti_probe",
             "xxe_probe",
@@ -3292,6 +3350,7 @@ def _run_playbook(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
         if isinstance(parsed, dict) and tool_name in {
             "sqli_probe",
             "xss_probe",
+            "second_order_xss",
             "lfi_probe",
             "ssti_probe",
             "xxe_probe",
@@ -4239,6 +4298,51 @@ def _tool_xss_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> st
             return refusal
     result = xss_probe_runner.xss_probe(
         target, url, param=param, approve=approve, force=force
+    )
+    try:
+        payload = json.loads(result.stdout) if result.stdout else {}
+    except json.JSONDecodeError:
+        payload = {"raw": result.stdout}
+    return json.dumps(
+        {
+            "ok": True,
+            "executed": result.executed,
+            "signal": bool(payload.get("signal")),
+            "reason": payload.get("reason") or "",
+            "detail": payload,
+            "message": result.message,
+        }
+    )
+
+
+def _tool_second_order_xss(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
+    target = _target_path(args["target_dir"])
+    url = args["url"]
+    trigger = str(args.get("trigger_url") or url)
+    param = args.get("param") or "comment"
+    method = str(args.get("method") or "POST")
+    approve = bool(args.get("approve"))
+    force = _resolve_force_arg(args)
+    if approve:
+        refusal = _require_approval(
+            approve_fn,
+            f"Approve ACTIVE second_order_xss?\n  store={url}\n  trigger={trigger}\n  force={force}",
+            kind="active_traffic",
+            tool="second_order_xss",
+            host=host_from_target(url),
+            force_override=force,
+            aggression=2,
+        )
+        if refusal:
+            return refusal
+    result = second_order_xss_runner.second_order_xss(
+        target,
+        url,
+        trigger_url=trigger,
+        param=param,
+        method=method,
+        approve=approve,
+        force=force,
     )
     try:
         payload = json.loads(result.stdout) if result.stdout else {}

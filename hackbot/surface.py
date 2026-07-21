@@ -201,11 +201,20 @@ def map_surface(
     tech: list[str] = []
     fetched = 0
     errors = 0
+    html_preview = ""
+    script_srcs: list[str] = []
+    body = ""
 
     try:
         status, body, headers = _fetch(seed_url)
         fetched += 1
         tech.extend(_tech_from_body(body, headers))
+        html_preview = body[:4000]
+        for m in re.finditer(r"""<script[^>]+src=["']([^"']+)["']""", body, re.I):
+            abs_u = _absolutize(seed_url, m.group(1))
+            if abs_u:
+                script_srcs.append(abs_u)
+        script_srcs = list(dict.fromkeys(script_srcs))[:15]
         if status in {401, 403}:
             seed_ep.auth_required = True
             seed_ep.notes = f"status={status}"
@@ -259,6 +268,9 @@ def map_surface(
         "errors": errors,
         "tech_hints": tech,
         "surface_path": str(memory.root / "surface.yaml"),
+        "html_preview": html_preview,
+        "script_srcs": script_srcs,
+        "body_preview": html_preview[:500],
     }
 
 

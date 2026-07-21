@@ -72,7 +72,59 @@ MODULE_AGGRESSION: dict[str, int] = {
     "brute": 3,
     "rate-limit": 3,
     "oob_poll": 1,
+    "mass_assignment": 2,
+    "second_order_xss": 2,
 }
+
+# Only these modules may auto-promote to FINDINGS (setup/recon never do).
+FINDING_MODULES: frozenset[str] = frozenset(
+    {
+        "secrets",
+        "idor",
+        "ssrf",
+        "sqli",
+        "xss",
+        "lfi",
+        "ssti",
+        "xxe",
+        "cors",
+        "open_redirect",
+        "graphql",
+        "oauth",
+        "jwt_active",
+        "browser_diff",
+        "race",
+        "websocket",
+        "brute",
+        "mass_assignment",
+        "second_order_xss",
+    }
+)
+
+CHAIN_MODULE_MAP: dict[str, str] = {
+    "jwt": "jwt_active",
+    "idor": "idor",
+    "bola": "idor",
+    "ssrf": "ssrf",
+    "sqli": "sqli",
+    "xss": "xss",
+    "auth-bypass": "auth-bypass",
+    "auth": "auth-bypass",
+    "oauth": "oauth",
+    "graphql": "graphql",
+    "lfi": "lfi",
+    "ssti": "ssti",
+    "xxe": "xxe",
+}
+
+
+def keep_pause() -> bool:
+    return os.environ.get("HACKBOT_HUNT_KEEP_PAUSE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def log_aggression(
@@ -269,6 +321,15 @@ def run_hunt(
     ui.kv("budget", str(budget_total))
     ui.kv("approve_session", str(approve_session))
 
+    # Default: clear sticky pause so a new hunt session can run
+    if not keep_pause():
+        try:
+            from .hunt_telemetry import clear_pause
+
+            clear_pause(target_dir)
+        except Exception:  # noqa: BLE001
+            pass
+
     # --- Observe v2: deepen surface before Decide ---
     state.phase = "observe"
     memory.save_state(state)
@@ -339,6 +400,15 @@ def run_hunt(
             host=host,
             url=hyp.url,
         )
+        # Skill-card gate: open playbook metadata before L2+ acts
+        if level >= 2:
+            try:
+                pb_raw = execute_tool("open_playbook", {"task": hyp.module, "endpoint": hyp.url})
+                pb = json.loads(pb_raw) if isinstance(pb_raw, str) else {}
+                quote = quote or f"playbook:{pb.get('class') or hyp.module}"
+                hyp.scope_quote = quote
+            except Exception:  # noqa: BLE001
+                pass
         ui.info(f"act [L{level}] [{hyp.module}] {hyp.title}")
 
         try:
@@ -428,8 +498,8 @@ def run_hunt(
         except Exception:  # noqa: BLE001
             pass
 
-        # Validate if signal
-        if act_result.get("signal"):
+        # Validate if signal — setup/recon modules never auto-FINDINGS
+        if act_result.get("signal") and hyp.module in FINDING_MODULES:
             state.phase = "validate"
             memory.save_state(state)
             cand = Candidate(
@@ -444,12 +514,17 @@ def run_hunt(
             memory.upsert_candidate(cand)
             # Soft browser hints stay likely until ownership swap
             verdict = "likely" if hyp.module in {"browser_diff"} else "confirmed"
-            if hyp.module == "idor" and str(
-                (act_result.get("detail") or {}).get("verdict")
-                if isinstance(act_result.get("detail"), dict)
-                else ""
-            ).lower() == "likely":
+            detail_obj = act_result.get("detail") if isinstance(act_result.get("detail"), dict) else {}
+            nested = detail_obj.get("detail") if isinstance(detail_obj.get("detail"), dict) else detail_obj
+            idor_verdict = str(
+                nested.get("verdict") or detail_obj.get("verdict") or ""
+            ).lower()
+            if hyp.module == "idor" and idor_verdict == "likely":
                 verdict = "likely"
+            if hyp.module == "idor" and idor_verdict in {"inconclusive", "negative"}:
+                # Do not promote non-findings
+                memory.save_state(state)
+                continue
             vr = validate_and_log(
                 target_dir,
                 cand,
@@ -482,8 +557,7 @@ def run_hunt(
                     state.stopped = True
                     state.stop_reason = f"stop_on_finding:{vr.finding_id}"
                     break
-            state.budget_remaining -= 1
-            state.acts_done += 1
+            # Validate uses same act budget slot — do not double-charge
 
         if act_result.get("hard_fail"):
             state.failures += 1
@@ -726,7 +800,21 @@ def _decide(
                 aggression=2,
             )
         )
-    if has_graphql and "graphql" not in banned:
+    # Sink-gated seeds: only when Observe wrote matching sink tags (or tags/surface agree)
+    from .sink_registry import has_sink
+
+    sink_ok = lambda kind: (  # noqa: E731
+        not target_dir
+        or has_sink(target_dir, kind)
+        or kind in tags
+        or (kind == "id" and any(e.has_id_param() for e in eps))
+        or (kind == "url_like" and any(e.url_like_params() for e in eps))
+        or (kind == "graphql" and has_graphql)
+        or (kind == "xml" and has_xml)
+        or (kind == "websocket" and has_ws)
+    )
+
+    if has_graphql and "graphql" not in banned and sink_ok("graphql"):
         gql = next((e.url for e in eps if "graphql" in e.url.lower()), origin_base + "/graphql")
         ideas.append(
             Hypothesis(
@@ -738,7 +826,7 @@ def _decide(
                 signal_tags=("graphql",),
             )
         )
-    if has_ws and "websocket" not in banned:
+    if has_ws and "websocket" not in banned and sink_ok("websocket"):
         ws = next((e.url for e in eps if e.url.startswith("ws")), f"wss://{host}/ws")
         ideas.append(
             Hypothesis(
@@ -749,7 +837,7 @@ def _decide(
                 aggression=2,
             )
         )
-    if has_xml and "xxe" not in banned:
+    if has_xml and "xxe" not in banned and sink_ok("xml"):
         xml_url = next((e.url for e in eps if "xml" in e.url.lower() or "soap" in e.url.lower()), seed)
         ideas.append(
             Hypothesis(
@@ -803,9 +891,11 @@ def _decide(
             )
         )
 
-    # SSRF/LFI/SSTI only when surface has matching params
+    # SSRF/LFI/SSTI/second-order XSS only when surface has matching params/sinks
     for ep in eps:
         for p in ep.url_like_params():
+            if not sink_ok("url_like"):
+                break
             ideas.append(
                 Hypothesis(
                     module="ssrf",
@@ -840,6 +930,17 @@ def _decide(
                         aggression=2,
                     )
                 )
+            if pl in {"comment", "message", "bio", "note", "content", "body"}:
+                ideas.append(
+                    Hypothesis(
+                        module="second_order_xss",
+                        url=ep.url,
+                        title=f"Second-order XSS via {p}",
+                        priority=56,
+                        params={"param": p, "trigger_url": ep.url},
+                        aggression=2,
+                    )
+                )
 
     # Browser A/B when sessions ready
     if target_dir and not unauth_only():
@@ -855,13 +956,13 @@ def _decide(
                 )
             )
 
-    # OOB poll when configured
-    if os.environ.get("HACKBOT_OOB_BASE", "").strip():
+    # OOB poll only when a canary was previously stored by SSRF/XSS
+    if (Path(target_dir) / "hunt" / "last_canary.json").exists() if target_dir else False:
         ideas.append(
             Hypothesis(
                 module="oob_poll",
                 url=seed,
-                title="OOB canary poll",
+                title="OOB canary poll (stored)",
                 priority=40,
                 aggression=1,
             )
@@ -901,18 +1002,33 @@ def _rerank(queue: list[Hypothesis], act_result: dict[str, Any]) -> list[Hypothe
 
 def _hypotheses_from_chains(target_dir: Path, host: str) -> list[Hypothesis]:
     out: list[Hypothesis] = []
+    skip = {"rce", "csrf", "dos", "phishing"}
     try:
         from .chain_builder import build_chains
+        from .findings import parse_latest_finding
 
         chains = build_chains(target_dir)
+        # Prefer latest finding endpoint as URL anchor
+        finding_url = ""
+        try:
+            latest = parse_latest_finding(Path(target_dir))
+            if latest:
+                finding_url = str(latest.get("endpoint") or latest.get("asset") or "")
+        except Exception:  # noqa: BLE001
+            finding_url = ""
         for edge in (chains.get("chains") or [])[:8]:
-            to_mod = str(edge.get("to") or edge.get("module") or "")
+            raw_to = str(edge.get("to") or edge.get("module") or "").lower()
+            if not raw_to or raw_to in skip:
+                continue
+            to_mod = CHAIN_MODULE_MAP.get(raw_to, raw_to if raw_to in MODULE_AGGRESSION else "")
             if not to_mod:
                 continue
-            url = str(edge.get("url") or edge.get("endpoint") or f"https://{host}")
+            url = str(edge.get("url") or edge.get("endpoint") or finding_url or "")
+            if not url:
+                continue
             out.append(
                 Hypothesis(
-                    module=to_mod if to_mod in MODULE_AGGRESSION else "idor",
+                    module=to_mod,
                     url=url,
                     title=f"Chain follow-up → {to_mod}",
                     priority=80,
@@ -927,22 +1043,27 @@ def _hypotheses_from_chains(target_dir: Path, host: str) -> list[Hypothesis]:
 
 def _already_attempted(memory: HuntMemory, hyp: Hypothesis) -> bool:
     key = hyp.dedupe_key()
+    terminal = {"found", "clean", "mapped", "ok", "done", "hit", "validated", "rejected", "skipped"}
+    soft = {"needs_setup", "error", "failed", "scope_denied"}
     for row in memory.recent_attempts(120):
         if row.get("phase") != "act":
             continue
+        outcome = str(row.get("outcome") or "")
+        if outcome in soft:
+            continue  # allow retry after fixing sessions/accounts
         row_key = row.get("dedupe_key") or (
             f"{row.get('module')}|{row.get('method') or 'GET'}|{row.get('url')}|"
             f"{(row.get('params') or {}).get('param', '') if isinstance(row.get('params'), dict) else ''}"
         )
-        if row_key == key:
+        if row_key == key and (outcome in terminal or not outcome):
             return True
-        # legacy: module+url only when no method/param stored
         if (
             not row.get("dedupe_key")
             and row.get("module") == hyp.module
             and row.get("url") == hyp.url
             and not (hyp.params or {}).get("param")
             and hyp.method == "GET"
+            and outcome not in soft
         ):
             return True
     for c in memory.load_candidates():
@@ -983,13 +1104,14 @@ def _act(
                 "summary": "MFA/2FA detected — operator must complete login",
                 "detail": data,
             }
-        # Real success = sessions ready
+        # Real success = sessions ready (chainable, NEVER a FINDINGS signal)
         ident = load_identity(target_dir)
         ready = ident.ready_sessions()
         ok = len(ready) >= 1 and bool(data.get("signal") or data.get("ok"))
         return {
             "outcome": "ok" if ok else "failed",
-            "signal": ok,
+            "signal": False,
+            "chain": ok,
             "summary": f"bootstrap sessions={ready}",
             "detail": data,
         }
@@ -1022,8 +1144,12 @@ def _act(
                 "summary": "IDOR needs A/B sessions (load secrets or set_session)",
             }
         sessions = sorted(ready)
-        session_a = "A" if "A" in ready else sessions[0]
-        session_b = "B" if "B" in ready else sessions[1]
+        session_a = (hyp.params or {}).get("session_a") or ("A" if "A" in ready else sessions[0])
+        session_b = (hyp.params or {}).get("session_b") or ("B" if "B" in ready else sessions[1])
+        if session_a not in ready:
+            session_a = "A" if "A" in ready else sessions[0]
+        if session_b not in ready or session_b == session_a:
+            session_b = next((s for s in sessions if s != session_a), sessions[-1])
         raw = execute_tool(
             "idor_probe",
             {
@@ -1145,11 +1271,12 @@ def _act(
         )
         data = json.loads(raw)
         after = set(load_identity(target_dir).ready_sessions())
-        # Real signal: new session material appeared (not string heuristics)
+        # Real signal for chaining only (not FINDINGS — new session ≠ vuln)
         signal = len(after - before) > 0 or (len(after) > len(before))
         return {
             "outcome": "ok" if signal else "done",
-            "signal": signal,
+            "signal": False,
+            "chain": signal,
             "summary": "auth-bypass: new session" if signal else "auth-bypass: no new session",
             "detail": data,
         }
@@ -1164,14 +1291,22 @@ def _act(
                 "session_b": "B",
                 "approve": approve,
                 "force": force,
+                "promote": False,
             },
             approve_fn=approve_fn,
         )
         data = json.loads(raw)
+        diff = data.get("diff") if isinstance(data.get("diff"), dict) else {}
+        soft = bool(
+            data.get("signal")
+            or data.get("soft_idor")
+            or data.get("idor_soft_hint")
+            or diff.get("idor_soft_hint")
+        )
         return {
-            "outcome": "found" if data.get("signal") or data.get("soft_idor") else "clean",
-            "signal": bool(data.get("signal") or data.get("soft_idor")),
-            "summary": str(data.get("reason") or "browser_diff"),
+            "outcome": "found" if soft else "clean",
+            "signal": soft,
+            "summary": str(data.get("reason") or ("soft IDOR hint" if soft else "browser_diff clean")),
             "detail": data,
         }
 
@@ -1211,14 +1346,24 @@ def _act(
         }
 
     if hyp.module == "oob_poll":
-        from .oob import mint_canary, poll_oob
+        canary_path = Path(target_dir) / "hunt" / "last_canary.json"
+        if not canary_path.exists():
+            return {
+                "outcome": "skipped",
+                "signal": False,
+                "summary": "no stored canary — run ssrf_probe with OOB first",
+            }
+        try:
+            canary = json.loads(canary_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return {"outcome": "error", "signal": False, "summary": "bad last_canary.json"}
+        from .oob import wait_and_poll
 
-        canary = mint_canary(kind="ssrf")
-        poll = poll_oob(canary)
+        poll = wait_and_poll(canary, rounds=3, delay_sec=1.0)
         return {
             "outcome": "hit" if poll.get("signal") else "clean",
             "signal": bool(poll.get("signal")),
-            "summary": "oob poll",
+            "summary": "oob poll stored canary",
             "detail": {"canary": canary, "poll": poll},
         }
 
@@ -1444,10 +1589,10 @@ def _act(
             approve_fn=approve_fn,
         )
         data = json.loads(raw)
-        # Negative learning when clean XML sink repeatedly
+        # Negative learning only after repeated cleans (not one-shot ban)
         if not data.get("signal"):
             try:
-                record_negative_learning(target_dir, "xxe")
+                _bump_clean_count(target_dir, "xxe", ban_after=3)
             except Exception:  # noqa: BLE001
                 pass
         return {
@@ -1471,6 +1616,53 @@ def _act(
             "detail": data,
         }
 
+    if hyp.module == "openapi_ingest":
+        try:
+            import urllib.request
+
+            from .openapi_parse import ingest_openapi_text
+            from .surface import origin_of
+
+            req = urllib.request.Request(hyp.url, headers={"User-Agent": "hackbot-openapi"})
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                text = resp.read(500_000).decode("utf-8", errors="replace")
+            r = ingest_openapi_text(target_dir, text, base_url=origin_of(hyp.url), host=host)
+            return {
+                "outcome": "mapped",
+                "signal": False,
+                "chain": int(r.get("seeded") or 0) > 0,
+                "summary": f"openapi seeded={r.get('seeded')}",
+                "detail": r,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "outcome": "error",
+                "signal": False,
+                "summary": f"openapi_ingest:{type(exc).__name__}",
+            }
+
+    if hyp.module == "second_order_xss":
+        raw = execute_tool(
+            "second_order_xss",
+            {
+                "target_dir": target_s,
+                "url": hyp.url,
+                "trigger_url": (hyp.params or {}).get("trigger_url") or hyp.url,
+                "param": (hyp.params or {}).get("param") or "comment",
+                "method": (hyp.params or {}).get("method") or "POST",
+                "approve": approve,
+                "force": force,
+            },
+            approve_fn=approve_fn,
+        )
+        data = json.loads(raw)
+        return {
+            "outcome": "found" if data.get("signal") else "clean",
+            "signal": bool(data.get("signal")),
+            "summary": str(data.get("reason") or "second_order_xss"),
+            "detail": data,
+        }
+
     return {"outcome": "skipped", "signal": False, "summary": f"unknown module {hyp.module}"}
 
 
@@ -1485,13 +1677,19 @@ def _chain_from_result(
     detail = result.get("detail") if isinstance(result.get("detail"), dict) else {}
 
     if hyp.module == "mine_params":
-        params = []
-        if isinstance(detail, dict):
-            params = list(detail.get("params") or detail.get("detail", {}).get("params") or [])
-            if isinstance(detail.get("detail"), dict):
-                params = params or list(detail["detail"].get("found") or detail["detail"].get("params") or [])
+        params: list[Any] = []
+        # Tool wrapper nests runner JSON under detail; runner uses "found"
+        blob = detail
+        if isinstance(blob.get("detail"), dict):
+            blob = blob["detail"]
+        params = list(blob.get("found") or blob.get("params") or [])
         for p in params[:6]:
-            pname = p if isinstance(p, str) else str(p.get("name") if isinstance(p, dict) else p)
+            if isinstance(p, dict):
+                pname = str(p.get("param") or p.get("name") or "")
+            else:
+                pname = str(p)
+            if not pname:
+                continue
             follows.append(
                 Hypothesis(
                     module="sqli",
@@ -1521,7 +1719,7 @@ def _chain_from_result(
                     )
                 )
 
-    if hyp.module == "session_bootstrap" and result.get("signal"):
+    if hyp.module == "session_bootstrap" and (result.get("signal") or result.get("chain")):
         for ep in memory.endpoints():
             if ep.has_id_param() or re.search(r"/\d+(?:/|$)", ep.url):
                 follows.append(
@@ -1543,9 +1741,31 @@ def _chain_from_result(
                 url=hyp.url,
                 title="GraphQL mutation authz follow-up",
                 priority=90,
-                params={"methods": "POST", "matrix": "bfla", "body": '{"query":"mutation { __typename }"}'},
+                params={
+                    "methods": "POST",
+                    "matrix": "bfla",
+                    "body": '{"query":"mutation { __typename }"}',
+                },
                 method="POST",
                 signal_tags=("graphql",),
+            )
+        )
+        # Object-ID style queries (BOLA via GraphQL variables)
+        follows.append(
+            Hypothesis(
+                module="idor",
+                url=hyp.url,
+                title="GraphQL BOLA via id variable",
+                priority=89,
+                params={
+                    "methods": "POST",
+                    "matrix": "both",
+                    "param": "id",
+                    "swap_value": "2",
+                    "body": '{"query":"query($id:ID!){node(id:$id){id}}","variables":{"id":"1"}}',
+                },
+                method="POST",
+                signal_tags=("graphql", "id"),
             )
         )
 
@@ -1561,12 +1781,12 @@ def _chain_from_result(
                         params={"methods": "GET,PATCH", "matrix": "both"},
                     )
                 )
-            if any(x in ep.url.lower() for x in ("openapi", "swagger")):
+            if any(x in ep.url.lower() for x in ("openapi", "swagger", "api-docs")):
                 follows.append(
                     Hypothesis(
-                        module="analyze_js",
+                        module="openapi_ingest",
                         url=ep.url,
-                        title=f"Parse API spec — {ep.url}",
+                        title=f"Ingest OpenAPI — {ep.url}",
                         priority=86,
                     )
                 )
@@ -1578,6 +1798,12 @@ def _chain_from_result(
         origin = hyp.url if "://" in hyp.url else f"https://{host}"
         parsed = urlparse(origin)
         base = f"{parsed.scheme}://{parsed.netloc}"
+        # If scan applied LEAKED session, prefer authenticated follow-ups with it
+        applied = ""
+        blob = detail
+        if isinstance(blob.get("detail"), dict):
+            blob = blob["detail"]
+        applied = str(blob.get("applied_session") or "")
         follows.append(
             Hypothesis(
                 module="session_bootstrap",
@@ -1596,17 +1822,31 @@ def _chain_from_result(
         )
         for ep in memory.endpoints():
             if ep.has_id_param() or re.search(r"/\d+(?:/|$)", ep.url):
+                params = {"methods": "GET,PATCH", "matrix": "both"}
+                if applied:
+                    params["session_a"] = applied
                 follows.append(
                     Hypothesis(
                         module="idor",
                         url=ep.url,
                         title=f"IDOR after secrets — {ep.url}",
                         priority=92,
-                        params={"methods": "GET,PATCH", "matrix": "both"},
+                        params=params,
                     )
                 )
-
-    if hyp.module == "auth-bypass" and result.get("signal"):
+            # Stored XSS candidate after secret/config pages with form-ish params
+            for p in ep.params:
+                if p.lower() in {"comment", "message", "bio", "note", "content", "body"}:
+                    follows.append(
+                        Hypothesis(
+                            module="second_order_xss",
+                            url=ep.url,
+                            title=f"Second-order XSS via {p}",
+                            priority=70,
+                            params={"param": p, "trigger_url": ep.url},
+                        )
+                    )
+    if hyp.module == "auth-bypass" and (result.get("signal") or result.get("chain")):
         for ep in memory.endpoints():
             if ep.has_id_param():
                 follows.append(
@@ -1657,4 +1897,23 @@ def record_negative_learning(target_dir: Path, module: str) -> None:
     banned = set(data.get("banned_modules") or [])
     banned.add(module)
     data["banned_modules"] = sorted(banned)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _bump_clean_count(target_dir: Path, module: str, *, ban_after: int = 3) -> None:
+    path = Path(target_dir) / "hunt" / "negative_learning.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data: dict[str, Any] = {"banned_modules": [], "clean_counts": {}}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            data = {"banned_modules": [], "clean_counts": {}}
+    counts = dict(data.get("clean_counts") or {})
+    counts[module] = int(counts.get(module) or 0) + 1
+    data["clean_counts"] = counts
+    if counts[module] >= ban_after:
+        banned = set(data.get("banned_modules") or [])
+        banned.add(module)
+        data["banned_modules"] = sorted(banned)
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")

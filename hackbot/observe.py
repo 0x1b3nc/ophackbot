@@ -142,6 +142,17 @@ def observe_v2(
     for ep in memory.endpoints():
         if any(x in ep.url.lower() for x in ("openapi", "swagger", "api-docs")):
             tags.add("openapi")
+            if approve:
+                try:
+                    import urllib.request
+
+                    req = urllib.request.Request(ep.url, headers={"User-Agent": "hackbot-observe-openapi"})
+                    with urllib.request.urlopen(req, timeout=12) as resp:
+                        text = resp.read(500_000).decode("utf-8", errors="replace")
+                    r = ingest_openapi_text(target_dir, text, base_url=origin_of(seed), host=host)
+                    steps.append({"step": "openapi_fetch", "url": ep.url, **r})
+                except Exception as exc:  # noqa: BLE001
+                    steps.append({"step": "openapi_fetch", "url": ep.url, "error": type(exc).__name__})
 
     # OSINT (crt / wayback) when enabled
     if _env_truthy("HACKBOT_OBSERVE_OSINT", "1") and execute_tool and host and "." in host:
@@ -201,6 +212,13 @@ def observe_v2(
     tags_path.parent.mkdir(parents=True, exist_ok=True)
     tag_list = sorted(tags)
     tags_path.write_text(json.dumps({"tags": tag_list, "steps": len(steps)}, indent=2), encoding="utf-8")
+
+    try:
+        from .sink_registry import build_sink_registry
+
+        build_sink_registry(target_dir)
+    except Exception:  # noqa: BLE001
+        pass
 
     out = {
         "ok": True,

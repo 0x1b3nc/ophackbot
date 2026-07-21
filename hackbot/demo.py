@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import ui
+from .accounts import ensure_accounts_example
 from .identity import ensure_example, save_session
 from .tools import execute_tool
 
@@ -74,6 +75,7 @@ Use `example.com` / `demo.hackbot.local` for dry-runs. Fake sessions live in
             path.write_text(content, encoding="utf-8")
 
     ensure_example(DEMO)
+    ensure_accounts_example(DEMO)
     secrets = DEMO / "secrets"
     secrets.mkdir(parents=True, exist_ok=True)
     example = secrets / "sessions.example.yaml"
@@ -95,6 +97,30 @@ sessions:
         shutil.copy(example, sessions)
     save_session(DEMO, "A", authorization="Bearer demo-account-A-token-not-real")
     save_session(DEMO, "B", authorization="Bearer demo-account-B-token-not-real")
+
+    # Fake login accounts so session_bootstrap dry-run is exercisable
+    accounts = secrets / "accounts.yaml"
+    if not accounts.exists():
+        accounts.write_text(
+            """# Fake demo accounts — not real credentials
+login:
+  path: /login
+  method: POST
+  user_field: username
+  pass_field: password
+  csrf_field: csrf_token
+accounts:
+  A:
+    username: demo-user-a
+    password: demo-pass-a-not-real
+    role: user
+  B:
+    username: demo-user-b
+    password: demo-pass-b-not-real
+    role: user
+""",
+            encoding="utf-8",
+        )
 
     (DEMO / "DEMO.md").write_text(
         """# Hackbot demo pitch
@@ -138,13 +164,19 @@ def run_demo_smoke(*, approve_writes: bool = True) -> dict[str, Any]:
             data = json.loads(raw)
         except json.JSONDecodeError:
             data = {"raw": raw[:200]}
-        err = data.get("error")
-        soft_ok = err in {"playwright_missing", "missing_dep", "adb_missing", "frida_missing"}
+        err = data.get("error") or (data.get("detail") or {}).get("error")
+        soft_ok = err in {
+            "playwright_missing",
+            "missing_dep",
+            "adb_missing",
+            "frida_missing",
+            "accounts_missing",
+        } or bool(data.get("dry_run")) or bool((data.get("detail") or {}).get("dry_run"))
         steps.append(
             {
                 "tool": name,
-                "ok": data.get("ok", True) is not False or soft_ok or bool(data.get("dry_run")),
-                "dry_run": data.get("dry_run"),
+                "ok": data.get("ok", True) is not False or soft_ok,
+                "dry_run": data.get("dry_run") or (data.get("detail") or {}).get("dry_run"),
                 "error": err,
             }
         )
@@ -152,6 +184,21 @@ def run_demo_smoke(*, approve_writes: bool = True) -> dict[str, Any]:
 
     run("scope_check", {"target_dir": target, "host": "example.com"})
     run("show_identity", {"target_dir": target})
+    run("hunt_checklist", {"target_dir": target})
+    run("show_accounts", {"target_dir": target})
+    run(
+        "session_bootstrap",
+        {"target_dir": target, "base_url": "https://example.com", "approve": False},
+    )
+    run(
+        "idor_probe",
+        {
+            "target_dir": target,
+            "url": "https://example.com/api/orders/1",
+            "approve": False,
+            "force": True,
+        },
+    )
     run("browser_navigate", {"target_dir": target, "url": "https://example.com/", "approve": False})
     run(
         "ssrf_probe",

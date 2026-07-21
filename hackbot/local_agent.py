@@ -361,6 +361,33 @@ def interpret(text: str) -> Interpretation:
         "canary oob",
     ):
         intents.append("oob")
+    if _wants(text, "interactsh poll", "oob poll", "poll canary", "poll oob"):
+        intents.append("oob_poll")
+    if _wants(
+        text,
+        "hunt checklist",
+        "checklist hunt",
+        "pre-hunt",
+        "prehunt",
+        "checklist do hunt",
+    ):
+        intents.append("hunt_checklist")
+    if _wants(text, "pause hunt", "pausar hunt", "hunt pause"):
+        intents.append("hunt_pause")
+    if _wants(text, "resume hunt", "retomar hunt", "unpause hunt"):
+        intents.append("hunt_resume")
+    if _wants(text, "hunt telemetry", "telemetria hunt", "hunt stats"):
+        intents.append("hunt_telemetry")
+    if _wants(text, "cdp attach", "chrome debugging", "remote debugging", "cdp_attach"):
+        intents.append("cdp")
+    if _wants(text, "mass assignment", "mass-assignment", "isAdmin true", "role admin json"):
+        intents.append("mass_assignment")
+    if _wants(text, "method override", "x-http-method-override", "method-override"):
+        intents.append("method_override")
+    if _wants(text, "parameter pollution", "hpp", "http parameter pollution"):
+        intents.append("hpp")
+    if _wants(text, "submit ready", "pronto pra submit", "ready to submit"):
+        intents.append("submit_ready")
     if _wants(text, "race condition", "race cond", "toctou", "parallel burst", "condicao de corrida", "condição de corrida"):
         intents.append("race")
     if _wants(text, "websocket", "websockets", "wss://", "ws://"):
@@ -843,6 +870,73 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
         )
     if "oob" in intents:
         plan.append(Action("Mint OOB/blind canary.", "oob_mint", {"kind": "ssrf"}))
+        if "oob_poll" not in intents:
+            plan.append(Action("Interactsh/OOB status.", "interactsh_status", {}))
+    if "oob_poll" in intents:
+        plan.append(Action("Poll stored OOB canary.", "interactsh_poll", {"wait": True}))
+    if "hunt_checklist" in intents:
+        plan.append(
+            Action("Pre-hunt checklist.", "hunt_checklist", {"target_dir": interp.target_dir})
+        )
+    if "hunt_pause" in intents:
+        plan.append(Action("Pause hunt loop.", "hunt_pause", {"target_dir": interp.target_dir}))
+    if "hunt_resume" in intents:
+        plan.append(
+            Action("Clear hunt pause flag.", "hunt_resume_flag", {"target_dir": interp.target_dir})
+        )
+    if "hunt_telemetry" in intents:
+        plan.append(
+            Action("Hunt telemetry stats.", "hunt_telemetry", {"target_dir": interp.target_dir})
+        )
+    if "cdp" in intents:
+        plan.append(Action("Probe local CDP endpoint.", "cdp_attach", {"approve": interp.approve}))
+    if "mass_assignment" in intents and (target or host):
+        plan.append(
+            Action(
+                "Mass-assignment probe.",
+                "mass_assignment_probe",
+                {
+                    "target_dir": interp.target_dir,
+                    "url": target or (host if "://" in (host or "") else f"https://{host}"),
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+    if "method_override" in intents and (target or host):
+        plan.append(
+            Action(
+                "Method override probe.",
+                "method_override_probe",
+                {
+                    "target_dir": interp.target_dir,
+                    "url": target or (host if "://" in (host or "") else f"https://{host}"),
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+    if "hpp" in intents and (target or host):
+        plan.append(
+            Action(
+                "HTTP parameter pollution.",
+                "hpp_probe",
+                {
+                    "target_dir": interp.target_dir,
+                    "url": target or (host if "://" in (host or "") else f"https://{host}"),
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+    if "submit_ready" in intents:
+        plan.append(
+            Action(
+                "Mark finding ready for human submit.",
+                "submit_ready",
+                {"target_dir": interp.target_dir},
+            )
+        )
     if "session_bootstrap" in intents and (target or host):
         plan.append(
             Action(

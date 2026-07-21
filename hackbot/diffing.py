@@ -136,11 +136,23 @@ def assert_idor_diff(
             details,
         )
 
-    # Same body for A and B on private object — could be public or broken isolation
+    # Same body for A and B — usually public page, not IDOR (avoid FP on seed/home)
     if sa == 200 and sb == 200 and same_hash and la > 0:
+        # Only elevate when object_hint suggests a private object identifier
+        if object_hint and object_hint.strip() and any(ch.isdigit() for ch in object_hint):
+            return DiffResult(
+                "inconclusive",
+                "Identical 200 bodies with object hint — verify sensitivity manually (not auto-likely).",
+                sa,
+                sb,
+                la,
+                lb,
+                same_hash,
+                details,
+            )
         return DiffResult(
-            "likely",
-            "A and B got identical 200 bodies — public resource or full tenant leak; verify sensitivity.",
+            "inconclusive",
+            "A and B got identical 200 bodies — likely public resource, not IDOR.",
             sa,
             sb,
             la,

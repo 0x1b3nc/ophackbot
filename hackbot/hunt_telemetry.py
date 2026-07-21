@@ -26,10 +26,12 @@ def record_telemetry(target_dir: Path, row: dict[str, Any]) -> None:
 def telemetry_stats(target_dir: Path) -> dict[str, Any]:
     path = telemetry_path(target_dir)
     if not path.exists():
-        return {"ok": True, "events": 0, "modules": {}}
+        return {"ok": True, "events": 0, "modules": {}, "fp_rate": 0.0}
     modules: dict[str, int] = {}
     signals = 0
     events = 0
+    rejected = 0
+    validated = 0
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip():
             continue
@@ -42,7 +44,21 @@ def telemetry_stats(target_dir: Path) -> dict[str, Any]:
         modules[mod] = modules.get(mod, 0) + 1
         if row.get("signal"):
             signals += 1
-    return {"ok": True, "events": events, "signals": signals, "modules": modules}
+        outcome = str(row.get("outcome") or "")
+        if "fp" in outcome or outcome == "rejected":
+            rejected += 1
+        if outcome in {"validated", "found"}:
+            validated += 1
+    denom = max(1, rejected + validated)
+    return {
+        "ok": True,
+        "events": events,
+        "signals": signals,
+        "modules": modules,
+        "rejected": rejected,
+        "validated": validated,
+        "fp_rate": round(rejected / denom, 3),
+    }
 
 
 def pause_flag(target_dir: Path) -> Path:

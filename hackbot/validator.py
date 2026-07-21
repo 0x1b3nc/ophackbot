@@ -101,6 +101,52 @@ def validate_and_log(
         except Exception as exc:  # noqa: BLE001
             rehit_info["error"] = f"{type(exc).__name__}: {exc}"
 
+    from .fp_signatures import confidence_score, match_fp_signatures
+
+    fp = match_fp_signatures(
+        module=candidate.module,
+        observed=proof,
+        url=candidate.url,
+        verdict=verdict,
+    )
+    ownership = "distinct body" in proof.lower() or "owner" in proof.lower() or "json_leak" in proof.lower()
+    score = confidence_score(
+        module=candidate.module,
+        verdict=verdict,
+        rehit=rehit_info or None,
+        fp=fp,
+        has_ownership_diff=ownership,
+    )
+    # Evidence gate: confirmed only at high confidence
+    final_verdict = verdict
+    if fp.get("is_fp") and score < 0.75:
+        candidate.status = "rejected"
+        candidate.detail = f"fp_signature:{fp.get('reason')} score={score}"
+        memory.upsert_candidate(candidate)
+        try:
+            from .hunt_telemetry import record_telemetry
+
+            record_telemetry(
+                target_dir,
+                {"module": candidate.module, "signal": False, "outcome": "fp_rejected", "confidence": score},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return ValidationResult(False, "rejected", detail=candidate.detail)
+    if score < 0.75:
+        final_verdict = "likely"
+    if score < 0.45:
+        candidate.status = "rejected"
+        candidate.detail = f"low_confidence:{score}"
+        memory.upsert_candidate(candidate)
+        return ValidationResult(False, "rejected", detail=candidate.detail)
+    if score >= 0.75 and final_verdict == "likely" and candidate.module == "idor":
+        # Keep likely unless ownership proof present
+        pass
+    elif score >= 0.75 and verdict == "confirmed":
+        final_verdict = "confirmed"
+    verdict = final_verdict
+
     # Persist evidence artifact
     evidence_path = candidate.evidence
     try:
@@ -115,6 +161,8 @@ def validate_and_log(
                 "verdict": verdict,
                 "sink_fingerprint": sink_fp,
                 "rehit": rehit_info,
+                "confidence": score,
+                "fp": fp,
             },
             indent=2,
         )
@@ -173,8 +221,25 @@ def validate_and_log(
             "finding_id": finding_id,
             "evidence": evidence_path,
             "verdict": verdict,
+            "confidence": score,
         }
     )
+    try:
+        from .hunt_telemetry import record_telemetry
+
+        record_telemetry(
+            target_dir,
+            {
+                "module": candidate.module,
+                "signal": True,
+                "outcome": "validated",
+                "confidence": score,
+                "verdict": verdict,
+                "finding_id": finding_id,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
     return ValidationResult(
         True,
         "validated",
