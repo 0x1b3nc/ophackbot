@@ -692,14 +692,30 @@ def _fmt_command(cmd: Any) -> str:
     return ui.summarize_command(cmd)
 
 
-def _handle_event(obj: dict[str, Any], printed_hdr: dict[str, Any]) -> None:
-    """Render one codex JSON event as a concise dim progress line."""
+def _handle_event(
+    obj: dict[str, Any],
+    printed_hdr: dict[str, Any],
+    *,
+    before_print: Callable[[], None] | None = None,
+    answer_sink: list[str] | None = None,
+) -> bool:
+    """Render one codex JSON event. Return True if something was printed.
+
+    ``before_print`` runs once before the first console write (stop spinner).
+    Agent messages are captured into ``answer_sink`` (last wins) so empty ``-o``
+    after resume still has a fallback.
+    """
+    shown = False
+
     def hdr() -> None:
         if not printed_hdr.get("v"):
+            if before_print:
+                before_print()
             ui.console.print(ui_text("codex", "hb.label"))
             printed_hdr["v"] = True
 
     def line(kind: str, text: str, style: str = "hb.muted") -> None:
+        nonlocal shown
         text = (text or "").strip()
         if not text:
             return
@@ -709,28 +725,53 @@ def _handle_event(obj: dict[str, Any], printed_hdr: dict[str, Any]) -> None:
         hdr()
         ui.activity(kind, text, style=style)
         printed_hdr["last"] = key
+        shown = True
+
+    etype = str(obj.get("type") or "")
+    if etype in {"error", "turn.failed"}:
+        msg = obj.get("message") or obj.get("error") or etype
+        if isinstance(msg, dict):
+            msg = msg.get("message") or msg.get("error") or etype
+        line("err", str(msg), "hb.warn")
+        return shown
 
     # Newer "thread item" shape: {"type":"item.completed","item":{...}}
     if "item" in obj and isinstance(obj["item"], dict):
         item = obj["item"]
-        itype = item.get("type") or item.get("item_type") or ""
-        if "reason" in itype:
+        itype = str(item.get("type") or item.get("item_type") or "")
+        ilow = itype.lower()
+        if "reason" in ilow:
             snippet = (item.get("text") or item.get("summary") or "").strip()
             if len(snippet) > 120:
                 snippet = snippet[:117] + "…"
             line("think", snippet)
-        elif "command" in itype or "exec" in itype:
-            line(
-                "run",
-                _fmt_command(item.get("command") or item.get("cmd") or ""),
-                "hb.cmd",
-            )
-        return
+        elif "command" in ilow or "exec" in ilow:
+            status = str(item.get("status") or "")
+            cmd_txt = _fmt_command(item.get("command") or item.get("cmd") or "")
+            if etype == "item.started" or status == "in_progress":
+                line("run", cmd_txt or "(command)", "hb.cmd")
+            else:
+                line("run", cmd_txt, "hb.cmd")
+        elif "message" in ilow or ilow in {"agent_message", "assistant_message"}:
+            text = (item.get("text") or "").strip()
+            if text and answer_sink is not None:
+                answer_sink.clear()
+                answer_sink.append(text)
+            if text and etype in {"item.completed", "item.updated", ""}:
+                # Live progress preview; full answer still rendered via -o / panel.
+                flat = " ".join(text.split())
+                if len(flat) > 140:
+                    flat = flat[:137] + "…"
+                line("say", flat, "hb.info")
+        elif "file" in ilow or "mcp" in ilow or "web_search" in ilow or "todo" in ilow:
+            label = ilow.replace("_", " ") or "item"
+            line("do", label)
+        return shown
 
     # Classic shape: {"id":..,"msg":{"type":..,..}}
     msg = obj.get("msg") if isinstance(obj.get("msg"), dict) else None
     if msg is None:
-        return
+        return shown
     mtype = msg.get("type", "")
     if "reasoning" in mtype and "delta" not in mtype:
         snippet = (msg.get("text") or msg.get("summary") or "").strip()
@@ -741,14 +782,17 @@ def _handle_event(obj: dict[str, Any], printed_hdr: dict[str, Any]) -> None:
         line("run", _fmt_command(msg.get("command") or ""), "hb.cmd")
     elif mtype == "error":
         line("err", msg.get("message") or "error", "hb.warn")
+    return shown
 
 
 def _run_streaming(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str] | None:
-    """Stream codex JSON events as concise progress; return ('', raw-nonjson).
+    """Stream codex JSON events as concise progress.
+
+    Returns ``(last_agent_message_or_empty, non_json_stderr)``.
 
     Important: never ``console.print`` while a Rich Status spinner is live — that
-    races the cursor and corrupts the next ``Prompt.ask`` line (prompt doubled,
-    ``- codex effort=…`` glued onto the user text, trailing junk chars).
+    races the cursor and corrupts the next ``Prompt.ask`` line. Keep the spinner
+    until the first *visible* progress line (ignore thread.started noise).
     """
     try:
         proc = subprocess.Popen(
@@ -766,31 +810,40 @@ def _run_streaming(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str]
 
     errbuf: list[str] = []
     printed_hdr: dict[str, Any] = {}
+    answer_sink: list[str] = []
     assert proc.stdout is not None and proc.stdin is not None
     status = ui.console.status("[cyan]codex is thinking...[/]", spinner="dots")
     status_live = False
+
+    def _stop_spinner() -> None:
+        nonlocal status_live
+        if status_live:
+            status.stop()
+            status_live = False
+            ui.stop_live()
+
     try:
         # Close stdin after writing so Codex does not hang waiting for more input.
         proc.stdin.write(prompt)
         proc.stdin.close()
         status.start()
         status_live = True
-        for line in proc.stdout:
-            line = line.rstrip("\r\n")
-            if not line:
+        for raw_line in proc.stdout:
+            raw_line = raw_line.rstrip("\r\n")
+            if not raw_line:
                 continue
             try:
-                obj = json.loads(line)
+                obj = json.loads(raw_line)
             except json.JSONDecodeError:
-                errbuf.append(line)
+                errbuf.append(raw_line)
                 continue
             if isinstance(obj, dict):
-                # Stop spinner before any progress print (Rich Live vs print race).
-                if status_live:
-                    status.stop()
-                    status_live = False
-                    ui.stop_live()
-                _handle_event(obj, printed_hdr)
+                _handle_event(
+                    obj,
+                    printed_hdr,
+                    before_print=_stop_spinner,
+                    answer_sink=answer_sink,
+                )
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -800,9 +853,8 @@ def _run_streaming(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str]
         proc.kill()
         raise
     finally:
-        if status_live:
-            status.stop()
+        _stop_spinner()
         ui.stop_live()
     if printed_hdr.get("v"):
         ui.console.print()
-    return "", "\n".join(errbuf)
+    return (answer_sink[-1] if answer_sink else ""), "\n".join(errbuf)

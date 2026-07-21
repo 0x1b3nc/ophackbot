@@ -23,9 +23,19 @@ class IntentTests(unittest.TestCase):
             "Pronto inicie o hunting",
             "pode iniciar a caça",
             "start the hunt please",
+            "OK. faça isso",
+            "ok, continue",
+            "yes do it",
+            "resume hunt",
+            "continue",
+            "faça isso",
         ):
             self.assertTrue(is_hunt_prompt(text), text)
             self.assertFalse(is_chat_prompt(text), text)
+
+    def test_bare_ok_still_chat(self) -> None:
+        self.assertTrue(is_chat_prompt("ok"))
+        self.assertTrue(is_chat_prompt("okay"))
 
     def test_effort_auto(self) -> None:
         old = os.environ.get("HACKBOT_EFFORT")

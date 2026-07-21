@@ -69,8 +69,26 @@ _HUNT_RE = re.compile(
     r"write|create|edit|delete|append|mkdir|move|"
     r"criar|crie|cria|escreve|escreva|arquivo|"
     r"read_file|SCOPE\.md|PLAN\.md|FINDINGS|"
-    r"approve|dry[\s-]?run|campanha|campaign"
+    r"approve|dry[\s-]?run|campanha|campaign|"
+    # Operator continue / "do that next step" (not pure chat)
+    r"continue|continua|continuar|resume|prossiga|prosseguir|"
+    r"go\s+ahead|do\s+it|next\s+step|"
+    r"fa[cç]a\s+isso|faz\s+isso|pode\s+fazer|pode\s+seguir|"
+    r"manda\s+ver|segue\b|seguir\b"
     r")\b"
+)
+
+# "OK. faça isso" / "yes, continue" — ack + imperative = keep hunting.
+_CONTINUE_RE = re.compile(
+    r"(?i)^\s*"
+    r"(?:(?:ok|okay|yes|yep|sim|beleza|blz|certo|show|vale|valeu)"
+    r"[\s,.!:;-]+)+"
+    r"(?:"
+    r"fa[cç]a\s+isso|faz\s+isso|pode\s+fazer|go\s+ahead|do\s+it|"
+    r"continue|continua|continuar|resume|prossiga|segue|seguir|"
+    r"manda\s+ver|pode\s+seguir|next\s+step|próximo|proximo"
+    r")"
+    r"\s*[.!]?\s*$"
 )
 
 _HOST_RE = re.compile(
@@ -87,14 +105,14 @@ def is_chat_prompt(text: str) -> bool:
         return True
     if raw.startswith("/"):
         return False
+    if _CONTINUE_RE.search(raw) or _HUNT_RE.search(raw) or _HOST_RE.search(raw):
+        return False
     low = raw.lower().rstrip("!.?")
     if low in _CHAT_EXACT:
         return True
     if len(raw) <= 40 and any(low.startswith(p) for p in _CHAT_PREFIXES):
-        if _HUNT_RE.search(raw) or _HOST_RE.search(raw):
-            return False
         return True
-    if len(raw) <= 24 and not _HUNT_RE.search(raw) and not _HOST_RE.search(raw):
+    if len(raw) <= 24:
         # short freeform with no hunt signal
         if re.fullmatch(r"[\w\sÀ-ÿ'!?.,]+", raw):
             return True
