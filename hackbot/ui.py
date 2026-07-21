@@ -302,6 +302,20 @@ def activity(kind: str, detail: str, *, style: str = "hb.muted") -> None:
     )
 
 
+def stop_live() -> None:
+    """Stop any Rich Status/Live still attached (prevents prompt-line corruption)."""
+    try:
+        console.clear_live()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def ensure_prompt_line() -> None:
+    """Clean cursor + blank line before Prompt.ask (spinner/print races)."""
+    stop_live()
+    console.print()
+
+
 def markdown_panel(md: str, *, title: str) -> None:
     """Render assistant markdown. Transcript-style for hackbot answers (less chrome)."""
     body = normalize_agent_text(md or "")

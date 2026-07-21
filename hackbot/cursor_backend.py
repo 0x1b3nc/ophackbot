@@ -315,6 +315,7 @@ def _run_send(agent: Any, prompt: str, *, selection: Any) -> tuple[str, str]:
         result = run.wait() if hasattr(run, "wait") else None
     finally:
         wait_status.stop()
+        ui.stop_live()
     status = getattr(result, "status", None) if result is not None else None
 
     resolved_label = format_selection_label(selection)

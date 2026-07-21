@@ -651,7 +651,12 @@ def _handle_event(obj: dict[str, Any], printed_hdr: dict[str, Any]) -> None:
 
 
 def _run_streaming(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str] | None:
-    """Stream codex JSON events as concise progress; return ('', raw-nonjson)."""
+    """Stream codex JSON events as concise progress; return ('', raw-nonjson).
+
+    Important: never ``console.print`` while a Rich Status spinner is live — that
+    races the cursor and corrupts the next ``Prompt.ask`` line (prompt doubled,
+    ``- codex effort=…`` glued onto the user text, trailing junk chars).
+    """
     try:
         proc = subprocess.Popen(
             cmd,
@@ -669,30 +674,42 @@ def _run_streaming(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str]
     errbuf: list[str] = []
     printed_hdr: dict[str, Any] = {}
     assert proc.stdout is not None and proc.stdin is not None
+    status = ui.console.status("[cyan]codex is thinking...[/]", spinner="dots")
+    status_live = False
     try:
         # Close stdin after writing so Codex does not hang waiting for more input.
         proc.stdin.write(prompt)
         proc.stdin.close()
-        with ui.console.status("[cyan]codex is thinking...[/]", spinner="dots"):
-            for line in proc.stdout:
-                line = line.rstrip("\r\n")
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    errbuf.append(line)
-                    continue
-                if isinstance(obj, dict):
-                    _handle_event(obj, printed_hdr)
+        status.start()
+        status_live = True
+        for line in proc.stdout:
+            line = line.rstrip("\r\n")
+            if not line:
+                continue
             try:
-                proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                return "", f"(codex timed out after {timeout}s)"
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                errbuf.append(line)
+                continue
+            if isinstance(obj, dict):
+                # Stop spinner before any progress print (Rich Live vs print race).
+                if status_live:
+                    status.stop()
+                    status_live = False
+                    ui.stop_live()
+                _handle_event(obj, printed_hdr)
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            return "", f"(codex timed out after {timeout}s)"
     except KeyboardInterrupt:
         proc.kill()
         raise
+    finally:
+        if status_live:
+            status.stop()
+        ui.stop_live()
     if printed_hdr.get("v"):
         ui.console.print()
     return "", "\n".join(errbuf)

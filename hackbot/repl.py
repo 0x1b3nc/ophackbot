@@ -279,6 +279,9 @@ def start_repl(*, one_shot: str | None = None) -> int:
 
     while True:
         try:
+            # Spinner/progress must be fully dead before Prompt.ask or the prompt
+            # line doubles and glues onto the next ``- codex effort=…`` banner.
+            ui.ensure_prompt_line()
             tag = _prompt_label(mode)
             user = Prompt.ask(f"[bold cyan]hackbot[/] [dim]· {tag}[/]")
         except (EOFError, KeyboardInterrupt):
@@ -289,6 +292,8 @@ def start_repl(*, one_shot: str | None = None) -> int:
         text = (user or "").strip()
         if not text:
             continue
+        # Fresh line so turn banners never share a row with the echoed input.
+        ui.console.print()
         # Stray approve keystrokes after a raced prompt — do not start a new turn.
         if text.lower() in {"y", "n", "yy", "nn", "yes", "no"}:
             ui.warn(
