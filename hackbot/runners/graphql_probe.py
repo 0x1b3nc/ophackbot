@@ -32,7 +32,13 @@ def graphql_probe(
     force: bool = False,
     timeout: float = 15.0,
 ) -> RunnerResult:
-    require_in_scope(target_dir, url, action="graphql introspection probe", force=force)
+    require_in_scope(
+        target_dir,
+        url,
+        action="graphql introspection probe",
+        force=force,
+        tool="graphql_probe",
+    )
     body_q = query or INTROSPECTION
     plan = {"url": url, "introspection": query is None, "approve": approve}
     ui.code_panel(json.dumps(plan, indent=2), title="graphql_probe", lexer="json")

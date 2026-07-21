@@ -153,6 +153,11 @@ Prefer a YAML front-matter block at the top of `SCOPE.md` for `in_scope`,
 `out_of_scope`, `allowed`, `prohibited`. That is the source of truth. Markdown
 below is for notes. Old Markdown-only scopes still work as a fallback.
 
+URL-shaped `in_scope` entries are honored when present: scheme, port, and path
+prefix (e.g. `https://api.example.com:8443/v1/*`). Bare hostnames still mean
+any scheme/port/path on that host. `prohibited` is enforced (force can soft-
+override; explicit OOS stays hard). Aggression prefers tool id over free text.
+
 Import a program policy dump into YAML:
 
 ```powershell

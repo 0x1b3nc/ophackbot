@@ -38,7 +38,13 @@ def race_probe(
     workers = max(2, min(int(workers), MAX_WORKERS))
     burst = max(2, min(int(burst), MAX_BURST))
     method = (method or "GET").upper()
-    require_in_scope(target_dir, url, action="race condition probe", force=force)
+    require_in_scope(
+        target_dir,
+        url,
+        action="race condition probe",
+        force=force,
+        tool="race_probe",
+    )
     full = url if "://" in url else f"https://{url}"
 
     headers: dict[str, str] = {"User-Agent": "hackbot-race-probe"}

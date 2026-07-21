@@ -8,6 +8,8 @@ allowed:
   - Passive recon
   - Active testing
   - IDOR / BOLA checks with provided test accounts
+  - Controlled race condition testing
+  - Rate-limit testing
 prohibited:
   - DoS
   - Credential stuffing against third parties

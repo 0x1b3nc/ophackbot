@@ -41,7 +41,10 @@ class ProbeNlTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
         (root / "SCOPE.md").write_text(
-            "# Scope\n\n## In Scope\n- example.com\n", encoding="utf-8"
+            "# Scope\n\n## In Scope\n- example.com\n\n"
+            "## Explicitly Allowed\n- Active testing\n"
+            "- Controlled race condition testing\n",
+            encoding="utf-8",
         )
         for tool, extra in (
             ("ssrf_probe", {"param": "url"}),

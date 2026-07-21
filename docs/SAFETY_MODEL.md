@@ -42,6 +42,10 @@ HTTP redirects and derived fetches (HAR/OpenAPI/surface) re-gate each
 hard-blocked without force; intentional `/force` for soft-gated destinations
 stays operator responsibility.
 
+Structured SCOPE may list URL rules (scheme/port/path prefix). `prohibited`
+blocks matching tools/actions unless `/force`. On structured SCOPE, level-2+
+without active/automated allow is a hard deny (not a silent warn).
+
 ### Session approve (`/hunt --approve`)
 
 Autonomous hunt uses **one session approve** for the whole OODA loop instead of

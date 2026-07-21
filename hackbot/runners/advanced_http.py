@@ -21,7 +21,13 @@ def mass_assignment_probe(
     session: str = "A",
     extra_fields: dict[str, Any] | None = None,
 ) -> RunnerResult:
-    require_in_scope(target_dir, url, action="mass assignment probe", force=force)
+    require_in_scope(
+        target_dir,
+        url,
+        action="mass assignment probe",
+        force=force,
+        tool="mass_assignment_probe",
+    )
     fields = extra_fields or {"role": "admin", "isAdmin": True, "admin": True}
     plan = {"url": url, "fields": list(fields.keys()), "approve": approve}
     ui.code_panel(json.dumps(plan, indent=2), title="mass_assignment_probe", lexer="json")
@@ -65,7 +71,13 @@ def method_override_probe(
     force: bool = False,
     session: str = "A",
 ) -> RunnerResult:
-    require_in_scope(target_dir, url, action="method override probe", force=force)
+    require_in_scope(
+        target_dir,
+        url,
+        action="method override probe",
+        force=force,
+        tool="method_override_probe",
+    )
     plan = {"url": url, "override": "DELETE", "approve": approve}
     ui.code_panel(json.dumps(plan, indent=2), title="method_override_probe", lexer="json")
     cmd = ["method_override_probe", url]

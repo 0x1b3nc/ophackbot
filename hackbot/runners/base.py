@@ -26,25 +26,33 @@ def require_in_scope(
     *,
     action: str = "",
     force: bool = False,
+    tool: str | None = None,
 ) -> ScopePolicy:
-    """Load SCOPE and gate host (+ optional action aggression).
+    """Load SCOPE and gate target URL/host (+ optional action aggression).
 
-    When action is empty, only host gates apply (OOS hard-block; NOT_CONFIRMED
-    unless force). When action is set, full assert_action_allowed runs.
+    When action is empty, only target gates apply (OOS hard-block; NOT_CONFIRMED
+    unless force). When action is set, full assert_action_allowed runs. Pass
+    ``tool`` (tool id) so aggression/prohibited use the tool registry, not only
+    free-text action labels.
     """
     policy = ScopePolicy.load(target_dir)
-    host = host_from_target(host_or_url)
     if action:
-        policy.assert_action_allowed(host, action, force=force)
+        policy.assert_action_allowed(
+            host_or_url,
+            action,
+            force=force,
+            tool=tool,
+        )
     else:
-        if policy.is_explicitly_out_of_scope(host):
+        if policy.target_out_of_scope(host_or_url):
+            host = host_from_target(host_or_url)
             raise PermissionError(
-                f"host out of scope: {host} "
+                f"host out of scope: {host or host_or_url} "
                 "(OUT_OF_SCOPE cannot be overridden with /force)"
             )
-        if not policy.contains_host(host) and not force:
+        if not policy.target_in_scope(host_or_url) and not force:
             raise PermissionError(
-                f"host not confirmed in SCOPE.md: {host}. "
+                f"target not confirmed in SCOPE.md: {host_or_url}. "
                 "Add it to SCOPE or use /force (operator responsibility)."
             )
     return policy

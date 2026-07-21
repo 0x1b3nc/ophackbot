@@ -152,6 +152,106 @@ Prose mentioning evil.com here must not put it in scope.
         self.assertFalse(policy.structured)
         self.assertTrue(policy.contains_host("example.com"))
 
+    def test_url_port_and_path_constraints(self) -> None:
+        yaml_scope = """---
+in_scope:
+  - https://api.example.com:8443/v1/*
+out_of_scope:
+  - admin.example.com
+allowed:
+  - Active testing
+prohibited: []
+---
+"""
+        policy = self._policy(yaml_scope)
+        self.assertTrue(
+            policy.target_in_scope("https://api.example.com:8443/v1/users")
+        )
+        self.assertFalse(
+            policy.target_in_scope("https://api.example.com:8443/admin/delete")
+        )
+        self.assertFalse(policy.target_in_scope("http://api.example.com:80/v1/x"))
+        self.assertFalse(policy.target_in_scope("https://api.example.com:9999/v1/x"))
+        policy.assert_action_allowed(
+            "https://api.example.com:8443/v1/users",
+            "httpx fingerprint",
+            force=False,
+        )
+        with self.assertRaises(PermissionError):
+            policy.assert_action_allowed(
+                "https://api.example.com:9999/v1/x",
+                "httpx fingerprint",
+                force=False,
+            )
+
+    def test_tool_id_aggression_and_prohibited(self) -> None:
+        yaml_scope = """---
+in_scope:
+  - api.example.com
+allowed:
+  - Passive recon only
+prohibited:
+  - Automated scanning
+  - Mutating requests
+  - Brute force
+---
+"""
+        policy = self._policy(yaml_scope)
+        self.assertEqual(
+            policy.classify_aggression("method override probe", tool="method_override_probe"),
+            3,
+        )
+        self.assertEqual(
+            policy.classify_aggression("mass assignment probe", tool="mass_assignment_probe"),
+            2,
+        )
+        self.assertEqual(
+            policy.classify_aggression("graphql introspection probe", tool="graphql_probe"),
+            2,
+        )
+        self.assertEqual(
+            policy.classify_aggression("race condition probe", tool="race_probe"),
+            3,
+        )
+        for action, tool in (
+            ("method override probe", "method_override_probe"),
+            ("mass assignment probe", "mass_assignment_probe"),
+            ("graphql introspection probe", "graphql_probe"),
+            ("nuclei templates", "nuclei"),
+        ):
+            with self.assertRaises(PermissionError):
+                policy.assert_action_allowed(
+                    "api.example.com",
+                    action,
+                    force=False,
+                    tool=tool,
+                )
+        # Operator force still overrides soft prohibited / aggression gates.
+        gate = policy.assert_action_allowed(
+            "api.example.com",
+            "method override probe",
+            force=True,
+            tool="method_override_probe",
+        )
+        self.assertTrue(gate["force_override"])
+
+    def test_structured_l2_hard_without_active_allow(self) -> None:
+        yaml_scope = """---
+in_scope:
+  - lab.local
+allowed:
+  - Passive recon only
+---
+"""
+        policy = self._policy(yaml_scope)
+        with self.assertRaises(PermissionError):
+            policy.assert_action_allowed(
+                "lab.local",
+                "idor bola authz probe",
+                force=False,
+                tool="idor_probe",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
