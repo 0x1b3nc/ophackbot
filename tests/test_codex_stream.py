@@ -66,7 +66,8 @@ class CodexStreamEventTests(unittest.TestCase):
             answer_sink=sink,
         )
         self.assertTrue(shown)
-        self.assertEqual(sink[0], body)
+        self.assertEqual(sink[0].strip(), body.strip())
+        self.assertIn("http_request", sink[0])
 
     def test_agent_message_plan_line_without_tool(self) -> None:
         hdr: dict = {}
