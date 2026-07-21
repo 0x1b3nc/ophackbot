@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 from rich.console import Console, Group
@@ -15,6 +16,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from . import __version__
+from .operator_gate import console_output_allowed
 
 
 def _enable_windows_vt() -> None:
@@ -62,6 +64,18 @@ console = Console(
     no_color=_force_plain or os.environ.get("NO_COLOR") is not None,
     color_system=None if _force_plain else "auto",
 )
+
+# Mute Rich output while Confirm.ask is waiting (parallel Cursor stream/tools).
+_raw_console_print = console.print
+
+
+def _gated_console_print(*args, **kwargs):  # type: ignore[no-untyped-def]
+    if not console_output_allowed():
+        return None
+    return _raw_console_print(*args, **kwargs)
+
+
+console.print = _gated_console_print  # type: ignore[method-assign]
 
 _STATUS_STYLE = {
     "IN_SCOPE": "hb.ok",
@@ -144,10 +158,22 @@ def rule(title: str = "") -> None:
 
 
 def kv(label: str, value: str, *, style: str = "hb.info") -> None:
+    width = max(14, min(28, len(label) + 2))
     line = Text()
-    line.append(f"{label:<14}", style="hb.label")
+    line.append(f"{label:<{width}}", style="hb.label")
     line.append(value, style=style)
     console.print(line)
+
+
+def compact_text(text: str, *, max_chars: int = 2000) -> str:
+    """Collapse runaway blank lines (common in AEM/HTML) for terminal panels."""
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = text.strip()
+    if len(text) > max_chars:
+        return text[:max_chars] + "\n…(truncated)"
+    return text
 
 
 def success(msg: str) -> None:
@@ -211,9 +237,12 @@ def markdown_panel(md: str, *, title: str) -> None:
 
 
 def code_panel(code: str, *, title: str = "command", lexer: str = "bash") -> None:
+    body = compact_text(code, max_chars=2400) if lexer in {"text", "html", "xml"} else code
+    if lexer == "text" and ("<html" in body[:200].lower() or "<!doctype" in body[:80].lower()):
+        body = compact_text(body, max_chars=1800)
     console.print(
         Panel(
-            Syntax(code, lexer, theme="monokai", word_wrap=True),
+            Syntax(body, lexer, theme="monokai", word_wrap=True),
             title=title,
             border_style="bright_black",
             padding=(1, 2),

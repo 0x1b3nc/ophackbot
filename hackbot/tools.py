@@ -2100,6 +2100,21 @@ def _preview(text: str, limit: int = 500) -> str:
     return text[:limit] + f"\n... (+{len(text) - limit} more chars)"
 
 
+def _domain_arg(args: dict[str, Any]) -> str:
+    """Accept domain/host/url for passive OSINT tools (Cursor often sends url)."""
+    raw = (
+        args.get("domain")
+        or args.get("host")
+        or args.get("url")
+        or args.get("seed")
+        or ""
+    )
+    text = str(raw).strip()
+    if not text:
+        return ""
+    return host_from_target(text) or text.lower().lstrip("*.")
+
+
 def _active_target_name() -> str:
     s = get_active()
     return s.name if s else ""
@@ -2430,10 +2445,16 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
     if name == "analyze_headers":
         return _tool_analyze_headers(args, approve_fn=approve_fn)
     if name == "crt_subdomains":
-        return json.dumps(web_probes_runner.crt_subdomains(args["domain"]))
+        domain = _domain_arg(args)
+        if not domain:
+            return json.dumps({"ok": False, "error": "domain required"})
+        return json.dumps(web_probes_runner.crt_subdomains(domain))
     if name == "wayback_urls":
+        domain = _domain_arg(args)
+        if not domain:
+            return json.dumps({"ok": False, "error": "domain required"})
         return json.dumps(
-            web_probes_runner.wayback_urls(args["domain"], limit=int(args.get("limit") or 100))
+            web_probes_runner.wayback_urls(domain, limit=int(args.get("limit") or 100))
         )
     if name == "list_dir":
         return _tool_list_dir(args)
@@ -2583,8 +2604,6 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
 
         return json.dumps(telemetry_stats(_target_path(args["target_dir"])))
     if name == "submit_ready":
-        from .findings import update_resume_next_step
-
         target = _target_path(args["target_dir"])
         fid = str(args.get("finding_id") or "latest")
         update_resume_next_step(

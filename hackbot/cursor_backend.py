@@ -42,6 +42,7 @@ from .cursor_tools import (
 )
 from .intent import is_chat_prompt, resolve_effort_for_prompt
 from .llm import streaming_enabled
+from .operator_gate import stream_output_allowed
 from .session import get_active
 from .tool_packs import resolve_packs
 
@@ -249,7 +250,7 @@ def _run_send(agent: Any, prompt: str, *, selection: Any) -> tuple[str, str]:
     except TypeError:
         run = agent.send(prompt)
 
-    answer = ""
+    stream_answer = ""
     if streaming_enabled():
         try:
             stream = run.messages() if hasattr(run, "messages") else run.stream()
@@ -257,15 +258,22 @@ def _run_send(agent: Any, prompt: str, *, selection: Any) -> tuple[str, str]:
                 mtype = getattr(message, "type", None)
                 if mtype == "assistant":
                     piece = _assistant_text_from_messages([message])
-                    if piece:
-                        ui.console.print(piece, end="")
-                        answer += piece
+                    if not piece:
+                        continue
+                    # Keep snapshots for wait() fallback; do not live-print tokens
+                    # (Cursor deltas often arrive without spaces → "I'llload…").
+                    if (
+                        not stream_answer
+                        or piece.startswith(stream_answer)
+                        or len(piece) >= len(stream_answer)
+                    ):
+                        stream_answer = piece
                 elif mtype == "tool_call":
+                    if not stream_output_allowed():
+                        continue
                     name = getattr(message, "name", "?")
                     status = getattr(message, "status", "")
                     ui.console.print(ui_text(f"cursor tool  {name}  {status}", "hb.dim"))
-            if answer:
-                ui.console.print()
         except Exception:
             pass
 
@@ -278,23 +286,26 @@ def _run_send(agent: Any, prompt: str, *, selection: Any) -> tuple[str, str]:
         if rm is not None:
             resolved_label = format_selection_label(rm)
 
+    # Prefer final wait() text — stream chunks can mangle spaces when interleaved.
+    answer = ""
+    for attr in ("text", "result"):
+        if result is not None and hasattr(result, attr):
+            val = getattr(result, attr)
+            if callable(val):
+                try:
+                    val = val()
+                except TypeError:
+                    pass
+            if isinstance(val, str) and val.strip():
+                answer = val.strip()
+                break
+    if not answer and hasattr(run, "text") and callable(run.text):
+        try:
+            answer = (run.text() or "").strip()
+        except Exception:
+            pass
     if not answer:
-        for attr in ("text", "result"):
-            if result is not None and hasattr(result, attr):
-                val = getattr(result, attr)
-                if callable(val):
-                    try:
-                        val = val()
-                    except TypeError:
-                        pass
-                if isinstance(val, str) and val.strip():
-                    answer = val.strip()
-                    break
-        if not answer and hasattr(run, "text") and callable(run.text):
-            try:
-                answer = (run.text() or "").strip()
-            except Exception:
-                pass
+        answer = stream_answer.strip()
 
     if status == "error":
         rid = getattr(result, "id", None) or getattr(run, "id", "?")

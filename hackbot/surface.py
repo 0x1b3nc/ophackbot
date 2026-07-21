@@ -84,7 +84,7 @@ def _fetch(
     *,
     target_dir: Path,
     force: bool = False,
-    timeout: float = 12.0,
+    timeout: float = 30.0,
 ) -> tuple[int, str, dict[str, str]]:
     from .scoped_http import scoped_fetch_bytes
 

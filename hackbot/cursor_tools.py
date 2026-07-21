@@ -11,6 +11,7 @@ import json
 import os
 from typing import Any, Callable
 
+from .operator_gate import serialized_tool_call
 from .tool_packs import filter_tool_specs, resolve_packs
 from .tools import TOOL_SPECS, execute_tool
 
@@ -46,17 +47,23 @@ def _trim_result(raw: str) -> str:
 
 def _make_execute(tool_name: str) -> Callable[[Any, Any], str]:
     def _execute(arguments: Any, _context: Any = None) -> str:
-        args = dict(arguments or {}) if isinstance(arguments, dict) else {}
-        try:
-            result = execute_tool(tool_name, args, approve_fn=_APPROVE_HOLDER.get("fn"))
-        except Exception as exc:  # noqa: BLE001 — surface to Cursor as tool error
-            return json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
-        if isinstance(result, str):
-            return _trim_result(result)
-        try:
-            return _trim_result(json.dumps(result, ensure_ascii=False, default=str))
-        except (TypeError, ValueError):
-            return _trim_result(str(result))
+        # One CustomTool at a time so permission prompts never overlap.
+        with serialized_tool_call():
+            args = dict(arguments or {}) if isinstance(arguments, dict) else {}
+            try:
+                result = execute_tool(
+                    tool_name, args, approve_fn=_APPROVE_HOLDER.get("fn")
+                )
+            except Exception as exc:  # noqa: BLE001 — surface to Cursor as tool error
+                return json.dumps(
+                    {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                )
+            if isinstance(result, str):
+                return _trim_result(result)
+            try:
+                return _trim_result(json.dumps(result, ensure_ascii=False, default=str))
+            except (TypeError, ValueError):
+                return _trim_result(str(result))
 
     return _execute
 

@@ -26,6 +26,7 @@ from .force import disable_force, enable_force, is_forced
 from .hunt_controller import hunt_status, request_stop, run_hunt
 from .identity import save_session
 from .local_agent import run_local_agent
+from .operator_gate import operator_prompt_active
 from .providers import (
     EFFORT_LEVELS,
     PROVIDERS,
@@ -38,8 +39,11 @@ from .tools import execute_tool
 
 
 def _approve(prompt: str) -> bool:
-    ui.permission(prompt)
-    return Confirm.ask("[bold yellow]Allow this action?[/]", default=False)
+    with operator_prompt_active():
+        # Fresh line so stream/tool status cannot stick to the Confirm prompt.
+        ui.console.print()
+        ui.permission(prompt)
+        return Confirm.ask("[bold yellow]Allow this action?[/]", default=False)
 
 
 def _describe(cfg) -> str:
@@ -268,6 +272,13 @@ def start_repl(*, one_shot: str | None = None) -> int:
 
         text = (user or "").strip()
         if not text:
+            continue
+        # Stray approve keystrokes after a raced prompt — do not start a new turn.
+        if text.lower() in {"y", "n", "yy", "nn", "yes", "no"}:
+            ui.warn(
+                "no permission prompt is waiting — type a real task "
+                "(or answer Allow this action? when it appears)"
+            )
             continue
         if text in {"/exit", "/quit", "exit", "quit"}:
             ui.info("bye")

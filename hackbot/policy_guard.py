@@ -184,11 +184,23 @@ class ScopePolicy:
         return False
 
     def is_explicitly_out_of_scope(self, host: str) -> bool:
-        """Host listed under out_of_scope (YAML) or an Out of Scope section."""
+        """Host listed under out_of_scope (YAML) or an Out of Scope section.
+
+        Precedence for structured SCOPE:
+        1. Exact OOS host / OOS CIDR match → out (carve-outs win)
+        2. Exact in_scope host match → not out (allowlist beats OOS wildcards)
+        3. Remaining OOS wildcards / rules → out
+        """
         host = host.lower().strip().rstrip(".")
         if not host:
             return False
         if self.structured and self.out_rules:
+            if any(_rule_is_exact_or_network_match(host, rule) for rule in self.out_rules):
+                return True
+            if self.in_rules and any(
+                _rule_is_exact_host_match(host, rule) for rule in self.in_rules
+            ):
+                return False
             return any(_host_matches_rule(host, rule) for rule in self.out_rules)
         sections = _sections_named(self.scope_text.lower(), ("out of scope",))
         if not sections:
@@ -609,6 +621,22 @@ def _host_matches_rule(host: str, rule: ScopeRule) -> bool:
             return False
         return host.endswith("." + parent) and host != parent
     return host == entry
+
+
+def _rule_is_exact_host_match(host: str, rule: ScopeRule) -> bool:
+    """True when rule is a concrete hostname (not wildcard / CIDR) matching host."""
+    if rule.network or not rule.host or rule.host.startswith("*."):
+        return False
+    return _host_matches_rule(host, rule)
+
+
+def _rule_is_exact_or_network_match(host: str, rule: ScopeRule) -> bool:
+    """Exact hostname or IP/CIDR match — used for OOS carve-outs."""
+    if rule.network:
+        return _host_matches_rule(host, rule)
+    if not rule.host or rule.host.startswith("*."):
+        return False
+    return _host_matches_rule(host, rule)
 
 
 def _url_matches_rule(url: str, rule: ScopeRule) -> bool:

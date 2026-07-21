@@ -147,6 +147,24 @@ Prose mentioning evil.com here must not put it in scope.
         with self.assertRaises(PermissionError):
             policy.assert_host_allowed("evil.com")
 
+    def test_exact_in_scope_beats_oos_wildcard(self) -> None:
+        """Intigriti-style: listed Tier hosts win over *.domain OOS wildcards."""
+        yaml_scope = """---
+in_scope:
+  - www.bmw.de
+  - configure.bmw.de
+out_of_scope:
+  - "*.bmw.de"
+allowed:
+  - Active testing
+---
+"""
+        policy = self._policy(yaml_scope)
+        self.assertFalse(policy.is_explicitly_out_of_scope("www.bmw.de"))
+        self.assertFalse(policy.is_explicitly_out_of_scope("configure.bmw.de"))
+        self.assertTrue(policy.is_explicitly_out_of_scope("api.bmw.de"))
+        self.assertTrue(policy.contains_host("www.bmw.de"))
+
     def test_markdown_fallback_still_works(self) -> None:
         policy = self._policy(SCOPE)
         self.assertFalse(policy.structured)

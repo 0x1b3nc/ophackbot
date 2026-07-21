@@ -431,8 +431,12 @@ def _dispatch(args: argparse.Namespace) -> int:
         def _approve(prompt: str) -> bool:
             from rich.prompt import Confirm
 
-            ui.permission(prompt)
-            return Confirm.ask("[bold yellow]Allow this action?[/]", default=False)
+            from .operator_gate import operator_prompt_active
+
+            with operator_prompt_active():
+                ui.console.print()
+                ui.permission(prompt)
+                return Confirm.ask("[bold yellow]Allow this action?[/]", default=False)
 
         out = execute_tool(
             "run_playbook",

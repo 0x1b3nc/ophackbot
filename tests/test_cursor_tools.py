@@ -75,6 +75,34 @@ class CursorToolsTests(unittest.TestCase):
         ex.assert_called_once()
         self.assertIs(ex.call_args.kwargs.get("approve_fn"), approve)
 
+    def test_execute_is_serialized(self) -> None:
+        import threading
+        import time
+
+        with mock.patch.dict(
+            os.environ,
+            {"HACKBOT_CURSOR_TOOLS": "1", "HACKBOT_TOOL_PACK": "core"},
+            clear=False,
+        ):
+            tools = build_cursor_custom_tools("")
+        order: list[str] = []
+
+        def slow_execute(name, args, approve_fn=None):
+            order.append("start")
+            time.sleep(0.08)
+            order.append("end")
+            return json.dumps({"ok": True})
+
+        with mock.patch("hackbot.cursor_tools.execute_tool", side_effect=slow_execute):
+            t1 = threading.Thread(target=lambda: tools["list_targets"].execute({}, None))
+            t1.start()
+            time.sleep(0.02)
+            t2 = threading.Thread(target=lambda: tools["session_status"].execute({}, None))
+            t2.start()
+            t1.join(timeout=2)
+            t2.join(timeout=2)
+        self.assertEqual(order, ["start", "end", "start", "end"])
+
 
 if __name__ == "__main__":
     unittest.main()

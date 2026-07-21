@@ -160,7 +160,8 @@ def http_request(
     ui.kv("length", str(len(resp_body)))
     ui.kv("sha256", body_hash[:16] + "…")
     if resp_body:
-        ui.code_panel(redact_text(resp_body[:PREVIEW_CHARS]), title="body_preview", lexer="text")
+        preview = ui.compact_text(redact_text(resp_body[:PREVIEW_CHARS]), max_chars=PREVIEW_CHARS)
+        ui.code_panel(preview, title="body_preview", lexer="text")
 
     # Persist a compact JSON (no secrets in request headers) under evidence/safe
     safe_payload = {
