@@ -1,4 +1,8 @@
-"""HexStrike local server helper. Prints commands; executes only with --approve."""
+"""HexStrike local server helper. Prints commands; executes only with --approve.
+
+The vendored server binds 127.0.0.1 only. Prefer a separate venv or Docker
+without mounting targets/. See integrations/hexstrike/PROVENANCE.md.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +27,10 @@ def start_server(*, port: int = 8888, approve: bool = False) -> RunnerResult:
             stderr="",
             message="hexstrike_server.py not found",
         )
+    ui.info(
+        f"hexstrike binds loopback only (127.0.0.1:{port}). "
+        "see integrations/hexstrike/PROVENANCE.md"
+    )
     return run_command(
         ["python", str(script), "--port", str(port)],
         approve=approve,

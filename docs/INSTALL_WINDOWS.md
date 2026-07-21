@@ -39,12 +39,27 @@ Close and reopen the terminal so the env var sticks.
 
 ## Optional: HexStrike
 
+Third party. High trust surface. Binds `127.0.0.1` only. Prefer Docker without
+mounting `targets/`. Read `integrations/hexstrike/PROVENANCE.md` first.
+
 ```powershell
 cd integrations\hexstrike
 python -m venv hexstrike-env
 .\hexstrike-env\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install pip-tools
+pip-compile requirements.txt -o requirements.lock
+pip install -r requirements.lock
 python hexstrike_server.py --port 8888
+```
+
+Health check: `curl http://127.0.0.1:8888/health`
+
+## Lockfile for the kit
+
+Runtime pins live in `requirements.lock`. Refresh with:
+
+```powershell
+.\.venv\Scripts\pip-compile requirements.in -o requirements.lock
 ```
 
 ## Notes from me

@@ -12,7 +12,7 @@ import os
 import re
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from .providers import Config, ConfigError, resolve_config
@@ -104,14 +104,18 @@ def chat(
     *,
     system: str,
     messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
     on_reasoning: DeltaFn | None = None,
     on_text: DeltaFn | None = None,
+    effort: str | None = None,
 ) -> LLMResponse:
     try:
         cfg = resolve_config()
     except ConfigError as exc:
         raise LLMError(str(exc)) from exc
+    if effort is not None:
+        cfg = replace(cfg, effort=effort)
+    tool_list = tools if tools is not None else []
     if cfg.wire == "codex":
         raise LLMError("codex provider runs through the codex CLI, not the HTTP client.")
 
@@ -119,16 +123,16 @@ def chat(
     if cfg.wire == "anthropic":
         if stream:
             return _anthropic_stream(
-                system=system, messages=messages, tools=tools, cfg=cfg,
+                system=system, messages=messages, tools=tool_list, cfg=cfg,
                 on_reasoning=on_reasoning, on_text=on_text,
             )
-        return _anthropic(system=system, messages=messages, tools=tools, cfg=cfg)
+        return _anthropic(system=system, messages=messages, tools=tool_list, cfg=cfg)
     if stream:
         return _openai_stream(
-            system=system, messages=messages, tools=tools, cfg=cfg,
+            system=system, messages=messages, tools=tool_list, cfg=cfg,
             on_reasoning=on_reasoning, on_text=on_text,
         )
-    return _openai(system=system, messages=messages, tools=tools, cfg=cfg)
+    return _openai(system=system, messages=messages, tools=tool_list, cfg=cfg)
 
 
 def _http_json(url: str, headers: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
@@ -208,21 +212,21 @@ def _anthropic_build(
         anth_messages.append({"role": role, "content": msg["content"]})
     flush_tools()
 
-    anth_tools = [
-        {
-            "name": t["name"],
-            "description": t["description"],
-            "input_schema": t["parameters"],
-        }
-        for t in tools
-    ]
     body: dict[str, Any] = {
         "model": model,
         "max_tokens": 4096,
         "system": system,
         "messages": anth_messages,
-        "tools": anth_tools,
     }
+    if tools:
+        body["tools"] = [
+            {
+                "name": t["name"],
+                "description": t["description"],
+                "input_schema": t["parameters"],
+            }
+            for t in tools
+        ]
     if cfg.effort and cfg.effort_style == "anthropic" and _is_anthropic_thinking_model(model):
         budget = _ANTHROPIC_EFFORT_BUDGET.get(cfg.effort, 0)
         if budget > 0:
@@ -359,24 +363,24 @@ def _openai_build(
         else:
             oai_messages.append({"role": msg["role"], "content": msg["content"]})
 
-    oai_tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": t["name"],
-                "description": t["description"],
-                "parameters": t["parameters"],
-            },
-        }
-        for t in tools
-    ]
     base_url = cfg.base_url or "https://api.openai.com/v1"
     body: dict[str, Any] = {
         "model": cfg.model,
         "messages": oai_messages,
-        "tools": oai_tools,
-        "tool_choice": "auto",
     }
+    if tools:
+        body["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t["parameters"],
+                },
+            }
+            for t in tools
+        ]
+        body["tool_choice"] = "auto"
     _apply_openai_effort(body, cfg)
     headers = {
         "Content-Type": "application/json",

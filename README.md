@@ -36,11 +36,12 @@ Pick model + reasoning effort anytime:
 
 ```powershell
 setx HACKBOT_MODEL "o4-mini"
-setx HACKBOT_EFFORT "high"   # minimal | low | medium | high | xhigh
+setx HACKBOT_EFFORT "auto"   # auto | minimal | low | medium | high | xhigh
 ```
 
-In the REPL: `/providers`, `/provider <name>`, `/model <name>`, `/effort <level>`, `/status`.
-See [docs/CLI.md](docs/CLI.md).
+`auto` keeps chat (hi/olá) on minimal effort with no tools, and hunt tasks on
+medium with the full tool pack. In the REPL: `/providers`, `/provider`,
+`/model`, `/effort`, `/verbose`, `/status`. See [docs/CLI.md](docs/CLI.md).
 
 Windows notes: [docs/INSTALL_WINDOWS.md](docs/INSTALL_WINDOWS.md)  
 Linux notes: [docs/INSTALL_LINUX.md](docs/INSTALL_LINUX.md)
@@ -69,13 +70,23 @@ and I back off. Reasoning streams live as I think (toggle with `/stream`).
 
 ## Safety
 
-- Every target needs `SCOPE.md`
+- Every target needs `SCOPE.md` (YAML front-matter preferred; Markdown fallback)
 - Tools refuse hosts I haven't confirmed in scope
 - `run_tool` defaults to dry-run; approve asks you first
-- **Every file change asks approval** (path + preview) before it happens
-- Evidence redacts cookies, tokens, emails, common secrets
+- Every file change asks approval (path + preview) before it happens
+- Sensitive paths like `~/.ssh` / `~/.aws` are hard blocked
+- Approvals append to local `audit.log` (gitignored)
+- Evidence redacts cookies, tokens, emails, common secrets (regex is best effort;
+  set `HACKBOT_STRICT_REDACT=1` for a harder refuse-to-save gate)
 - Default brain is offline; I never auto-switch to a paid/cloud model
+- HexStrike is optional third party: loopback only, see
+  [integrations/hexstrike/PROVENANCE.md](integrations/hexstrike/PROVENANCE.md)
 - Read `docs/OPERATING_RULES.md` before real hunting
+
+## Lockfile
+
+Runtime pins: `requirements.lock` (from `requirements.in`). Refresh with
+`pip-compile requirements.in -o requirements.lock`.
 
 ## Low-level commands
 

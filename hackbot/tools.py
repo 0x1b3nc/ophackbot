@@ -7,11 +7,13 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable
 
+from . import ui
+from .audit import log_decision
 from .evidence import EvidenceStore
 from .knowledge import open_notes, required_bundle
 from .planner import plan_step
 from .policy_guard import ScopePolicy, host_from_target, policy_quote_for
-from .redaction import redact_text
+from .redaction import StrictRedactError, redact_text, strict_check, strict_enabled
 from .reporting import render_bugcrowd, render_hackerone, render_intigriti
 from .runners import burp, hexstrike, projectdiscovery, reconftw
 
@@ -249,14 +251,64 @@ def _safe_path(path: str) -> Path:
 def _resolve_path(path: str) -> Path:
     """Resolve for file mutations. Relative -> kit root; absolute allowed.
 
-    We do NOT hard-block paths here: every mutating action is gated by the
-    operator approval instead. The approval prompt always shows the absolute
-    path so you see exactly what's about to change.
+    Sensitive roots are hard-blocked. Everything else still needs operator
+    approval; the prompt always shows the absolute path.
     """
     p = Path(path)
     if not p.is_absolute():
         p = ROOT / p
     return p.resolve()
+
+
+def _sensitive_roots() -> list[Path]:
+    home = Path.home()
+    roots = [
+        home / ".ssh",
+        home / ".aws",
+        home / ".gnupg",
+        Path("/etc"),
+    ]
+    # Windows system config (exists check later)
+    windir = Path.home().anchor  # e.g. C:\
+    if windir and windir != "/":
+        roots.append(Path(windir) / "Windows" / "System32" / "config")
+    return roots
+
+
+def _path_blocked(path: Path) -> str | None:
+    """Return a reason if path sits under a sensitive root, else None."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    for root in _sensitive_roots():
+        try:
+            root_r = root.resolve()
+        except OSError:
+            root_r = root
+        if resolved == root_r or root_r in resolved.parents:
+            return f"path under sensitive root: {root_r}"
+        # Also catch paths that would create under a sensitive dir that may not exist yet
+        try:
+            if resolved.is_relative_to(root_r):
+                return f"path under sensitive root: {root_r}"
+        except (AttributeError, TypeError, ValueError):
+            pass
+    # String fallback for ~/.ssh style when home/.ssh does not exist yet
+    lowered = str(resolved).replace("\\", "/").lower()
+    for marker in ("/.ssh/", "/.aws/", "/.gnupg/", "/etc/"):
+        if marker in lowered or lowered.endswith(marker.rstrip("/")):
+            return f"path looks sensitive ({marker.strip('/')})"
+    return None
+
+
+def _guard_mutate_path(path: Path) -> str | None:
+    """If blocked, return JSON error string; else None."""
+    reason = _path_blocked(path)
+    if reason is None:
+        return None
+    log_decision("DENY", f"path_blocked {path} ({reason})")
+    return json.dumps({"ok": False, "error": reason, "kind": "path_blocked"})
 
 
 def _preview(text: str, limit: int = 500) -> str:
@@ -269,11 +321,18 @@ def _preview(text: str, limit: int = 500) -> str:
 def _require_approval(approve_fn: ApproveFn | None, description: str) -> str | None:
     """Ask the operator. Return a refusal JSON string if denied, else None."""
     if approve_fn is None:
+        log_decision("DENY", f"(no approver) {description}")
         return json.dumps(
-            {"ok": False, "error": "action needs approval but no approver is attached; denied."}
+            {
+                "ok": False,
+                "error": "action needs approval but no approver is attached; denied.",
+                "kind": "denied",
+            }
         )
     if not approve_fn(description):
-        return json.dumps({"ok": False, "error": "operator denied this action."})
+        log_decision("DENY", description)
+        return json.dumps({"ok": False, "error": "operator denied this action.", "kind": "denied"})
+    log_decision("ALLOW", description)
     return None
 
 
@@ -285,8 +344,14 @@ def execute_tool(
 ) -> str:
     try:
         return _execute(name, args, approve_fn=approve_fn)
-    except Exception as exc:  # tool errors become model-visible strings
-        return json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+    except PermissionError as exc:
+        ui.warn(f"scope denial: {exc}")
+        return json.dumps({"ok": False, "error": str(exc), "kind": "scope_denied"})
+    except Exception as exc:
+        ui.error(f"tool bug: {type(exc).__name__}: {exc}")
+        return json.dumps(
+            {"ok": False, "error": f"{type(exc).__name__}: {exc}", "kind": "internal_error"}
+        )
 
 
 def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
@@ -301,13 +366,17 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         if not path.exists():
             return json.dumps({"ok": False, "error": "missing", "path": str(path)})
         max_chars = int(args.get("max_chars") or 8000)
-        text = path.read_text(encoding="utf-8", errors="replace")
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read(max_chars + 1)
+        truncated = len(text) > max_chars
+        if truncated:
+            text = text[:max_chars]
         return json.dumps(
             {
                 "ok": True,
                 "path": str(path),
-                "text": text[:max_chars],
-                "truncated": len(text) > max_chars,
+                "text": text,
+                "truncated": truncated,
             }
         )
 
@@ -370,7 +439,12 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         )
         if refusal:
             return refusal
-        saved = EvidenceStore(target).save(args["name"], args["text"])
+        try:
+            saved = EvidenceStore(target).save(args["name"], args["text"])
+        except StrictRedactError as exc:
+            return json.dumps(
+                {"ok": False, "error": str(exc), "kind": "strict_redact", "reasons": exc.reasons}
+            )
         return json.dumps({"ok": True, "path": str(saved)})
 
     if name == "redact":
@@ -402,6 +476,18 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
                 vulnerability_type=args.get("weakness") or "TBD",
                 **common,
             )
+        body = redact_text(body)
+        if strict_enabled():
+            reasons = strict_check(body)
+            if reasons:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "error": "; ".join(reasons),
+                        "kind": "strict_redact",
+                        "reasons": reasons,
+                    }
+                )
         out = target / "reports" / f"{platform}_draft.md"
         refusal = _require_approval(approve_fn, f"WRITE {platform} report draft to\n  {out}")
         if refusal:
@@ -412,6 +498,9 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
 
     if name == "write_file":
         path = _resolve_path(args["path"])
+        blocked = _guard_mutate_path(path)
+        if blocked:
+            return blocked
         content = args["content"]
         existed = path.exists()
         verb = "OVERWRITE" if existed else "CREATE"
@@ -428,6 +517,9 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
 
     if name == "append_file":
         path = _resolve_path(args["path"])
+        blocked = _guard_mutate_path(path)
+        if blocked:
+            return blocked
         content = args["content"]
         desc = f"APPEND to file\n  {path}\n--- adding ---\n{_preview(content)}"
         refusal = _require_approval(approve_fn, desc)
@@ -440,6 +532,9 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
 
     if name == "edit_file":
         path = _resolve_path(args["path"])
+        blocked = _guard_mutate_path(path)
+        if blocked:
+            return blocked
         if not path.exists():
             return json.dumps({"ok": False, "error": f"missing file: {path}"})
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -468,6 +563,9 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
 
     if name == "delete_path":
         path = _resolve_path(args["path"])
+        blocked = _guard_mutate_path(path)
+        if blocked:
+            return blocked
         if not path.exists():
             return json.dumps({"ok": False, "error": f"nothing at {path}"})
         kind = "directory (recursive)" if path.is_dir() else "file"
@@ -483,6 +581,9 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
 
     if name == "make_dir":
         path = _resolve_path(args["path"])
+        blocked = _guard_mutate_path(path)
+        if blocked:
+            return blocked
         desc = f"CREATE directory\n  {path}"
         refusal = _require_approval(approve_fn, desc)
         if refusal:
@@ -493,6 +594,9 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
     if name == "move_path":
         src = _resolve_path(args["src"])
         dst = _resolve_path(args["dst"])
+        blocked = _guard_mutate_path(src) or _guard_mutate_path(dst)
+        if blocked:
+            return blocked
         if not src.exists():
             return json.dumps({"ok": False, "error": f"missing source: {src}"})
         desc = f"MOVE / RENAME\n  {src}\n  -> {dst}"
@@ -513,12 +617,15 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         if approve:
             prompt = f"Approve ACTIVE traffic?\n  tool={tool}\n  host={host}\n  target={target}"
             if approve_fn is None or not approve_fn(prompt):
+                log_decision("DENY", prompt)
                 return json.dumps(
                     {
                         "ok": False,
                         "error": "operator refused approve (or dry-run only). Re-run with approve=false to preview.",
+                        "kind": "denied",
                     }
                 )
+            log_decision("ALLOW", prompt)
         if tool == "httpx":
             result = projectdiscovery.httpx_probe(target, host, approve=approve)
         elif tool == "katana":

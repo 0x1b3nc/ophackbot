@@ -13,19 +13,28 @@ Business) subscription, so it spends plan quota instead of paid API credit.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 from rich.text import Text as _Text
 
 from . import ui
+from .intent import is_chat_prompt, resolve_effort_for_prompt
 from .llm import streaming_enabled
 
 ApproveFn = Callable[[str], bool]
+
+# Cache for `codex login status` (subprocess is slow).
+_CODEX_AVAIL: tuple[float, bool] | None = None
+_CODEX_AVAIL_TTL = 90.0
+# After the first successful exec in this process, resume --last for speed.
+_CODEX_SESSION_READY = False
 
 
 def ui_text(text: str, style: str) -> _Text:
@@ -116,45 +125,48 @@ def _apply_fileops(ops: list[dict[str, Any]], approve_fn: ApproveFn | None) -> N
 
 ROOT = Path(__file__).resolve().parents[1]
 
-PREAMBLE = """You are Hackbot, my authorized bug-bounty / lab agent, running inside this repository.
+PREAMBLE_CHAT = """You are Hackbot, a short friendly authorized bounty/lab CLI agent.
+Answer briefly in first person. Do NOT read repo files. Do NOT run shell commands.
+Do NOT emit file-op blocks unless the user explicitly asked to create/edit a file.
+If they want hunting work, ask for a concrete task (host, target folder, bug class).
+
+Task:
+"""
+
+PREAMBLE_HUNT = """You are Hackbot, my authorized bug-bounty / lab agent in this repo.
 
 Hard rules:
-- Authorized security research only (bug bounty, my labs, CTFs, contracted pentests, education). Never help attack a host that is not authorized.
-- Read local context before you answer. Relevant files in this repo:
-    docs/OPERATING_RULES.md
-    bounty_knowledge/study_notes/INDEX.md
-    targets/<program>/SCOPE.md, PLAN.md, FINDINGS.md, RESUME.md
-  Open the ones that matter for the task instead of guessing.
-- A host is only IN SCOPE if it appears in that program's SCOPE.md. If it is not there, say so and treat it as inference - do not propose active traffic.
-- For any hunting step, produce: falsifiable hypothesis, target/endpoint, preconditions, aggression level 0-3, a short quote from SCOPE.md that authorizes it, a concrete command, expected evidence, stop criteria, cleanup.
-- Dry-run first. Label any active or aggressive command clearly as "ACTIVE - needs operator approve". You are in a read-only sandbox, so never actually send active traffic; just propose it.
-- Be concise and technical. First person, like my agent ("I'll check the scope, then...").
+- Authorized research only. Never attack unauthorized hosts.
+- Read local context only when the task needs it (SCOPE.md, notes). Skip for small talk.
+- Host is IN SCOPE only if it is in that program's SCOPE.md.
+- For hunt steps: falsifiable hypothesis, endpoint, aggression 0-3, policy quote,
+  concrete command, expected evidence, stop criteria, cleanup.
+- Dry-run first. Label active work "ACTIVE - needs operator approve".
+- Be concise, technical, first person.
 
-Changing files (create / edit / delete / move):
-- You are in a READ-ONLY sandbox and CANNOT write files yourself. Do NOT try to create/edit files with shell commands (New-Item, apply_patch, echo>, etc.) - they fail with Access denied.
-- Instead, when the task needs a file change, EMIT a fenced block that hackbot will run for me. Hackbot writes with plain Python (works ANYWHERE, including Downloads/Desktop, not just this repo) and asks my approval for each operation.
-- Emit ONE block per operation, exactly like this (valid JSON):
+Files: you are READ-ONLY. To change files, emit ONE fenced block per op (hackbot applies it with my approval):
 
 ```hackbot-fileop
-{"op": "write_file", "path": "C:/Users/me/Downloads/teste.md", "content": "full file content here"}
+{"op": "write_file", "path": "C:/Users/me/Downloads/teste.md", "content": "..."}
 ```
 
-  Valid ops and their keys:
-  - {"op":"write_file","path":..,"content":..}   create or overwrite
-  - {"op":"append_file","path":..,"content":..}  append to a file
-  - {"op":"edit_file","path":..,"old_string":..,"new_string":..}  replace exact text
-  - {"op":"delete_path","path":..}               delete a file or directory
-  - {"op":"make_dir","path":..}                  create a directory
-  - {"op":"move_path","src":..,"dst":..}         move or rename
-- Use an absolute path when the user names a location (Downloads, Desktop, etc.). Still explain in prose what you're doing, and put the block(s) in your answer. Only emit a block when a file change is actually requested/needed - never for read-only questions.
+Ops: write_file, append_file, edit_file, delete_path, make_dir, move_path.
+Only emit a block when a file change is actually needed.
 
-Now handle this task:
+Task:
 """
 
 
-def codex_available() -> bool:
-    """True if the codex binary exists and reports a logged-in session."""
+def codex_available(*, force: bool = False) -> bool:
+    """True if the codex binary exists and reports a logged-in session (cached)."""
+    global _CODEX_AVAIL
+    now = time.monotonic()
+    if not force and _CODEX_AVAIL is not None:
+        ts, ok = _CODEX_AVAIL
+        if now - ts < _CODEX_AVAIL_TTL:
+            return ok
     if shutil.which("codex") is None:
+        _CODEX_AVAIL = (now, False)
         return False
     try:
         proc = subprocess.run(
@@ -167,18 +179,33 @@ def codex_available() -> bool:
             stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
+        _CODEX_AVAIL = (now, False)
         return False
     out = (proc.stdout + proc.stderr).lower()
-    return proc.returncode == 0 and "logged in" in out
+    ok = proc.returncode == 0 and "logged in" in out
+    _CODEX_AVAIL = (now, ok)
+    return ok
 
 
-def _build_prompt(user_prompt: str, history: list[tuple[str, str]] | None) -> str:
-    parts = [PREAMBLE]
-    if history:
-        recent = history[-6:]
+def _build_prompt(
+    user_prompt: str,
+    history: list[tuple[str, str]] | None,
+    *,
+    chat_mode: bool,
+    resume: bool,
+) -> str:
+    if resume and history:
+        # Resume already has session context; send a short turn only.
+        recent = history[-4:]
         convo = "\n".join(f"{role}: {text}" for role, text in recent)
-        parts.append("\nRecent conversation (for context):\n" + convo + "\n")
-    parts.append("\nCurrent task:\n" + user_prompt.strip() + "\n")
+        return f"Continue. Recent:\n{convo}\n\nUser: {user_prompt.strip()}\n"
+    preamble = PREAMBLE_CHAT if chat_mode else PREAMBLE_HUNT
+    parts = [preamble]
+    if history and not chat_mode:
+        recent = history[-4:]
+        convo = "\n".join(f"{role}: {text}" for role, text in recent)
+        parts.append("\nRecent conversation:\n" + convo + "\n")
+    parts.append("\n" + user_prompt.strip() + "\n")
     return "\n".join(parts)
 
 
@@ -197,30 +224,42 @@ def run_codex_turn(
     history: list[tuple[str, str]] | None = None,
     model: str | None = None,
     effort: str | None = None,
-    timeout: int = 300,
+    timeout: int | None = None,
     approve_fn: ApproveFn | None = None,
     allow_file_ops: bool = True,
 ) -> str:
     """Run one turn through `codex exec` (read-only) and display the answer.
 
-    Codex never writes files itself (headless sandbox blocks it, even outside the
-    repo). Instead it emits ```hackbot-fileop``` blocks; when ``allow_file_ops``
-    is on, hackbot performs each one via its approve-gated tools (plain Python,
-    so it works anywhere - Downloads, Desktop, etc.), asking permission per
-    operation. Returns the (cleaned) final agent message for history.
+    Chat prompts use a light preamble (no file reads). Hunt prompts use the full
+    preamble. After the first successful turn in-process, later turns use
+    `codex exec resume --last` when enabled (default on).
     """
-    prompt = _build_prompt(user_prompt, history)
+    global _CODEX_SESSION_READY, _CODEX_AVAIL
+    chat_mode = is_chat_prompt(user_prompt)
+    effort = effort if effort is not None else resolve_effort_for_prompt(user_prompt)
+    timeout = timeout if timeout is not None else (90 if chat_mode else 300)
+    resume = (
+        _CODEX_SESSION_READY
+        and bool(history)
+        and os.environ.get("HACKBOT_CODEX_RESUME", "1").strip().lower()
+        not in {"0", "false", "off", "no"}
+    )
+    prompt = _build_prompt(user_prompt, history, chat_mode=chat_mode, resume=resume)
+    ui.info(
+        f"codex  effort={effort or '-'}  mode={'chat' if chat_mode else 'hunt'}"
+        + ("  resume" if resume else "")
+    )
+    started = time.perf_counter()
 
     with tempfile.NamedTemporaryFile(
         "r", suffix=".txt", delete=False, encoding="utf-8"
     ) as handle:
         out_path = Path(handle.name)
 
+    # Flags belong on `codex exec` before the `resume` subcommand.
     cmd = [
         "codex",
         "exec",
-        "--sandbox",
-        "read-only",
         "--skip-git-repo-check",
         "--color",
         "never",
@@ -229,24 +268,36 @@ def run_codex_turn(
         "-o",
         str(out_path),
     ]
-    if model:
+    if not resume:
+        cmd.extend(["--sandbox", "read-only"])
+    if model and not resume:
         cmd.extend(["-m", model])
     if effort:
         level = _CODEX_EFFORT.get(effort)
         if level:
             cmd.extend(["-c", f'model_reasoning_effort="{level}"'])
-
     if streaming_enabled():
-        # --json gives structured events (no giant prompt/file echo). We render
-        # concise progress; the clean final answer still comes from -o.
-        captured = _run_streaming(cmd + ["--json", prompt], timeout)
-    else:
-        captured = _run_quiet(cmd + [prompt], timeout)
+        cmd.append("--json")
+    if resume:
+        cmd.extend(["resume", "--last"])
+    cmd.append(prompt)
 
-    if captured is None:  # launch/timeout error message already returned
+    try:
+        if streaming_enabled():
+            captured = _run_streaming(cmd, timeout)
+        else:
+            captured = _run_quiet(cmd, timeout)
+    except KeyboardInterrupt:
+        out_path.unlink(missing_ok=True)
+        ui.warn("cancelled")
+        ui.turn_timing(time.perf_counter() - started, 0)
+        return "(cancelled)"
+
+    if captured is None:
         out_path.unlink(missing_ok=True)
         answer = "(codex failed to run)"
         ui.markdown_panel(answer, title="hackbot (codex)")
+        ui.turn_timing(time.perf_counter() - started, 0)
         return answer
     stdout, error = captured
 
@@ -260,22 +311,40 @@ def run_codex_turn(
     if not answer:
         low = (error or "").lower()
         if "log in again" in low or ("token" in low and "401" in low):
+            _CODEX_AVAIL = None
             answer = (
                 "codex session expired. Run `codex login` (Sign in with ChatGPT), "
                 "then try again."
             )
             ui.markdown_panel(answer, title="hackbot (codex)")
+            ui.turn_timing(time.perf_counter() - started, 0)
             return answer
+        # Resume can fail if no prior session; fall back once to a fresh exec.
+        if resume and ("resume" in low or "session" in low or "not found" in low):
+            _CODEX_SESSION_READY = False
+            return run_codex_turn(
+                user_prompt,
+                history=history,
+                model=model,
+                effort=effort,
+                timeout=timeout,
+                approve_fn=approve_fn,
+                allow_file_ops=allow_file_ops,
+            )
         answer = (error or "").strip() or "(codex produced no output)"
 
     ops: list[dict[str, Any]] = []
-    if allow_file_ops:
+    if allow_file_ops and not chat_mode:
+        answer, ops = _extract_fileops(answer)
+    elif allow_file_ops and chat_mode:
+        # Still honor an explicit file-op if the model emitted one.
         answer, ops = _extract_fileops(answer)
 
     ui.markdown_panel(answer, title="hackbot (codex)")
-
     if ops:
         _apply_fileops(ops, approve_fn)
+    _CODEX_SESSION_READY = True
+    ui.turn_timing(time.perf_counter() - started, len(ops))
     return answer
 
 
@@ -360,26 +429,27 @@ def _run_streaming(cmd: list[str], timeout: int) -> tuple[str, str] | None:
     errbuf: list[str] = []
     printed_hdr: dict[str, Any] = {}
     assert proc.stdout is not None
-    # A one-line spinner at the bottom; progress lines scroll above it without
-    # flicker (unlike the old growing Live panel). This restores the "thinking"
-    # indicator while codex works.
-    with ui.console.status("[cyan]codex is thinking...[/]", spinner="dots"):
-        for line in proc.stdout:
-            line = line.rstrip("\r\n")
-            if not line:
-                continue
+    try:
+        with ui.console.status("[cyan]codex is thinking...[/]", spinner="dots"):
+            for line in proc.stdout:
+                line = line.rstrip("\r\n")
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    errbuf.append(line)
+                    continue
+                if isinstance(obj, dict):
+                    _handle_event(obj, printed_hdr)
             try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                errbuf.append(line)  # header noise / auth errors
-                continue
-            if isinstance(obj, dict):
-                _handle_event(obj, printed_hdr)
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            return "", f"(codex timed out after {timeout}s)"
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                return "", f"(codex timed out after {timeout}s)"
+    except KeyboardInterrupt:
+        proc.kill()
+        raise
     if printed_hdr.get("v"):
         ui.console.print()
     return "", "\n".join(errbuf)

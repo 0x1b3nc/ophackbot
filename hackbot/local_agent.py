@@ -15,12 +15,11 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable
 
 from . import ui
 from .knowledge import classify
-from .tools import ROOT, TARGETS, execute_tool
+from .tools import TARGETS, execute_tool
 
 ApproveFn = Callable[[str], bool]
 
@@ -476,6 +475,17 @@ def run_local_agent(
     approve_fn: ApproveFn | None = None,
 ) -> None:
     """Read the prompt, show the plan, execute each step. No LLM."""
+    from .intent import is_chat_prompt
+
+    if is_chat_prompt(user_prompt):
+        ui.markdown_panel(
+            "Hey. Offline brain here (no model). I can still run scope checks and "
+            "dry-run tools if you give me a host or target folder.\n\n"
+            "For free-form chat, switch with `/provider` (or `/codex`).",
+            title="hackbot (offline)",
+        )
+        return
+
     interp = interpret(user_prompt)
     plan = build_plan(user_prompt, interp)
 

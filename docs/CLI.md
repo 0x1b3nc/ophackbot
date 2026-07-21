@@ -53,12 +53,18 @@ glm, openrouter, ollama, lmstudio, custom, offline.
 
 ```powershell
 setx HACKBOT_MODEL "o4-mini"          # any model your account supports
-setx HACKBOT_EFFORT "high"            # minimal, low, medium, high, xhigh
+setx HACKBOT_EFFORT "auto"            # auto | minimal | low | medium | high | xhigh
 ```
 
-Effort maps to whatever knob each provider uses: OpenAI and Codex
-`reasoning_effort`, Anthropic thinking budget, OpenRouter `reasoning.effort`, GLM
-thinking. Providers that don't have one just ignore it.
+`auto` (the default) uses **minimal** for chat (hi/olá/thanks) and **medium**
+for hunt tasks. Explicit levels still work. Effort maps to whatever knob each
+provider uses: OpenAI and Codex `reasoning_effort`, Anthropic thinking budget,
+OpenRouter `reasoning.effort`, GLM thinking. Providers that don't have one just
+ignore it.
+
+Chat prompts skip tools and use a short system prompt so a hello stays fast.
+Hunt prompts get the full tool pack. Ctrl+C cancels a running turn.
+`/verbose on` shows full tool panels; off (default) is one line per tool.
 
 Reopen the terminal after `setx` so it picks up the value.
 
@@ -102,7 +108,27 @@ applies it through the same approval gate. That's on by default. Flip it with:
 ```
 
 Active traffic (real requests to a target) and every file change still ask before
-they happen. That part never gets skipped.
+they happen. That part never gets skipped. Approvals also land in `audit.log`
+(gitignored) at the kit root.
+
+### Strict redaction
+
+Regex redact is best effort. Turn on a harder gate when saving evidence or
+report drafts:
+
+```powershell
+setx HACKBOT_STRICT_REDACT "1"
+```
+
+When on, save refuses if the text still looks sensitive or has headers with
+values that are not on a small allowlist (custom stuff like
+`X-Internal-Session: ...` fails closed).
+
+### SCOPE.md
+
+Prefer a YAML front-matter block at the top of `SCOPE.md` for `in_scope`,
+`out_of_scope`, `allowed`, `prohibited`. That is the source of truth. Markdown
+below is for notes. Old Markdown-only scopes still work as a fallback.
 
 ## Low-level commands (optional)
 

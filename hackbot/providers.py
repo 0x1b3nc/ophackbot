@@ -20,8 +20,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-
-EFFORT_LEVELS = ("minimal", "low", "medium", "high", "xhigh")
+EFFORT_LEVELS = ("auto", "minimal", "low", "medium", "high", "xhigh")
 
 _EFFORT_ALIASES = {
     "min": "minimal",
@@ -43,6 +42,7 @@ _EFFORT_ALIASES = {
     "extra-high": "xhigh",
     "max": "xhigh",
     "ultra": "xhigh",
+    "auto": "auto",
 }
 
 
@@ -224,8 +224,14 @@ def _infer_provider() -> str | None:
 
 
 def resolve_config() -> Config:
-    """Resolve provider/model/effort from env. Raises ConfigError if no model."""
-    effort = normalize_effort(os.environ.get("HACKBOT_EFFORT"))
+    """Resolve provider/model/effort from env. Raises ConfigError if no model.
+
+    HACKBOT_EFFORT=auto is stored as None here; call sites resolve per prompt
+    via intent.resolve_effort_for_prompt.
+    """
+    raw_effort = os.environ.get("HACKBOT_EFFORT", "auto")
+    norm = normalize_effort(raw_effort)
+    effort = None if norm in (None, "auto") else norm
 
     forced = os.environ.get("HACKBOT_PROVIDER", "").strip().lower()
     name = forced or _infer_provider() or ""
@@ -235,7 +241,7 @@ def resolve_config() -> Config:
             "  OPENAI_API_KEY / ANTHROPIC_API_KEY / DEEPSEEK_API_KEY / GLM_API_KEY / OPENROUTER_API_KEY\n"
             "  or HACKBOT_BASE_URL (any OpenAI-compatible / local model)\n"
             "  or `codex login` + HACKBOT_PROVIDER=codex (your ChatGPT plan)\n"
-            "Optional: HACKBOT_MODEL, HACKBOT_EFFORT (minimal|low|medium|high|xhigh)."
+            "Optional: HACKBOT_MODEL, HACKBOT_EFFORT (auto|minimal|low|medium|high|xhigh)."
         )
     if name not in PROVIDERS:
         raise ConfigError(f"unknown provider '{name}'. Known: {', '.join(PROVIDERS)}")

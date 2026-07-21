@@ -15,7 +15,6 @@ from .repl import start_repl
 from .reporting import render_bugcrowd, render_hackerone, render_intigriti
 from .runners import burp, hexstrike, projectdiscovery, reconftw
 
-
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = ROOT / "targets"
 TEMPLATE = ROOT / "templates" / "target"

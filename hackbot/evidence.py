@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .redaction import looks_sensitive, redact_text
+from .redaction import StrictRedactError, looks_sensitive, redact_text, strict_check, strict_enabled
 
 
 class EvidenceStore:
@@ -24,22 +24,30 @@ class EvidenceStore:
         content: str,
         *,
         keep_raw: bool = False,
+        strict: bool | None = None,
     ) -> Path:
         """
         Save evidence. Always writes a redacted copy under evidence/safe/.
         Raw (pre-redaction) is only written when keep_raw=True and lands in
         evidence/raw/ which .gitignore excludes from public repos.
+
+        When strict is on (kwarg or HACKBOT_STRICT_REDACT), refuse to write if
+        the redacted text still fails strict_check.
         """
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         safe_name = f"{stamp}_{_safe_filename(name)}"
         redacted = redact_text(content)
+        if strict_enabled(strict):
+            reasons = strict_check(redacted)
+            if reasons:
+                raise StrictRedactError(reasons)
         safe_path = self.safe / safe_name
         safe_path.write_text(redacted, encoding="utf-8")
         if keep_raw:
             raw_path = self.raw / safe_name
             raw_path.write_text(content, encoding="utf-8")
         if looks_sensitive(redacted):
-            # Still write, but flag for the operator.
+            # Still write (non-strict), but flag for the operator.
             flag = self.safe / f"{safe_name}.SENSITIVE_WARNING"
             flag.write_text(
                 "Redaction may be incomplete. Review before sharing or committing.\n",

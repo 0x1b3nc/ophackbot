@@ -17286,4 +17286,5 @@ if __name__ == "__main__":
         if line.strip():
             logger.info(line)
 
-    app.run(host="0.0.0.0", port=API_PORT, debug=DEBUG_MODE)
+    # Loopback only. Do not bind 0.0.0.0; this server executes shell commands.
+    app.run(host="127.0.0.1", port=API_PORT, debug=DEBUG_MODE)

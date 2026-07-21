@@ -255,17 +255,23 @@ def plain(text: str) -> None:
     console.print(text)
 
 
+def tool_line(name: str, status: str = "ok") -> None:
+    """One-line tool progress (compact UI)."""
+    style = "hb.ok" if status in {"ok", "done"} else ("hb.bad" if status in {"fail", "error"} else "hb.muted")
+    console.print(Text.from_markup(f"[hb.muted]tool[/] [hb.cmd]{name}[/] [{style}]{status}[/]"))
+
+
+def turn_timing(seconds: float, tools_used: int = 0) -> None:
+    console.print(
+        Text(f"{seconds:.1f}s · {tools_used} tool{'s' if tools_used != 1 else ''}", style="hb.muted")
+    )
+
+
 class Stream:
     """Append-only (typewriter) streaming. No live re-render, so no flicker.
 
-    Reasoning is printed dim under a "thinking" header; the answer prints in a
-    brighter style under an "answer" rule. Content just scrolls naturally like
-    Claude Code / Codex, instead of redrawing a panel every token.
-
-    Usage:
-        with ui.Stream(title="hackbot") as s:
-            s.reasoning("...")   # thinking tokens
-            s.answer("...")      # final answer tokens
+    Shows a spinner until the first token arrives, then streams thinking (dim)
+    and the answer under a rule.
     """
 
     def __init__(self, title: str = "hackbot") -> None:
@@ -273,13 +279,22 @@ class Stream:
         self._answer: list[str] = []
         self._started_reasoning = False
         self._started_answer = False
+        self._status = None
 
     def __enter__(self) -> "Stream":
+        self._status = console.status("[cyan]thinking...[/]", spinner="dots")
+        self._status.start()
         return self
+
+    def _stop_wait(self) -> None:
+        if self._status is not None:
+            self._status.stop()
+            self._status = None
 
     def reasoning(self, delta: str) -> None:
         if not delta:
             return
+        self._stop_wait()
         if not self._started_reasoning:
             console.print(Text("thinking", style="hb.label"))
             self._started_reasoning = True
@@ -288,6 +303,7 @@ class Stream:
     def answer(self, delta: str) -> None:
         if not delta:
             return
+        self._stop_wait()
         if not self._started_answer:
             if self._started_reasoning:
                 console.print()  # close the reasoning block
@@ -303,5 +319,6 @@ class Stream:
         return "".join(self._answer)
 
     def __exit__(self, *exc: object) -> None:
+        self._stop_wait()
         if self._started_reasoning or self._started_answer:
             console.print()

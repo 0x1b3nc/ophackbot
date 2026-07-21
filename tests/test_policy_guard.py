@@ -12,7 +12,6 @@ from hackbot.policy_guard import (
     policy_quote_for,
 )
 
-
 SCOPE = """# Scope
 
 ## In Scope
@@ -113,6 +112,39 @@ class PolicyGuardTests(unittest.TestCase):
         policy = self._policy()
         quote = policy_quote_for(policy, 1)
         self.assertTrue(len(quote) > 0)
+
+    def test_yaml_front_matter_is_source_of_truth(self) -> None:
+        yaml_scope = """---
+in_scope:
+  - example.com
+  - "*.api.demo.test"
+out_of_scope:
+  - "*.example.net"
+  - admin.example.com
+allowed:
+  - Passive recon
+prohibited:
+  - DoS
+---
+
+# Notes
+
+Prose mentioning evil.com here must not put it in scope.
+"""
+        policy = self._policy(yaml_scope)
+        self.assertTrue(policy.structured)
+        self.assertTrue(policy.contains_host("example.com"))
+        self.assertTrue(policy.contains_host("v1.api.demo.test"))
+        self.assertFalse(policy.contains_host("evil.com"))
+        self.assertTrue(policy.is_explicitly_out_of_scope("foo.example.net"))
+        self.assertTrue(policy.is_explicitly_out_of_scope("admin.example.com"))
+        with self.assertRaises(PermissionError):
+            policy.assert_host_allowed("evil.com")
+
+    def test_markdown_fallback_still_works(self) -> None:
+        policy = self._policy(SCOPE)
+        self.assertFalse(policy.structured)
+        self.assertTrue(policy.contains_host("example.com"))
 
 
 if __name__ == "__main__":

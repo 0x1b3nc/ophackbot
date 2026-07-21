@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
 .venv/
+
+# Operator approval trail (local only)
+audit.log
 venv/
 env/
 .env

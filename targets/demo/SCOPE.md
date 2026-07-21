@@ -1,14 +1,21 @@
+---
+in_scope:
+  - example.com
+out_of_scope:
+  - "*.example.net"
+allowed:
+  - Passive recon
+prohibited:
+  - DoS
+  - Brute force
+  - Credential stuffing
+  - Spam
+  - Destructive actions
+---
+
 # Scope
 
 Demo program for smoke-testing the kit. Not a real bounty.
-
-## In Scope
-
-- `example.com`
-
-## Out of Scope
-
-- `*.example.net`
 
 ## Required Headers / Identity
 
@@ -17,15 +24,3 @@ Demo program for smoke-testing the kit. Not a real bounty.
 ## Rate Limits / Automation
 
 - Not confirmed yet. I treat active scanning as off-limits until the policy says otherwise.
-
-## Explicitly Allowed
-
-- Passive recon
-
-## Explicitly Prohibited
-
-- DoS
-- Brute force
-- Credential stuffing
-- Spam
-- Destructive actions

@@ -1,0 +1,4 @@
+# Runtime deps for hackbot-kit. Refresh with:
+#   pip-compile requirements.in -o requirements.lock
+rich>=13.7
+pyyaml>=6.0

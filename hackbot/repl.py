@@ -18,7 +18,6 @@ from rich.prompt import Confirm, Prompt
 from . import ui
 from .agent import run_agent
 from .codex_backend import codex_available, run_codex_turn
-from .llm import LLMError
 from .local_agent import run_local_agent
 from .providers import (
     EFFORT_LEVELS,
@@ -86,27 +85,42 @@ class _Session:
         self.codex_history.clear()
 
 
+def _prompt_label(mode: str) -> str:
+    effort = os.environ.get("HACKBOT_EFFORT", "auto") or "auto"
+    short = mode if mode != "model" else "model"
+    return f"{short} · {effort}"
+
+
 def _run_turn(mode: str, text: str, session: _Session) -> None:
-    if mode == "model":
-        run_agent(text, history=session.model_history, approve_fn=_approve)
-    elif mode == "codex":
-        model = os.environ.get("HACKBOT_MODEL") or None
-        effort = normalize_effort(os.environ.get("HACKBOT_EFFORT"))
-        # File ops are ON by default; each op still asks approval. Turn the whole
-        # capability off with /codex-write (codex becomes a read-only advisor).
-        allow_file_ops = os.environ.get("HACKBOT_CODEX_FILEOPS", "1").strip() not in {"0", "false", "off", "no"}
-        answer = run_codex_turn(
-            text,
-            history=session.codex_history,
-            model=model,
-            effort=effort,
-            approve_fn=_approve,
-            allow_file_ops=allow_file_ops,
-        )
-        session.codex_history.append(("user", text))
-        session.codex_history.append(("hackbot", answer))
-    else:
-        run_local_agent(text, approve_fn=_approve)
+    try:
+        if mode == "model":
+            run_agent(text, history=session.model_history, approve_fn=_approve)
+        elif mode == "codex":
+            model = os.environ.get("HACKBOT_MODEL") or None
+            # File ops ON by default; each op still asks approval.
+            allow_file_ops = os.environ.get("HACKBOT_CODEX_FILEOPS", "1").strip() not in {
+                "0",
+                "false",
+                "off",
+                "no",
+            }
+            answer = run_codex_turn(
+                text,
+                history=session.codex_history,
+                model=model,
+                approve_fn=_approve,
+                allow_file_ops=allow_file_ops,
+            )
+            if answer != "(cancelled)":
+                session.codex_history.append(("user", text))
+                session.codex_history.append(("hackbot", answer))
+                # Cap codex history too
+                if len(session.codex_history) > 12:
+                    del session.codex_history[: len(session.codex_history) - 12]
+        else:
+            run_local_agent(text, approve_fn=_approve)
+    except KeyboardInterrupt:
+        ui.warn("cancelled")
 
 
 def _cmd_providers() -> None:
@@ -159,7 +173,8 @@ def start_repl(*, one_shot: str | None = None) -> int:
 
     while True:
         try:
-            user = Prompt.ask("[bold cyan]hackbot[/]")
+            tag = _prompt_label(mode)
+            user = Prompt.ask(f"[bold cyan]hackbot[/] [dim]· {tag}[/]")
         except (EOFError, KeyboardInterrupt):
             ui.console.print()
             ui.info("bye")
@@ -202,6 +217,8 @@ def start_repl(*, one_shot: str | None = None) -> int:
             continue
         if text in {"/codex"}:
             os.environ["HACKBOT_PROVIDER"] = "codex"
+            # Force a fresh login-status check when the user asks for codex.
+            codex_available(force=True)
             mode, label = _resolve_mode()
             if mode == "codex":
                 ui.success(f"switched to codex  ({label})")
@@ -249,8 +266,9 @@ def start_repl(*, one_shot: str | None = None) -> int:
         if text.startswith("/effort"):
             arg = text[len("/effort"):].strip()
             if not arg:
-                ui.kv("effort", os.environ.get("HACKBOT_EFFORT") or "(provider default)")
+                ui.kv("effort", os.environ.get("HACKBOT_EFFORT", "auto"))
                 ui.info("levels: " + " | ".join(EFFORT_LEVELS))
+                ui.info("auto = minimal for chat, medium for hunt tasks")
                 ui.info("set with:  /effort <level>")
                 continue
             level = normalize_effort(arg)
@@ -276,16 +294,31 @@ def start_repl(*, one_shot: str | None = None) -> int:
                 ui.info("set with:  /stream on | off")
             continue
 
+        if text.startswith("/verbose"):
+            arg = text[len("/verbose"):].strip().lower()
+            if arg in {"on", "1", "true"}:
+                os.environ["HACKBOT_VERBOSE"] = "1"
+                ui.success("verbose tool panels ON")
+            elif arg in {"off", "0", "false"}:
+                os.environ["HACKBOT_VERBOSE"] = "0"
+                ui.success("verbose tool panels OFF (compact lines)")
+            else:
+                cur = os.environ.get("HACKBOT_VERBOSE", "").strip().lower() in {"1", "true", "yes", "on"}
+                ui.kv("verbose", "on" if cur else "off")
+                ui.info("set with:  /verbose on | off")
+            continue
+
         if text == "/help":
             ui.info("just talk. examples:")
             ui.info("  check if example.com is in scope for targets/demo")
             ui.info("  open IDOR notes and draft a hunt plan for example.com/api/orders/1")
             ui.info("provider: /providers  /provider <name>  (/codex /local)")
             ui.info("model:    /models  /model <name>")
-            ui.info("effort:   /effort <minimal|low|medium|high|xhigh>")
+            ui.info("effort:   /effort <auto|minimal|low|medium|high|xhigh>")
             ui.info("stream:   /stream on|off   (live reasoning)")
-            ui.info("codex:    /codex-write     (toggle codex file changes; on by default, asks per edit)")
-            ui.info("session:  /status  /clear  /exit")
+            ui.info("verbose:  /verbose on|off  (full tool panels)")
+            ui.info("codex:    /codex-write     (toggle codex file changes; on by default)")
+            ui.info("session:  /status  /clear  /exit   (Ctrl+C cancels a running turn)")
             continue
 
         _run_turn(mode, text, session)
