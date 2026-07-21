@@ -1,10 +1,10 @@
 """Bridge to the OpenAI Codex CLI so hackbot can think using your ChatGPT plan.
 
-This shells out to `codex exec` (non-interactive) with a read-only sandbox.
-Codex reasons over the real repo (it can read SCOPE.md, notes, docs itself),
-then prints a final answer. Active traffic never happens here: the sandbox is
-read-only, so Codex can *propose* commands but the operator still runs anything
-active through hackbot's own approve-gated runners.
+Shells out to ``codex exec``. Sandbox is NOT stuck on read-only anymore:
+hunt needs network + /tmp (httpx/curl). Default is workspace-write with
+network; ``/yolo`` uses danger-full-access. Override with
+``HACKBOT_CODEX_SANDBOX``. File writes for SCOPE etc. still prefer
+``hackbot-fileop`` so the operator approve gate (or YOLO) applies.
 
 Uses whatever auth `codex login` set up - typically your ChatGPT (Plus/Pro/
 Business) subscription, so it spends plan quota instead of paid API credit.
@@ -36,15 +36,33 @@ _CODEX_AVAIL: tuple[float, bool] | None = None
 _CODEX_AVAIL_TTL = 90.0
 # After the first successful exec in this process, resume --last for speed.
 _CODEX_SESSION_READY = False
+_CODEX_LAST_SANDBOX: str | None = None
+
+_SANDBOX_OK = frozenset({"read-only", "workspace-write", "danger-full-access"})
 
 
 def ui_text(text: str, style: str) -> _Text:
     return _Text(text, style=style)
 
 
-# Codex runs read-only and never writes files itself. Instead it emits
-# ```hackbot-fileop``` blocks describing the change; hackbot performs them with
-# plain Python (works anywhere, e.g. Downloads) and asks approval per operation.
+def codex_sandbox_mode() -> str:
+    """Pick Codex OS sandbox. read-only breaks live hunt (no net, no /tmp)."""
+    raw = (os.environ.get("HACKBOT_CODEX_SANDBOX") or "").strip().lower()
+    if raw in _SANDBOX_OK:
+        return raw
+    try:
+        from .yolo import is_yolo
+
+        if is_yolo():
+            return "danger-full-access"
+    except Exception:  # noqa: BLE001
+        pass
+    # Default: write workspace + /tmp, and enable network (see cmd builder).
+    return "workspace-write"
+
+
+# Prefer hackbot-fileop for disk mutations (approve/YOLO audit). Shell may have
+# network depending on sandbox — do not claim "read-only forever".
 _FILEOP_RE = re.compile(r"```hackbot-fileop\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 
 _FILEOP_ALIASES = {
@@ -201,18 +219,21 @@ def file_mutation_result(tool: str, result_json: str) -> dict[str, Any] | None:
 ROOT = Path(__file__).resolve().parents[1]
 
 _FILEOP_RULES = """
-Files: your Codex sandbox is READ-ONLY — you never write disks yourself.
-When the user asks to create/edit/delete a file, emit ONE fenced hackbot-fileop
-block; Hackbot applies it (kit, home, Downloads, Desktop) after operator approve.
-NEVER say you can only write inside the repo/kit. Downloads/Desktop ARE allowed.
+Files: for SCOPE/accounts/notes the operator cares about, emit ONE fenced
+hackbot-fileop block; Hackbot applies it (kit, home, Downloads, Desktop) after
+approve (auto under YOLO). Prefer that over raw shell redirects for those files.
+Downloads/Desktop ARE allowed — never say you can only write inside the kit.
 
 ```hackbot-fileop
 {"op": "write_file", "path": "C:/Users/me/Downloads/teste.md", "content": "# teste\\n"}
 ```
 
 Ops: write_file, append_file, edit_file, delete_path, make_dir, move_path.
-After you emit a file-op, hackbot applies it (with approve) and automatically
-continues you — do not stop the job waiting for the user to re-ask.
+After you emit a file-op, hackbot applies it and continues you automatically.
+Shell may have network + /tmp (not a read-only sandbox). Prefer hackbot tools
+(http_request, run_tool, burp_ensure, stack_prepare) when they fit; raw curl is
+ok for quick probes. Do NOT claim "network: restricted" or "/tmp read-only"
+unless a command actually failed with that error in THIS turn.
 """
 
 PREAMBLE_CHAT = """You are Hackbot, a short friendly authorized bounty/lab CLI agent.
@@ -401,16 +422,17 @@ def run_codex_turn(
     _fileop_depth: int = 0,
     _orig_user_prompt: str | None = None,
 ) -> str:
-    """Run one turn through `codex exec` (read-only) and display the answer.
+    """Run one turn through ``codex exec`` and display the answer.
 
     Chat prompts use a light preamble (no file reads). Hunt prompts use the full
-    preamble. After the first successful turn in-process, later turns use
-    `codex exec resume --last` when enabled (default on).
+    preamble. Sandbox defaults to workspace-write+network (YOLO → danger-full-access).
+    After the first successful turn in-process, later turns use
+    ``codex exec resume --last`` when enabled (default on).
 
     After approved file-ops, automatically continues Codex so setup writes
     (SCOPE.md etc.) do not strand the hunt waiting for the user to re-ask.
     """
-    global _CODEX_SESSION_READY, _CODEX_AVAIL
+    global _CODEX_SESSION_READY, _CODEX_AVAIL, _CODEX_LAST_SANDBOX
     orig = _orig_user_prompt if _orig_user_prompt is not None else user_prompt
     if allow_file_ops and _fileop_depth == 0:
         direct = _try_direct_file_create(user_prompt, approve_fn)
@@ -442,9 +464,18 @@ def run_codex_turn(
         and os.environ.get("HACKBOT_CODEX_RESUME", "1").strip().lower()
         not in {"0", "false", "off", "no"}
     )
+    sandbox = codex_sandbox_mode()
+    # Resume keeps the OLD session sandbox — if policy changed (e.g. /yolo on),
+    # start fresh so network//tmp actually unlock.
+    if resume and _CODEX_LAST_SANDBOX and _CODEX_LAST_SANDBOX != sandbox:
+        resume = False
+        _CODEX_SESSION_READY = False
+        ui.warn(f"codex sandbox changed ({_CODEX_LAST_SANDBOX} → {sandbox}); fresh exec")
+
     prompt = _build_prompt(user_prompt, history, chat_mode=chat_mode, resume=resume)
     ui.info(
         f"codex  effort={effort or '-'}  mode={'chat' if chat_mode else 'hunt'}"
+        + f"  sandbox={sandbox}"
         + ("  resume" if resume else "")
         + (f"  after-fileop-{_fileop_depth}" if _fileop_depth else "")
     )
@@ -468,9 +499,12 @@ def run_codex_turn(
         str(ROOT),
         "-o",
         str(out_path),
+        "--sandbox",
+        sandbox,
     ]
-    if not resume:
-        cmd.extend(["--sandbox", "read-only"])
+    # workspace-write defaults to NO network — that is exactly the "curl blocked" bug.
+    if sandbox == "workspace-write":
+        cmd.extend(["-c", "sandbox_workspace_write.network_access=true"])
     if model and not resume:
         cmd.extend(["-m", model])
     if effort:
@@ -546,6 +580,7 @@ def run_codex_turn(
     if ops:
         applied = _apply_fileops(ops, approve_fn)
     _CODEX_SESSION_READY = True
+    _CODEX_LAST_SANDBOX = sandbox
 
     if (
         allow_file_ops

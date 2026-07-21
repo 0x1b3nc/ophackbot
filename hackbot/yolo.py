@@ -44,6 +44,14 @@ def enable_yolo(*, quiet: bool = False) -> None:
         _YOLO_ENABLED_FORCE = True
     else:
         _YOLO_ENABLED_FORCE = False
+    # Drop Codex resume so next turn gets danger-full-access (not old read-only session).
+    try:
+        from . import codex_backend
+
+        codex_backend._CODEX_SESSION_READY = False
+        codex_backend._CODEX_LAST_SANDBOX = None
+    except Exception:  # noqa: BLE001
+        pass
     if not quiet:
         ui.markdown_panel(YOLO_BANNER, title="yolo")
     log_decision("ALLOW", "yolo ON", kind="yolo", extra={"force": is_forced()})

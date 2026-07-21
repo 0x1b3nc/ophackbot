@@ -13,11 +13,24 @@ from hackbot.codex_backend import (
     _build_prompt,
     _fileop_continue_prompt,
     _try_direct_file_create,
+    codex_sandbox_mode,
     run_codex_turn,
 )
 
 
 class CodexFileCreateTests(unittest.TestCase):
+    def test_sandbox_default_allows_network_writes(self) -> None:
+        with mock.patch.dict(os.environ, {"HACKBOT_CODEX_SANDBOX": ""}, clear=False):
+            os.environ.pop("HACKBOT_CODEX_SANDBOX", None)
+            with mock.patch("hackbot.yolo.is_yolo", return_value=False):
+                self.assertEqual(codex_sandbox_mode(), "workspace-write")
+            with mock.patch("hackbot.yolo.is_yolo", return_value=True):
+                self.assertEqual(codex_sandbox_mode(), "danger-full-access")
+        with mock.patch.dict(
+            os.environ, {"HACKBOT_CODEX_SANDBOX": "read-only"}, clear=False
+        ):
+            self.assertEqual(codex_sandbox_mode(), "read-only")
+
     def test_resume_prompt_restates_fileop_rules(self) -> None:
         prompt = _build_prompt(
             "criar um .md chamado scopetest na pasta de downloads",
