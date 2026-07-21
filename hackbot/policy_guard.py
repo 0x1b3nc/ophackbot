@@ -75,6 +75,7 @@ TOOL_AGGRESSION: dict[str, int] = {
     "oauth_probe": 2,
     "jwt_active": 2,
     "http_request": 2,
+    "extract_page": 1,
     "httpx": 1,
     "katana": 1,
     "subfinder": 1,

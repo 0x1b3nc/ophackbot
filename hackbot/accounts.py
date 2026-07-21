@@ -143,3 +143,59 @@ def ensure_accounts_example(target_dir: Path) -> Path:
     )
     dest.write_text(sample, encoding="utf-8")
     return dest
+
+
+def save_account(
+    target_dir: Path,
+    name: str,
+    *,
+    username: str | None = None,
+    password: str | None = None,
+    role: str | None = None,
+) -> AccountsFile:
+    """Merge one account into secrets/accounts.yaml (preserve login: and other accounts)."""
+    path = accounts_path(target_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw: dict[str, Any] = {}
+    if path.exists():
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            if isinstance(loaded, dict):
+                raw = loaded
+        except Exception:  # noqa: BLE001
+            raw = {}
+    accounts = raw.get("accounts")
+    if not isinstance(accounts, dict):
+        accounts = {}
+    key = str(name).strip() or "A"
+    # Prefer existing casing (A/B)
+    for existing in list(accounts.keys()):
+        if str(existing).lower() == key.lower():
+            key = str(existing)
+            break
+    entry = dict(accounts.get(key) or {}) if isinstance(accounts.get(key), dict) else {}
+    if username is not None:
+        entry["username"] = str(username)
+        entry.pop("email", None)
+        entry.pop("user", None)
+    if password is not None:
+        entry["password"] = str(password)
+    if role is not None:
+        entry["role"] = str(role)
+    elif "role" not in entry:
+        entry["role"] = "user"
+    accounts[key] = entry
+    raw["accounts"] = accounts
+    if "login" not in raw or not isinstance(raw.get("login"), dict):
+        raw["login"] = {
+            "path": "/login",
+            "method": "POST",
+            "user_field": "username",
+            "pass_field": "password",
+            "csrf_field": "csrf_token",
+        }
+    path.write_text(
+        yaml.safe_dump(raw, default_flow_style=False, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    return load_accounts(target_dir)

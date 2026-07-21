@@ -200,9 +200,19 @@ fetches re-check the **effective destination** each hop. See [SAFETY_MODEL.md](S
 
 ```text
 as credenciais estão no arquivo tokens.yaml em Downloads; depois explora o que der em example.com approve
-leia a imagem Desktop/scope.png e resume o que está in-scope
+conta A email user@x.com senha Secret123 em targets/demo
+extrai o conteúdo de https://example.com/login
+crie um arquivo na pasta Downloads chamado notes.md com o texto: hello
+leia a imagem Desktop/scope.png e salva os hosts no SCOPE
 explora vulnerabilidades em example.com
 ```
+
+| Pedido natural | Tool |
+| --- | --- |
+| Conta A/B + email/senha / `accounts.yaml` | `set_account` |
+| Extrair / resumir página | `extract_page` |
+| Criar/editar/apagar arquivo ou pasta | `write_file` / `edit_file` / `delete_path` / `make_dir` |
+| Ler imagem / screenshot | `read_image` (+ SCOPE se pedir) |
 
 Slash commands below are optional shortcuts.
 

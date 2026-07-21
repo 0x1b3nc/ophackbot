@@ -322,6 +322,146 @@ def _default_new_file_content(path: str) -> str:
     return ""
 
 
+def _parse_file_content(text: str) -> str | None:
+    """Pull explicit file body from NL ('com o texto', content:, triple quotes)."""
+    m = re.search(r'(?is)(?:```|""")\s*(.*?)\s*(?:```|""")', text)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    m = re.search(
+        r"(?is)(?:com\s+o\s+texto|escrevendo|content)\s*[:=]\s*[\"'](.+?)[\"']\s*$",
+        text,
+    )
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    m = re.search(
+        r"(?is)(?:com\s+o\s+texto|escrevendo|content)\s*[:=]\s*(.+)$",
+        text,
+    )
+    if m and m.group(1).strip():
+        body = m.group(1).strip().strip("\"'")
+        if body and len(body) < 20_000:
+            return body
+    m = re.search(r"(?is)\b(?:dizendo|saying)\s+[\"'](.+?)[\"']\s*$", text)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    return None
+
+
+def _parse_edit_replace(text: str) -> tuple[str, str] | None:
+    """Parse 'troca X por Y' / 'replace X with Y' → (old, new)."""
+    m = re.search(
+        r"(?is)(?:troca|substitu[ia]|replace)\s+[\"'](.+?)[\"']\s+"
+        r"(?:por|with|by|para)\s+[\"'](.+?)[\"']",
+        text,
+    )
+    if m:
+        return m.group(1), m.group(2)
+    m = re.search(
+        r"(?is)(?:troca|substitu[ia]|replace)\s+(\S+)\s+(?:por|with|by|para)\s+(\S+)",
+        text,
+    )
+    if m:
+        return m.group(1), m.group(2)
+    return None
+
+
+def _parse_set_account(text: str) -> dict[str, str] | None:
+    """Extract account slot + username/email + password from NL."""
+    name = ""
+    # Require whitespace so "accounts.yaml" does not become name="s"
+    m_name = re.search(
+        r"(?i)\b(?:conta|account)\s+([A-Za-z0-9_-]{1,12})\b",
+        text,
+    )
+    if m_name:
+        name = m_name.group(1)
+    if not name:
+        # Standalone A/B only (not the local-part of an email like a@x.com)
+        m_ab = re.search(r"(?i)\b(?:accounts?\.ya?ml).*?\b([AB])\b(?!@)", text)
+        if m_ab:
+            name = m_ab.group(1).upper()
+        elif re.search(r"(?i)\baccounts?\.ya?ml\b", text):
+            name = "A"
+    if not name:
+        return None
+    if name.upper() in {"A", "B"}:
+        name = name.upper()
+
+    username = ""
+    password = ""
+    m_email = re.search(
+        r"(?i)(?:e-?mail|username|usu[aá]rio|user)\s*[:=]?\s*"
+        r"([^\s\"']+@[^\s\"']+|[^\s\"']+)",
+        text,
+    )
+    if m_email:
+        username = m_email.group(1).strip(".,;")
+    if not username:
+        m_bare = re.search(r"(?i)\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b", text)
+        if m_bare:
+            username = m_bare.group(1)
+
+    m_pass = re.search(
+        r"(?i)(?:senha|password|pass|pwd)\s*[:=]?\s*[\"']?([^\s\"']+)[\"']?",
+        text,
+    )
+    if m_pass:
+        password = m_pass.group(1).strip(".,;")
+
+    if not username and not password:
+        return None
+    return {"name": name, "username": username, "password": password}
+
+
+def _wants_set_account(text: str) -> bool:
+    """True when operator is writing login creds — not bare 'login com accounts.yaml'."""
+    has_cred_value = bool(
+        re.search(r"(?i)(?:senha|password|pass|pwd)\s*[:=]?\s*\S+", text)
+        or re.search(r"(?i)(?:e-?mail|username|usu[aá]rio|user)\s*[:=]?\s*\S+", text)
+        or re.search(r"(?i)\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", text)
+    )
+    if not has_cred_value:
+        return False
+    write_hint = _wants(
+        text,
+        "coloca",
+        "coloque",
+        "altera",
+        "alterar",
+        "set account",
+        "set_account",
+        "grava",
+        "gravar",
+        "update account",
+        "accounts.yaml",
+        "accounts.yml",
+        "conta a",
+        "conta b",
+        "account a",
+        "account b",
+    ) or bool(re.search(r"(?i)\b(?:conta|account)\s+[AB]\b", text))
+    return write_hint
+
+
+def _hosts_from_text(blob: str) -> list[str]:
+    hosts: list[str] = []
+    seen: set[str] = set()
+    for m in re.finditer(
+        r"(?i)\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,})\b",
+        blob or "",
+    ):
+        h = m.group(1).lower().rstrip(".")
+        if h in seen or h.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+            continue
+        if h in {"example.com", "localhost.localdomain"}:
+            continue
+        seen.add(h)
+        hosts.append(h)
+        if len(hosts) >= 12:
+            break
+    return hosts
+
+
 def interpret(text: str) -> Interpretation:
     full_target, host = _detect_targets(text)
     tool = _detect_tool(text)
@@ -365,6 +505,9 @@ def interpret(text: str) -> Interpretation:
         intents.append("redact")
     if _wants(text, "read ", "show me", "open the", "context", "abre o", "abre a", "leia ", "ler "):
         intents.append("read")
+    # Accounts (login email/password) before sessions (bearer/cookie)
+    if _wants_set_account(text):
+        intents.append("set_account")
     # Sessions: slash commands are optional — NL + file paths are first-class
     if _wants(
         text,
@@ -393,7 +536,7 @@ def interpret(text: str) -> Interpretation:
         "conta b",
         "account a",
         "account b",
-    ):
+    ) and "set_account" not in intents:
         intents.append("set_session")
     if _wants(
         text,
@@ -420,6 +563,25 @@ def interpret(text: str) -> Interpretation:
         "ocr",
     ):
         intents.append("read_image")
+    if _wants(
+        text,
+        "extrai o conteudo",
+        "extrai o conteúdo",
+        "extraia o conteudo",
+        "extraia o conteúdo",
+        "extrair conteudo",
+        "extrair conteúdo",
+        "extract page",
+        "extract the page",
+        "resume a pagina",
+        "resume a página",
+        "resumir a pagina",
+        "resumir a página",
+        "pega o texto da pagina",
+        "pega o texto da página",
+        "scrape the page",
+    ):
+        intents.append("extract_page")
     if _wants(text, ".har", "har file", "arquivo har", "burp export", "proxy history", "import har"):
         intents.append("import_har")
     if _wants(text, "jwt", "json web token", "decode jwt", "analisa jwt", "analyze jwt"):
@@ -495,7 +657,7 @@ def interpret(text: str) -> Interpretation:
         "usa accounts",
         "login com accounts",
         "autentica a/b",
-    ):
+    ) and "set_account" not in intents:
         intents.append("session_bootstrap")
     if _wants(text, "ssrf", "server-side request", "metadata.google", "169.254.169.254"):
         intents.append("ssrf")
@@ -806,7 +968,7 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
     if "write_file" in intents:
         path = _parse_create_file_path(text)
         if path:
-            content = _default_new_file_content(path)
+            content = _parse_file_content(text) or _default_new_file_content(path)
             plan.append(
                 Action(
                     f"Criar arquivo `{path}` (pede approve antes de gravar).",
@@ -822,7 +984,8 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
                     {
                         "message": (
                             "ex: crie um arquivo na pasta Downloads chamado scope.md\n"
-                            "ou: create file C:/Users/me/Downloads/notes.txt"
+                            "ou: create file C:/Users/me/Downloads/notes.txt\n"
+                            "com conteúdo: com o texto: ..."
                         )
                     },
                 )
@@ -935,6 +1098,95 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
                 {"target_dir": interp.target_dir},
             )
         )
+
+    if "set_account" in intents:
+        slots = _parse_set_account(text)
+        if slots and (slots.get("username") or slots.get("password")):
+            args = {
+                "target_dir": interp.target_dir,
+                "name": slots["name"],
+            }
+            if slots.get("username"):
+                args["username"] = slots["username"]
+            if slots.get("password"):
+                args["password"] = slots["password"]
+            plan.append(
+                Action(
+                    f"Gravar conta {slots['name']} em accounts.yaml (approve).",
+                    "set_account",
+                    args,
+                )
+            )
+        else:
+            plan.append(
+                Action(
+                    "Preciso de conta A/B + email/senha.",
+                    "_note",
+                    {
+                        "message": (
+                            "ex: conta A email user@x.com senha Secret123 em targets/demo\n"
+                            "ou: set account B username=b@x.com password=pass"
+                        )
+                    },
+                )
+            )
+        # Operator credential write is a single-job turn (don't also hunt)
+        return plan
+
+    if "extract_page" in intents and (target or host):
+        url = target if target and "://" in str(target) else (f"https://{host}/" if host else "")
+        if url:
+            plan.append(
+                Action(
+                    f"Extrair conteúdo de {url} (dry-run unless approve).",
+                    "extract_page",
+                    {
+                        "target_dir": interp.target_dir,
+                        "url": url,
+                        "approve": interp.approve,
+                        "force": interp.force,
+                    },
+                )
+            )
+        else:
+            plan.append(
+                Action(
+                    "Qual URL extrair?",
+                    "_note",
+                    {"message": "ex: extrai o conteúdo de https://example.com/login"},
+                )
+            )
+        return plan
+
+    if "edit_file" in intents:
+        paths = extract_path_mentions(text)
+        path = paths[0] if paths else _parse_create_file_path(text)
+        repl = _parse_edit_replace(text)
+        if path and repl:
+            plan.append(
+                Action(
+                    f"Editar `{path}` (approve).",
+                    "edit_file",
+                    {
+                        "path": path,
+                        "old_string": repl[0],
+                        "new_string": repl[1],
+                    },
+                )
+            )
+        else:
+            plan.append(
+                Action(
+                    "Preciso do caminho + troca X por Y.",
+                    "_note",
+                    {
+                        "message": (
+                            'ex: edita o arquivo Downloads/notes.md troca "foo" por "bar"'
+                        )
+                    },
+                )
+            )
+        return plan
 
     if "set_session" in intents:
         # 1) Inline bearer/cookie
@@ -1049,7 +1301,12 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
                 Action(
                     "Você pediu para ler uma imagem mas não deu o caminho.",
                     "_note",
-                    {"message": "ex: leia a imagem Downloads/scope.png e resume o que está in-scope"},
+                    {
+                        "message": (
+                            "ex: leia a imagem Downloads/scope.png\n"
+                            "ou: leia Desktop/scope.png e salva os hosts no SCOPE"
+                        )
+                    },
                 )
             )
 
@@ -2026,6 +2283,21 @@ def _render_result(tool: str, result_json: str) -> None:
         ui.kv("path", str(data.get("path") or ""))
         return
 
+    if tool == "set_account":
+        ui.kv("saved", str(data.get("saved") or "?"))
+        ui.kv("ready", ", ".join(data.get("ready") or []) or "(none)")
+        return
+
+    if tool == "extract_page":
+        ui.kv("title", str(data.get("title") or "?"))
+        ui.kv("status", str(data.get("status") or data.get("dry_run") or "?"))
+        if data.get("thin_content"):
+            ui.warn(str(data.get("hint") or "thin content"))
+        text = str(data.get("text") or "")
+        if text:
+            ui.markdown_panel(text[:2500], title="page text")
+        return
+
     if tool == "read_image":
         ui.kv("source", str(data.get("source") or "?"))
         return
@@ -2193,6 +2465,73 @@ def run_local_agent(
             ui.code_panel(json.dumps(action.args, indent=2), title="args", lexer="json")
         result = execute_tool(action.tool, action.args, approve_fn=approve_fn)
         _render_result(action.tool, result)
+
+        if action.tool == "read_image":
+            try:
+                img_data = json.loads(result)
+            except json.JSONDecodeError:
+                img_data = {}
+            ocr_blob = " ".join(
+                str(img_data.get(k) or "")
+                for k in ("ocr", "vision", "message")
+            )
+            wants_scope = _wants(
+                user_prompt,
+                "scope",
+                "salva no scope",
+                "salvar no scope",
+                "atualiza o scope",
+                "atualizar scope",
+                "grava no scope",
+                "write scope",
+                "update scope",
+            )
+            hosts = _hosts_from_text(ocr_blob)
+            if wants_scope and hosts and img_data.get("ok"):
+                scope_path = str(Path(interp.target_dir) / "SCOPE.md")
+                lines = "# Scope\n\n## In Scope\n\n" + "\n".join(f"- {h}" for h in hosts)
+                lines += "\n\n## Explicitly Allowed\n\n- Automated scanning\n- Active testing\n"
+                plan.append(
+                    Action(
+                        f"Gravar hosts do OCR em `{scope_path}` (approve).",
+                        "write_file",
+                        {"path": scope_path, "content": lines},
+                    )
+                )
+                ui.info(f"OCR → {len(hosts)} host(s) — queuing write_file SCOPE.md")
+            elif wants_scope and img_data.get("ok") and not hosts:
+                plan.append(
+                    Action(
+                        "OCR sem hosts claros para SCOPE.",
+                        "_note",
+                        {
+                            "message": (
+                                "Li a imagem mas não achei domínios óbvios. "
+                                "Diga os hosts ou cole o texto in-scope."
+                            )
+                        },
+                    )
+                )
+            acct = _parse_set_account(user_prompt)
+            if (
+                acct
+                and (acct.get("username") or acct.get("password"))
+                and _wants(user_prompt, "imagem", "image", "screenshot", "png", "jpg")
+            ):
+                # Image turn that also embeds credentials in the utterance
+                args = {"target_dir": interp.target_dir, "name": acct["name"]}
+                if acct.get("username"):
+                    args["username"] = acct["username"]
+                if acct.get("password"):
+                    args["password"] = acct["password"]
+                if not any(a.tool == "set_account" for a in plan):
+                    plan.append(
+                        Action(
+                            f"Gravar conta {acct['name']} citada junto da imagem (approve).",
+                            "set_account",
+                            args,
+                        )
+                    )
 
         if action.tool == "run_playbook":
             try:

@@ -26,9 +26,15 @@ CRITICAL UX — natural language first:
 - If they say credentials/tokens are in file X or folder Y: call
   `load_sessions_from_file` (or `read_file` then `set_session`). Do not tell them
   to type `/session`.
+- If they give a test email/password for account A/B (or say update accounts.yaml):
+  call `set_account`. Do NOT ask them to edit YAML by hand.
 - If they say "explora o que der" / "go hunt" / open-ended attack: call `run_hunt`
   (or `run_campaign` when they name specific classes). Do not tell them to type `/hunt`.
-- If they name an image/screenshot: call `read_image`.
+- If they name an image/screenshot: call `read_image`. After OCR, if they asked to
+  update SCOPE/accounts/files from what is in the image, chain `write_file` /
+  `edit_file` / `set_account` with approve — do not stop at OCR only.
+- Extract / resume page content: `extract_page` (HTML text+links). SPA thin →
+  `browser_navigate` + `browser_eval`.
 - Browser: `browser_navigate` / `screenshot` / `cookies` / `storage` / `network` /
   `browser_with_session` / `browser_diff_sessions` (A vs B soft IDOR hint).
 - Reports: `write_report_draft` with platform=generic (default) or bugcrowd/h1/intigriti/

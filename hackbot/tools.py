@@ -52,6 +52,7 @@ from .runners import mobsf as mobsf_runner
 from .runners import mobile as mobile_runner
 from .runners import content_discovery as content_discovery_runner
 from .runners import race_probe as race_probe_runner
+from .runners import extract_page as extract_page_runner
 from .runners import session_bootstrap as session_bootstrap_runner
 from .runners import ssrf_probe as ssrf_probe_runner
 from .runners import websocket_probe as websocket_probe_runner
@@ -128,6 +129,34 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "authorization": {"type": "string"},
                 "cookie": {"type": "string"},
                 "clear": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "set_account",
+        "description": (
+            "Save test login credentials into targets/<name>/secrets/accounts.yaml (gitignored) "
+            "for session_bootstrap. Pass username/email + password for A or B. Requires approval. "
+            "Use when the operator says to put email/password into accounts.yaml — do NOT ask them "
+            "to edit the file by hand."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "name": {"type": "string", "description": "Account slot, e.g. A or B"},
+                "username": {
+                    "type": "string",
+                    "description": "Username or email for form login",
+                },
+                "email": {
+                    "type": "string",
+                    "description": "Alias for username when operator says email",
+                },
+                "password": {"type": "string"},
+                "role": {"type": "string", "default": "user"},
             },
             "required": ["target_dir", "name"],
             "additionalProperties": False,
@@ -225,6 +254,26 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {"target_dir": {"type": "string"}},
             "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "extract_page",
+        "description": (
+            "Fetch an in-scope URL and extract title, readable text, and links (HTML strip). "
+            "Dry-run unless approve=true. For JS-heavy SPAs with thin text, follow with "
+            "browser_navigate + browser_eval."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "session": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
             "additionalProperties": False,
         },
     },
@@ -2131,6 +2180,45 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         )
         return json.dumps({"ok": True, "identity": ident.masked_summary()})
 
+    if name == "set_account":
+        target = _target_path(args["target_dir"])
+        name_s = str(args.get("name") or "A")
+        username = str(args.get("username") or args.get("email") or "").strip()
+        password = args.get("password")
+        role = args.get("role")
+        if not username and password is None:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "need username/email and/or password",
+                    "hint": "ex: set_account name=A username=a@x.com password=secret",
+                }
+            )
+        desc = (
+            f"WRITE account '{name_s}' under\n  {target / 'secrets' / 'accounts.yaml'}\n"
+            f"  username={username or '(unchanged)'} password={'***' if password is not None else '(unchanged)'}"
+        )
+        refusal = _require_approval(approve_fn, desc, kind="fs", tool="set_account")
+        if refusal:
+            return refusal
+        accounts_mod.ensure_accounts_example(target)
+        data = accounts_mod.save_account(
+            target,
+            name_s,
+            username=username or None,
+            password=str(password) if password is not None else None,
+            role=str(role) if role else None,
+        )
+        acct = data.get(name_s)
+        return json.dumps(
+            {
+                "ok": True,
+                "saved": name_s,
+                "account": acct.masked() if acct else {},
+                **data.masked_summary(),
+            }
+        )
+
     if name == "http_request":
         return _tool_http_request(args, approve_fn=approve_fn)
 
@@ -2144,6 +2232,9 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         target = _target_path(args["target_dir"])
         accounts_mod.ensure_accounts_example(target)
         return json.dumps({"ok": True, **accounts_mod.load_accounts(target).masked_summary()})
+
+    if name == "extract_page":
+        return _tool_extract_page(args, approve_fn=approve_fn)
 
     if name == "discover_paths":
         return _tool_discover_paths(args, approve_fn=approve_fn)
@@ -3118,6 +3209,39 @@ def _tool_idor_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
             "message": result.message,
         }
     )
+
+
+def _tool_extract_page(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
+    target = _target_path(args["target_dir"])
+    url = str(args["url"])
+    force = _resolve_force_arg(args)
+    approve = parse_bool(args.get("approve"))
+    if approve:
+        refusal = _require_approval(
+            approve_fn,
+            f"Approve ACTIVE extract_page?\n  url={url}\n  force={force}",
+            kind="active_traffic",
+            tool="extract_page",
+            host=host_from_target(url),
+            force_override=force,
+            aggression=1,
+        )
+        if refusal:
+            return refusal
+    result = extract_page_runner.extract_page(
+        target,
+        url,
+        approve=approve,
+        force=force,
+        session=str(args.get("session") or ""),
+    )
+    try:
+        payload = json.loads(result.stdout) if result.stdout else {}
+    except json.JSONDecodeError:
+        payload = {"raw": result.stdout}
+    if isinstance(payload, dict):
+        return json.dumps({"ok": payload.get("ok", True), "executed": result.executed, **payload})
+    return json.dumps({"ok": True, "executed": result.executed, "detail": payload})
 
 
 def _tool_session_bootstrap(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
