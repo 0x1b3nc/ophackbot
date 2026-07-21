@@ -1,7 +1,8 @@
-"""Codex JSON stream progress: spinner only stops on visible lines; capture answer."""
+"""Codex JSON stream progress: think/run/tool/plan visible live."""
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from hackbot.codex_backend import _handle_event
@@ -19,41 +20,105 @@ class CodexStreamEventTests(unittest.TestCase):
         self.assertFalse(shown)
         self.assertEqual(printed, [])
 
-    def test_agent_message_captured_not_dumped_as_say(self) -> None:
-        stops: list[str] = []
-        sink: list[str] = []
+    def test_turn_started_shows(self) -> None:
         hdr: dict = {}
-        meta: dict = {"shell_http": []}
+        shown = _handle_event({"type": "turn.started"}, hdr)
+        self.assertTrue(shown)
+
+    def test_reasoning_shows_think(self) -> None:
+        hdr: dict = {}
         shown = _handle_event(
             {
                 "type": "item.completed",
-                "item": {"type": "agent_message", "text": "Vou rodar o next step."},
+                "item": {
+                    "id": "r1",
+                    "type": "reasoning",
+                    "text": "Vou validar o health endpoint com http_request.",
+                },
             },
             hdr,
-            before_print=lambda: stops.append("x"),
-            answer_sink=sink,
-            meta=meta,
         )
-        self.assertFalse(shown)
-        self.assertEqual(stops, [])
-        self.assertEqual(sink, ["Vou rodar o next step."])
+        self.assertTrue(shown)
 
-    def test_command_started_shows_run_and_tracks_curl(self) -> None:
+    def test_agent_message_announces_tool_proposal(self) -> None:
+        sink: list[str] = []
+        hdr: dict = {}
+        body = (
+            "Proximo passo.\n\n```hackbot-tool\n"
+            + json.dumps(
+                {
+                    "tool": "http_request",
+                    "args": {
+                        "url": "https://www.adultforce.com/api/",
+                        "method": "GET",
+                        "approve": True,
+                    },
+                }
+            )
+            + "\n```\n"
+        )
+        shown = _handle_event(
+            {
+                "type": "item.completed",
+                "item": {"id": "m1", "type": "agent_message", "text": body},
+            },
+            hdr,
+            answer_sink=sink,
+        )
+        self.assertTrue(shown)
+        self.assertEqual(sink[0], body)
+
+    def test_agent_message_plan_line_without_tool(self) -> None:
+        hdr: dict = {}
+        shown = _handle_event(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "m2",
+                    "type": "agent_message",
+                    "text": "Vou checar o endpoint de health com um GET baixo impacto.",
+                },
+            },
+            hdr,
+            answer_sink=[],
+        )
+        self.assertTrue(shown)
+
+    def test_command_shows_run_and_output(self) -> None:
         hdr: dict = {}
         meta: dict = {"shell_http": []}
-        shown = _handle_event(
+        shown1 = _handle_event(
             {
                 "type": "item.started",
                 "item": {
+                    "id": "c1",
                     "type": "command_execution",
                     "command": "curl -s https://example.com/api/",
                     "status": "in_progress",
+                    "aggregated_output": "",
+                    "exit_code": None,
                 },
             },
             hdr,
             meta=meta,
         )
-        self.assertTrue(shown)
+        shown2 = _handle_event(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "c1",
+                    "type": "command_execution",
+                    "command": "curl -s https://example.com/api/",
+                    "status": "completed",
+                    "aggregated_output": '{"ok":true}',
+                    "exit_code": 0,
+                },
+            },
+            hdr,
+            meta=meta,
+        )
+        self.assertTrue(shown1)
+        self.assertTrue(shown2)
         self.assertIn("https://example.com/api/", meta["shell_http"])
 
 

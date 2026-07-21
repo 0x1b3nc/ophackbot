@@ -918,20 +918,60 @@ def _fmt_command(cmd: Any) -> str:
     return ui.summarize_command(cmd)
 
 
+def _clip(text: str, n: int = 160) -> str:
+    text = " ".join((text or "").split())
+    if len(text) <= n:
+        return text
+    return text[: n - 1] + "…"
+
+
+def _item_text(item: dict[str, Any]) -> str:
+    for key in ("text", "summary", "message", "query"):
+        val = item.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+        if isinstance(val, list):
+            parts = [str(x).strip() for x in val if str(x).strip()]
+            if parts:
+                return " ".join(parts)
+    return ""
+
+
+def _announce_tool_proposals(text: str, printed_hdr: dict[str, Any], line: Callable[..., None]) -> None:
+    """Surface ```hackbot-tool``` proposals from agent_message as live progress."""
+    _, calls = _extract_tool_calls(text)
+    for call in calls:
+        name, args = _normalize_tool_call(call)
+        if not name:
+            continue
+        bits = [name]
+        if args.get("method"):
+            bits.append(str(args.get("method")).upper())
+        if args.get("url"):
+            bits.append(str(args.get("url")))
+        elif args.get("host"):
+            bits.append(str(args.get("host")))
+        elif args.get("path"):
+            bits.append(str(args.get("path")))
+        key = f"toolprop:{name}:{args.get('url') or args.get('path') or ''}"
+        if printed_hdr.get(key):
+            continue
+        printed_hdr[key] = True
+        line("tool", " ".join(bits), "hb.cmd")
+
+
 def _handle_event(
     obj: dict[str, Any],
     printed_hdr: dict[str, Any],
     *,
     before_print: Callable[[], None] | None = None,
-    after_print: Callable[[], None] | None = None,
     answer_sink: list[str] | None = None,
     meta: dict[str, Any] | None = None,
 ) -> bool:
     """Render one codex JSON event. Return True if something was printed.
 
-    ``before_print`` / ``after_print`` bracket console writes (stop/restart spinner).
-    Agent messages are captured into ``answer_sink`` only — not dumped as ``say``
-    lines (that looked like broken streaming). Final answer uses the panel.
+    Shows think / run (+ output) / tool proposals / plan. Final answer still
+    lands in the markdown panel (not dumped as giant ``say`` lines).
     """
     shown = False
 
@@ -950,16 +990,25 @@ def _handle_event(
         key = f"{kind}:{text}"
         if printed_hdr.get("last") == key:
             return
-        if printed_hdr.get("v") and before_print:
+        if before_print:
             before_print()
         hdr()
         ui.activity(kind, text, style=style)
         printed_hdr["last"] = key
         shown = True
-        if after_print:
-            after_print()
 
     etype = str(obj.get("type") or "")
+    if etype == "turn.started":
+        line("turn", "started")
+        return shown
+    if etype == "turn.completed":
+        usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
+        if usage:
+            line(
+                "turn",
+                f"done  in={usage.get('input_tokens', '?')} out={usage.get('output_tokens', '?')}",
+            )
+        return shown
     if etype in {"error", "turn.failed"}:
         msg = obj.get("message") or obj.get("error") or etype
         if isinstance(msg, dict):
@@ -967,56 +1016,113 @@ def _handle_event(
         line("err", str(msg), "hb.warn")
         return shown
 
-    # Newer "thread item" shape: {"type":"item.completed","item":{...}}
+    # Newer "thread item" shape: {"type":"item.*","item":{...}}
     if "item" in obj and isinstance(obj["item"], dict):
         item = obj["item"]
         itype = str(item.get("type") or item.get("item_type") or "")
         ilow = itype.lower()
+        item_id = str(item.get("id") or "")
+
         if "reason" in ilow:
-            snippet = (item.get("text") or item.get("summary") or "").strip()
-            if len(snippet) > 120:
-                snippet = snippet[:117] + "…"
-            line("think", snippet)
+            snippet = _clip(_item_text(item), 200)
+            # Dedupe noisy item.updated floods by item id + prefix.
+            dedupe = f"think:{item_id}:{snippet[:80]}"
+            if snippet and not printed_hdr.get(dedupe):
+                printed_hdr[dedupe] = True
+                line("think", snippet)
+
         elif "command" in ilow or "exec" in ilow:
             raw_cmd = str(item.get("command") or item.get("cmd") or "")
             if meta is not None:
                 for url in _shell_http_urls(raw_cmd):
                     meta.setdefault("shell_http", []).append(url)
-            # Only show run on start (avoid duplicate completed lines).
-            status = str(item.get("status") or "")
-            if etype == "item.started" or status == "in_progress" or etype == "item.completed":
-                if etype == "item.completed" and printed_hdr.get("last", "").startswith("run:"):
-                    return shown
-                line("run", _fmt_command(raw_cmd) or "(command)", "hb.cmd")
+            status = str(item.get("status") or "").lower()
+            pretty = _fmt_command(raw_cmd) or "(command)"
+            if etype == "item.started" or status in {"in_progress", ""}:
+                line("run", pretty, "hb.cmd")
+            if etype == "item.completed" or status in {"completed", "failed", "declined"}:
+                exit_code = item.get("exit_code")
+                out = str(item.get("aggregated_output") or "").strip()
+                out_flat = _clip(out, 180) if out else ""
+                mark = "ok" if status != "failed" and exit_code in {0, None, "0"} else "fail"
+                detail = pretty
+                if exit_code is not None:
+                    detail += f"  exit={exit_code}"
+                if out_flat:
+                    detail += f"  │ {out_flat}"
+                line(f"out/{mark}", detail, "hb.ok" if mark == "ok" else "hb.warn")
+
         elif "message" in ilow or ilow in {"agent_message", "assistant_message"}:
-            text = (item.get("text") or "").strip()
+            text = _item_text(item)
             if text and answer_sink is not None:
                 answer_sink.clear()
                 answer_sink.append(text)
-            # Do NOT print as "say" — final answer goes to markdown_panel.
-        elif "file" in ilow or "mcp" in ilow or "web_search" in ilow or "todo" in ilow:
-            label = ilow.replace("_", " ") or "item"
-            line("do", label)
+            if text:
+                _announce_tool_proposals(text, printed_hdr, line)
+                # Live narration (not the final panel dump): first line / plan.
+                if "```hackbot-tool" not in text and "```hackbot-fileop" not in text:
+                    first = text.strip().splitlines()[0] if text.strip() else ""
+                    # Skip pure final-report dumps; still show short working notes.
+                    looks_final = bool(
+                        re.search(r"(?i)^\s*(\*\*)?(resultado|result|summary)\b", first)
+                    )
+                    if first and not looks_final:
+                        line("plan", _clip(first, 160))
+
+        elif "todo" in ilow:
+            items = item.get("items") if isinstance(item.get("items"), list) else []
+            for todo in items[:6]:
+                if not isinstance(todo, dict):
+                    continue
+                mark = "x" if todo.get("completed") else " "
+                line("todo", f"[{mark}] {_clip(str(todo.get('text') or ''), 120)}")
+
+        elif "file" in ilow:
+            changes = item.get("changes") if isinstance(item.get("changes"), list) else []
+            if changes:
+                for ch in changes[:5]:
+                    if isinstance(ch, dict):
+                        line("file", f"{ch.get('kind') or 'edit'} {ch.get('path') or '?'}")
+            else:
+                line("file", _clip(_item_text(item) or "file change", 120))
+
+        elif "mcp" in ilow:
+            line(
+                "mcp",
+                _clip(f"{item.get('server') or ''}.{item.get('tool') or ''} {_item_text(item)}", 160),
+                "hb.cmd",
+            )
+        elif "web_search" in ilow or "search" in ilow:
+            line("search", _clip(str(item.get("query") or _item_text(item)), 160))
+        elif ilow:
+            line("do", _clip(ilow.replace("_", " ") + " " + _item_text(item), 160))
         return shown
 
     # Classic shape: {"id":..,"msg":{"type":..,..}}
     msg = obj.get("msg") if isinstance(obj.get("msg"), dict) else None
     if msg is None:
         return shown
-    mtype = msg.get("type", "")
-    if "reasoning" in mtype and "delta" not in mtype:
-        snippet = (msg.get("text") or msg.get("summary") or "").strip()
-        if len(snippet) > 120:
-            snippet = snippet[:117] + "…"
-        line("think", snippet)
+    mtype = str(msg.get("type") or "")
+    if "reasoning" in mtype:
+        snippet = _clip(_item_text(msg) or str(msg.get("text") or msg.get("summary") or ""), 200)
+        if snippet:
+            line("think", snippet)
     elif mtype == "exec_command_begin":
         raw_cmd = str(msg.get("command") or "")
         if meta is not None:
             for url in _shell_http_urls(raw_cmd):
                 meta.setdefault("shell_http", []).append(url)
         line("run", _fmt_command(raw_cmd), "hb.cmd")
+    elif mtype == "exec_command_end":
+        out = _clip(str(msg.get("aggregated_output") or msg.get("output") or ""), 180)
+        detail = _fmt_command(msg.get("command") or "")
+        if msg.get("exit_code") is not None:
+            detail += f"  exit={msg.get('exit_code')}"
+        if out:
+            detail += f"  │ {out}"
+        line("out", detail)
     elif mtype == "error":
-        line("err", msg.get("message") or "error", "hb.warn")
+        line("err", str(msg.get("message") or "error"), "hb.warn")
     return shown
 
 
@@ -1044,10 +1150,11 @@ def _run_quiet(
 def _run_streaming(
     cmd: list[str], prompt: str, timeout: int
 ) -> tuple[str, str, dict[str, Any]] | None:
-    """Stream codex JSON events as concise progress.
+    """Stream codex JSON events as a live transcript (think/run/tool/plan).
 
     Returns ``(last_agent_message, non_json_stderr, meta)``.
-    Progress = think/run only. Spinner stays up between events.
+    Spinner only until the first progress line — then plain append-only output
+    (restarting Rich Status was wiping the feeling of a live stream).
     """
     try:
         proc = subprocess.Popen(
@@ -1070,6 +1177,12 @@ def _run_streaming(
     assert proc.stdout is not None and proc.stdin is not None
     status = ui.console.status("[cyan]codex is thinking...[/]", spinner="dots")
     status_live = False
+    trace = os.environ.get("HACKBOT_CODEX_TRACE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
     def _stop_spinner() -> None:
         nonlocal status_live
@@ -1078,21 +1191,12 @@ def _run_streaming(
             status_live = False
             ui.stop_live()
 
-    def _start_spinner() -> None:
-        nonlocal status_live
-        if not status_live:
-            try:
-                status.update("[cyan]codex is working...[/]")
-            except Exception:  # noqa: BLE001
-                pass
-            status.start()
-            status_live = True
-
     try:
         # Close stdin after writing so Codex does not hang waiting for more input.
         proc.stdin.write(prompt)
         proc.stdin.close()
-        _start_spinner()
+        status.start()
+        status_live = True
         for raw_line in proc.stdout:
             raw_line = raw_line.rstrip("\r\n")
             if not raw_line:
@@ -1101,13 +1205,22 @@ def _run_streaming(
                 obj = json.loads(raw_line)
             except json.JSONDecodeError:
                 errbuf.append(raw_line)
+                # Non-JSON progress lines from codex (rare with --json).
+                flat = _clip(raw_line, 180)
+                if flat and not flat.startswith("{"):
+                    _stop_spinner()
+                    if not printed_hdr.get("v"):
+                        ui.console.print(ui_text("codex", "hb.label"))
+                        printed_hdr["v"] = True
+                    ui.activity("log", flat)
                 continue
             if isinstance(obj, dict):
+                if trace:
+                    ui.activity("dbg", _clip(json.dumps(obj, ensure_ascii=False), 200))
                 _handle_event(
                     obj,
                     printed_hdr,
                     before_print=_stop_spinner,
-                    after_print=_start_spinner,
                     answer_sink=answer_sink,
                     meta=meta,
                 )
