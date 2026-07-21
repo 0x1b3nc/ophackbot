@@ -49,12 +49,27 @@ def _one_pair(
     timeout: float,
     label_prefix: str,
 ) -> dict[str, Any]:
+    extra_a: dict[str, str] = {}
+    extra_b: dict[str, str] = {}
+    body_a = body
+    body_b = body
+    csrf_meta: dict[str, Any] = {}
+    if method.upper() in WRITE_METHODS and body is not None:
+        from ..auth_continuity import prepare_write
+
+        body_a, extra_a, csrf_meta = prepare_write(
+            target_dir, url_a, session=session_a, body=body, force=force
+        )
+        body_b, extra_b, _meta_b = prepare_write(
+            target_dir, url_b, session=session_b, body=body, force=force
+        )
     ra = http_mod.http_request(
         target_dir,
         url_a,
         method=method,
         session=session_a,
-        body=body,
+        body=body_a,
+        extra_headers=extra_a or None,
         approve=True,
         force=force,
         timeout=timeout,
@@ -66,7 +81,8 @@ def _one_pair(
         url_b,
         method=method,
         session=session_b,
-        body=body,
+        body=body_b,
+        extra_headers=extra_b or None,
         approve=True,
         force=force,
         timeout=timeout,
@@ -79,7 +95,7 @@ def _one_pair(
     except json.JSONDecodeError:
         pa, pb = {}, {}
     diff = assert_idor_diff(pa, pb, object_hint=url_a)
-    return {
+    out: dict[str, Any] = {
         "method": method,
         "verdict": diff.verdict,
         "reason": diff.reason,
@@ -92,6 +108,13 @@ def _one_pair(
         "preview_b": redact_text(str(pb.get("body_preview") or "")[:160]),
         "diff": diff.as_dict(),
     }
+    if csrf_meta:
+        out["csrf"] = {
+            "ok": bool(csrf_meta.get("ok")),
+            "source": csrf_meta.get("source"),
+            "field": csrf_meta.get("field"),
+        }
+    return out
 
 
 def idor_probe(

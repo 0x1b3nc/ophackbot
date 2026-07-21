@@ -4,53 +4,17 @@ from __future__ import annotations
 
 import json
 import re
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 from .. import ui
 from ..accounts import ensure_accounts_example, load_accounts
+from ..auth_continuity import extract_csrf, looks_like_mfa, mfa_needs_setup_payload
 from ..hunt_jar import merge_set_cookie
 from ..identity import save_session
 from ..redaction import redact_text
 from .base import RunnerResult, require_in_scope
-
-_CSRF_NAMES = ("csrf", "csrf_token", "csrftoken", "_token", "authenticity_token", "xsrf")
-
-
-def _extract_csrf(html: str, field: str) -> str:
-    # Prefer configured field, then common names
-    names = [field] + [n for n in _CSRF_NAMES if n != field]
-    for name in names:
-        m = re.search(
-            rf'<input[^>]+name=["\']{re.escape(name)}["\'][^>]+value=["\']([^"\']+)["\']',
-            html,
-            re.I,
-        )
-        if m:
-            return m.group(1)
-        m = re.search(
-            rf'<input[^>]+value=["\']([^"\']+)["\'][^>]+name=["\']{re.escape(name)}["\']',
-            html,
-            re.I,
-        )
-        if m:
-            return m.group(1)
-        m = re.search(rf'name=["\']{re.escape(name)}["\'][^>]*content=["\']([^"\']+)["\']', html, re.I)
-        if m:
-            return m.group(1)
-        m = re.search(rf'<meta[^>]+name=["\']csrf-token["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
-        if m:
-            return m.group(1)
-    return ""
-
-
-def _looks_like_mfa(body: str, status: int) -> bool:
-    low = body.lower()
-    keys = ("mfa", "2fa", "otp", "one-time", "totp", "verification code", "two-factor")
-    return any(k in low for k in keys) and status in {200, 401, 403}
 
 
 def _set_cookies_from_headers(headers: Any) -> list[str]:
@@ -180,13 +144,14 @@ def session_bootstrap(
         except Exception as exc:  # noqa: BLE001
             results.append({"session": name, "error": type(exc).__name__, "detail": str(exc)[:120]})
             continue
-        csrf = _extract_csrf(html, accounts.login.csrf_field)
+        _field, csrf = extract_csrf(html, accounts.login.csrf_field)
         body_map = {
             accounts.login.user_field: acct.username,
             accounts.login.pass_field: acct.password,
         }
         if csrf:
             body_map[accounts.login.csrf_field] = csrf
+            body_map.setdefault(_field or accounts.login.csrf_field, csrf)
         encoded = urllib.parse.urlencode(body_map).encode()
         headers = {
             "User-Agent": "hackbot-bootstrap",
@@ -214,14 +179,17 @@ def session_bootstrap(
             results.append({"session": name, "error": type(exc).__name__})
             continue
 
-        if _looks_like_mfa(resp_body, status):
+        if looks_like_mfa(resp_body, status):
             needs_mfa = True
+            mfa = mfa_needs_setup_payload(session=name, login_url=login_url)
             results.append(
                 {
                     "session": name,
                     "status": status,
                     "outcome": "needs_setup",
                     "reason": "mfa_detected",
+                    "hint": mfa.get("hint"),
+                    "next_steps": mfa.get("next_steps"),
                     "preview": redact_text(resp_body[:120]),
                 }
             )
@@ -243,16 +211,24 @@ def session_bootstrap(
         )
 
     ok_count = sum(1 for r in results if r.get("outcome") == "ok")
-    out = {
+    out: dict[str, Any] = {
         "ok": ok_count > 0 and not needs_mfa,
         "signal": ok_count >= 1,
         "needs_setup": needs_mfa,
-        "reason": "mfa_detected" if needs_mfa else (f"bootstrapped {ok_count} sessions" if ok_count else "login_failed"),
+        "reason": (
+            "mfa_detected"
+            if needs_mfa
+            else (f"bootstrapped {ok_count} sessions" if ok_count else "login_failed")
+        ),
         "results": results,
         "login_url": login_url,
     }
     if needs_mfa:
-        ui.warn("session_bootstrap: MFA/2FA detected — needs_setup")
+        out.update(mfa_needs_setup_payload(login_url=login_url))
+        out["results"] = results
+        ui.warn("session_bootstrap: MFA/2FA detected — needs_setup (operator must finish login)")
+        for step in out.get("next_steps") or []:
+            ui.info(f"  → {step}")
     elif ok_count:
         ui.success(f"session_bootstrap: {ok_count} session(s) ready")
     else:

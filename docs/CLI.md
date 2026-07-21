@@ -295,6 +295,7 @@ Uses `read_image` (tesseract OCR if installed; optional vision via
 | SSRF / race / websocket | `ssrf_probe` / `race_probe` / `websocket_probe` |
 | IDOR A/B systematic | `idor_probe` (GET + capped PATCH/PUT write matrix) |
 | Session bootstrap | `session_bootstrap` + `secrets/accounts.yaml` |
+| Auth continuity | Mid-hunt 401 → refresh + one retry; CSRF on IDOR writes; MFA → clear `needs_setup` (no bypass) |
 | Content discovery (capped) | `discover_paths` (soft-404 baseline) |
 | OOB / Interactsh | `oob_mint` / `interactsh_*` (`HACKBOT_OOB_BASE`) |
 | Cookie jar across acts | `http_request` → `secrets/cookie_jar.json` |

@@ -24,6 +24,8 @@ pentests, and learning. I don't point it at systems without permission.
 - That path is gitignored. Only `sessions.example.yaml` is safe to commit
 - UI and audit logs show **masked** values only
 - Required program headers: SCOPE YAML `headers:` and/or `sessions.yaml` `headers:`
+- MFA/2FA → `needs_setup` with operator next-steps; Hackbot never bypasses MFA
+- Mid-hunt 401 may re-login from `accounts.yaml` (approve already granted) and retry once
 
 ## Operator model
 

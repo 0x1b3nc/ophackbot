@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 from . import ui
 from .audit import log_decision
+from .auth_continuity import result_indicates_unauthorized
 from .force import is_forced
 from .hunt_memory import Candidate, HuntMemory, HuntState
 from .hunt_phases import (
@@ -452,6 +453,56 @@ def run_hunt(
                 approve_fn=tool_approve,
                 execute_tool=execute_tool,
             )
+            # Mid-hunt auth continuity: 401 → refresh sessions once → retry act
+            if (
+                approve_session
+                and hyp.module != "session_bootstrap"
+                and result_indicates_unauthorized(act_result)
+            ):
+                from .auth_continuity import origin_from_target, refresh_ready_sessions
+
+                base = origin_from_target(hyp.url or host)
+                ui.warn(f"auth continuity: 401 on {hyp.module} — refreshing sessions")
+                refresh = refresh_ready_sessions(
+                    target_dir,
+                    base,
+                    approve=True,
+                    force=force_flag,
+                )
+                act_result = dict(act_result)
+                act_result["auth_refresh"] = {
+                    "ok": bool(refresh.get("ok")),
+                    "reason": refresh.get("reason"),
+                    "needs_setup": bool(refresh.get("needs_setup")),
+                }
+                if refresh.get("needs_setup"):
+                    act_result["outcome"] = "needs_setup"
+                    act_result["summary"] = str(
+                        refresh.get("hint") or refresh.get("reason") or "mfa_detected"
+                    )
+                    act_result["detail"] = {
+                        **(act_result.get("detail") if isinstance(act_result.get("detail"), dict) else {}),
+                        "auth_refresh": refresh,
+                    }
+                elif refresh.get("ok"):
+                    ui.info("auth continuity: sessions refreshed — retrying act once")
+                    retry = _act(
+                        target_dir,
+                        hyp,
+                        host=host,
+                        approve=approve_session,
+                        force=force_flag,
+                        approve_fn=tool_approve,
+                        execute_tool=execute_tool,
+                    )
+                    retry = dict(retry)
+                    retry["auth_refreshed"] = True
+                    retry["auth_refresh"] = act_result["auth_refresh"]
+                    act_result = retry
+                else:
+                    ui.warn(
+                        f"auth continuity: refresh failed ({refresh.get('reason') or refresh.get('error')})"
+                    )
         except PermissionError as exc:
             memory.append_attempt(
                 {
@@ -2092,17 +2143,24 @@ def _chain_from_result(
                     )
                 )
 
-    # 401/403 → bootstrap
+    # 401/403 → bootstrap (structured detection + summary fallback)
     summary = str(result.get("summary") or "").lower()
-    if "401" in summary or "403" in summary:
-        follows.append(
-            Hypothesis(
-                module="session_bootstrap",
-                url=f"https://{host}",
-                title="Bootstrap after auth wall",
-                priority=96,
+    auth_wall = result_indicates_unauthorized(result) or "403" in summary
+    if auth_wall and hyp.module != "session_bootstrap":
+        if result.get("auth_refreshed") and not result_indicates_unauthorized(result):
+            pass  # refresh+retry already cleared the wall
+        else:
+            follows.append(
+                Hypothesis(
+                    module="session_bootstrap",
+                    url=f"https://{host}",
+                    title="Bootstrap after auth wall",
+                    priority=96,
+                )
             )
-        )
+    if result.get("outcome") == "needs_setup" and hyp.module == "session_bootstrap":
+        # Keep MFA visible; do not invent auth follow-ups
+        follows = [f for f in follows if f.module != "idor"]
     return follows
 
 
