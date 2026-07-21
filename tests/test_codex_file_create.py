@@ -40,7 +40,7 @@ class CodexFileCreateTests(unittest.TestCase):
         )
         self.assertIn("hackbot-fileop", prompt)
         self.assertIn("Downloads", prompt)
-        self.assertIn("NEVER say you can only write inside the repo", prompt)
+        self.assertIn("never say you can only write inside the kit", prompt.lower())
         self.assertIn("scopetest.md", prompt.replace("\\", "/"))
 
     def test_direct_create_skips_codex(self) -> None:
