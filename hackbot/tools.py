@@ -51,6 +51,7 @@ from .runners import mobsf as mobsf_runner
 from .runners import mobile as mobile_runner
 from .runners import content_discovery as content_discovery_runner
 from .runners import race_probe as race_probe_runner
+from .runners import session_bootstrap as session_bootstrap_runner
 from .runners import ssrf_probe as ssrf_probe_runner
 from .runners import websocket_probe as websocket_probe_runner
 from .runners import oauth_jwt as oauth_jwt_runner
@@ -63,6 +64,7 @@ from .runners import xss_probe as xss_probe_runner
 from .runners import xxe_probe as xxe_probe_runner
 from .session import get_active, set_active
 from . import oob as oob_mod
+from . import accounts as accounts_mod
 
 # label -> last http_request response dict (process-local, for assert_diff / playbooks)
 _RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
@@ -176,8 +178,47 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "approve": {"type": "boolean", "default": False},
                 "force": {"type": "boolean", "default": False},
                 "use_jar": {"type": "boolean", "default": True},
+                "method": {"type": "string", "default": "GET"},
+                "methods": {
+                    "type": "string",
+                    "description": "CSV of methods e.g. GET,PATCH (write capped)",
+                },
+                "body": {"type": "string"},
+                "matrix": {
+                    "type": "string",
+                    "default": "bola",
+                    "description": "bola | bfla | both | swap",
+                },
             },
             "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "session_bootstrap",
+        "description": (
+            "Login with secrets/accounts.yaml (CSRF-aware), persist A/B sessions + cookie jar. "
+            "MFA → needs_setup. Prefer before idor_probe when sessions missing."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "base_url": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "base_url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "show_accounts",
+        "description": "Show masked accounts.yaml readiness for session bootstrap.",
+        "parameters": {
+            "type": "object",
+            "properties": {"target_dir": {"type": "string"}},
+            "required": ["target_dir"],
             "additionalProperties": False,
         },
     },
@@ -996,6 +1037,153 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "properties": {
                 "base_url": {"type": "string", "default": "http://127.0.0.1:1337"},
             },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "burp_proxy_history",
+        "description": "Best-effort Burp REST proxy history (local).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "base_url": {"type": "string"},
+                "limit": {"type": "integer", "default": 20},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "burp_issue_list",
+        "description": "Best-effort Burp scanner issues via local REST.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "base_url": {"type": "string"},
+                "limit": {"type": "integer", "default": 20},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "interactsh_status",
+        "description": "Show HACKBOT_OOB_* / Interactsh env configuration.",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "interactsh_register",
+        "description": "Mint OOB canary against HACKBOT_OOB_BASE.",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "interactsh_poll",
+        "description": "Poll OOB canary (wait loop).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "canary": {"type": "object"},
+                "wait": {"type": "boolean", "default": True},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "cdp_attach",
+        "description": "Probe local Chromium CDP /json/version.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "cdp_url": {"type": "string", "default": "http://127.0.0.1:9222"},
+                "approve": {"type": "boolean", "default": False},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "hunt_checklist",
+        "description": "Pre-hunt checklist: SCOPE, sessions, accounts, OOB, HAR.",
+        "parameters": {
+            "type": "object",
+            "properties": {"target_dir": {"type": "string"}},
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "hunt_pause",
+        "description": "Pause autonomous hunt loop (hunt/PAUSED).",
+        "parameters": {
+            "type": "object",
+            "properties": {"target_dir": {"type": "string"}},
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "hunt_resume_flag",
+        "description": "Clear hunt pause flag.",
+        "parameters": {
+            "type": "object",
+            "properties": {"target_dir": {"type": "string"}},
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "hunt_telemetry",
+        "description": "Local hunt telemetry stats.",
+        "parameters": {
+            "type": "object",
+            "properties": {"target_dir": {"type": "string"}},
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "mass_assignment_probe",
+        "description": "Capped mass-assignment probe (role/admin JSON fields).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "session": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "method_override_probe",
+        "description": "Probe X-HTTP-Method-Override DELETE via POST.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "session": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "hpp_probe",
+        "description": "HTTP parameter pollution (duplicate id=).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "param": {"type": "string", "default": "id"},
+                "session": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
             "additionalProperties": False,
         },
     },
@@ -1848,6 +2036,14 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
     if name == "idor_probe":
         return _tool_idor_probe(args, approve_fn=approve_fn)
 
+    if name == "session_bootstrap":
+        return _tool_session_bootstrap(args, approve_fn=approve_fn)
+
+    if name == "show_accounts":
+        target = _target_path(args["target_dir"])
+        accounts_mod.ensure_accounts_example(target)
+        return json.dumps({"ok": True, **accounts_mod.load_accounts(target).masked_summary()})
+
     if name == "discover_paths":
         return _tool_discover_paths(args, approve_fn=approve_fn)
 
@@ -2036,6 +2232,117 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
     if name == "burp_rest_health":
         return json.dumps(
             burp.burp_rest_health(base_url=args.get("base_url") or "http://127.0.0.1:1337")
+        )
+    if name == "burp_proxy_history":
+        return json.dumps(
+            burp.burp_proxy_history(
+                base_url=args.get("base_url") or "http://127.0.0.1:1337",
+                limit=int(args.get("limit") or 20),
+            )
+        )
+    if name == "burp_issue_list":
+        return json.dumps(
+            burp.burp_issue_list(
+                base_url=args.get("base_url") or "http://127.0.0.1:1337",
+                limit=int(args.get("limit") or 20),
+            )
+        )
+    if name == "interactsh_status":
+        from .interactsh_client import interactsh_status
+
+        return json.dumps(interactsh_status())
+    if name == "interactsh_register":
+        from .interactsh_client import interactsh_register
+
+        return json.dumps(interactsh_register())
+    if name == "interactsh_poll":
+        from .interactsh_client import interactsh_poll
+
+        canary = args.get("canary") if isinstance(args.get("canary"), dict) else None
+        return json.dumps(interactsh_poll(canary, wait=bool(args.get("wait", True))))
+    if name == "cdp_attach":
+        return json.dumps(
+            browser_runner.cdp_attach(
+                args.get("cdp_url") or "http://127.0.0.1:9222",
+                approve=bool(args.get("approve")),
+            )
+        )
+    if name == "hunt_checklist":
+        from .hunt_telemetry import prehunt_checklist
+
+        return json.dumps(prehunt_checklist(_target_path(args["target_dir"])))
+    if name == "hunt_pause":
+        from .hunt_telemetry import request_pause
+
+        request_pause(_target_path(args["target_dir"]))
+        return json.dumps({"ok": True, "paused": True})
+    if name == "hunt_resume_flag":
+        from .hunt_telemetry import clear_pause
+
+        clear_pause(_target_path(args["target_dir"]))
+        return json.dumps({"ok": True, "paused": False})
+    if name == "hunt_telemetry":
+        from .hunt_telemetry import telemetry_stats
+
+        return json.dumps(telemetry_stats(_target_path(args["target_dir"])))
+    if name == "mass_assignment_probe":
+        from .runners import advanced_http as adv
+
+        return _tool_simple_probe(
+            "mass_assignment_probe",
+            adv.mass_assignment_probe,
+            args,
+            approve_fn=approve_fn,
+            aggression=2,
+        )
+    if name == "method_override_probe":
+        from .runners import advanced_http as adv
+
+        return _tool_simple_probe(
+            "method_override_probe",
+            adv.method_override_probe,
+            args,
+            approve_fn=approve_fn,
+            aggression=2,
+        )
+    if name == "hpp_probe":
+        from .runners import advanced_http as adv
+
+        target = _target_path(args["target_dir"])
+        approve = bool(args.get("approve"))
+        force = _resolve_force_arg(args)
+        if approve:
+            refusal = _require_approval(
+                approve_fn,
+                f"Approve ACTIVE hpp_probe?\n  url={args['url']}",
+                kind="active_traffic",
+                tool="hpp_probe",
+                host=host_from_target(args["url"]),
+                force_override=force,
+                aggression=2,
+            )
+            if refusal:
+                return refusal
+        result = adv.hpp_probe(
+            target,
+            args["url"],
+            param=str(args.get("param") or "id"),
+            approve=approve,
+            force=force,
+            session=str(args.get("session") or "A"),
+        )
+        try:
+            payload = json.loads(result.stdout) if result.stdout else {}
+        except json.JSONDecodeError:
+            payload = {}
+        return json.dumps(
+            {
+                "ok": True,
+                "executed": result.executed,
+                "signal": bool(payload.get("signal")),
+                "detail": payload,
+                "message": result.message,
+            }
         )
     if name == "learn_record":
         from .learning import record_technique
@@ -2642,6 +2949,10 @@ def _tool_idor_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
         approve=approve,
         force=force,
         use_jar=bool(args.get("use_jar", True)),
+        method=str(args.get("method") or "GET"),
+        methods=str(args.get("methods") or ""),
+        body=str(args.get("body") or ""),
+        matrix=str(args.get("matrix") or "bola"),
     )
     try:
         payload = json.loads(result.stdout) if result.stdout else {}
@@ -2665,6 +2976,43 @@ def _tool_idor_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
             "executed": result.executed,
             "signal": bool(payload.get("signal")) if isinstance(payload, dict) else False,
             "verdict": payload.get("verdict") if isinstance(payload, dict) else None,
+            "reason": payload.get("reason") if isinstance(payload, dict) else "",
+            "detail": payload,
+            "message": result.message,
+        }
+    )
+
+
+def _tool_session_bootstrap(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
+    target = _target_path(args["target_dir"])
+    base_url = args.get("base_url") or args.get("url") or ""
+    approve = bool(args.get("approve"))
+    force = _resolve_force_arg(args)
+    if approve:
+        refusal = _require_approval(
+            approve_fn,
+            f"Approve ACTIVE session_bootstrap login?\n  base={base_url}\n  force={force}",
+            kind="active_traffic",
+            tool="session_bootstrap",
+            host=host_from_target(base_url),
+            force_override=force,
+            aggression=2,
+        )
+        if refusal:
+            return refusal
+    result = session_bootstrap_runner.session_bootstrap(
+        target, base_url, approve=approve, force=force
+    )
+    try:
+        payload = json.loads(result.stdout) if result.stdout else {}
+    except json.JSONDecodeError:
+        payload = {"raw": result.stdout}
+    return json.dumps(
+        {
+            "ok": payload.get("ok", True) if isinstance(payload, dict) else True,
+            "executed": result.executed,
+            "signal": bool(payload.get("signal")) if isinstance(payload, dict) else False,
+            "needs_setup": bool(payload.get("needs_setup")) if isinstance(payload, dict) else False,
             "reason": payload.get("reason") if isinstance(payload, dict) else "",
             "detail": payload,
             "message": result.message,
@@ -2966,6 +3314,53 @@ def _run_playbook(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
             "force": force,
             "verdict": verdict,
             "results": results,
+        }
+    )
+
+
+def _tool_simple_probe(
+    tool_name: str,
+    runner_fn: Any,
+    args: dict[str, Any],
+    *,
+    approve_fn: ApproveFn | None,
+    aggression: int,
+) -> str:
+    target = _target_path(args["target_dir"])
+    url = args["url"]
+    approve = bool(args.get("approve"))
+    force = _resolve_force_arg(args)
+    if approve:
+        refusal = _require_approval(
+            approve_fn,
+            f"Approve ACTIVE {tool_name}?\n  url={url}\n  force={force}",
+            kind="active_traffic",
+            tool=tool_name,
+            host=host_from_target(url),
+            force_override=force,
+            aggression=aggression,
+        )
+        if refusal:
+            return refusal
+    result = runner_fn(
+        target,
+        url,
+        approve=approve,
+        force=force,
+        session=str(args.get("session") or "A"),
+    )
+    try:
+        payload = json.loads(result.stdout) if result.stdout else {}
+    except json.JSONDecodeError:
+        payload = {"raw": result.stdout}
+    return json.dumps(
+        {
+            "ok": True,
+            "executed": result.executed,
+            "signal": bool(payload.get("signal")),
+            "reason": payload.get("reason") or "",
+            "detail": payload,
+            "message": result.message,
         }
     )
 

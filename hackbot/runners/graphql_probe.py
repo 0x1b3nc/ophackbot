@@ -86,5 +86,13 @@ def graphql_probe(
         "signal": introspection_ok,
         "reason": "introspection enabled" if introspection_ok else "no __schema in response",
         "preview": redact_text(raw[:400]),
+        "mutation_type": None,
     }
+    try:
+        schema = (data.get("data") or {}).get("__schema") if isinstance(data, dict) else None
+        if schema and schema.get("mutationType"):
+            out["mutation_type"] = (schema.get("mutationType") or {}).get("name")
+            out["reason"] = "introspection open + mutations present"
+    except Exception:  # noqa: BLE001
+        pass
     return RunnerResult(cmd, True, 0, json.dumps(out), "", "executed")

@@ -242,10 +242,14 @@ Uses `read_image` (tesseract OCR if installed; optional vision via
 | APK + HAR → surface (+ hunt) | `mobile_bridge` |
 | Draft bounty report (any portal) | `write_report_draft` (`generic` default) |
 | SSRF / race / websocket | `ssrf_probe` / `race_probe` / `websocket_probe` |
-| IDOR A/B systematic | `idor_probe` |
-| Content discovery (capped) | `discover_paths` |
-| OOB / blind canary | `oob_mint` / `oob_poll` (`HACKBOT_OOB_BASE`) |
+| IDOR A/B systematic | `idor_probe` (GET + capped PATCH/PUT write matrix) |
+| Session bootstrap | `session_bootstrap` + `secrets/accounts.yaml` |
+| Content discovery (capped) | `discover_paths` (soft-404 baseline) |
+| OOB / Interactsh | `oob_mint` / `interactsh_*` (`HACKBOT_OOB_BASE`) |
 | Cookie jar across acts | `http_request` → `secrets/cookie_jar.json` |
+| Hunt checklist / pause | `hunt_checklist` / `hunt_pause` / `hunt_telemetry` |
+| Burp REST history/issues | `burp_proxy_history` / `burp_issue_list` |
+| CDP local probe | `cdp_attach` |
 | MobSF health/upload/scan | `mobsf_health` / `mobsf_upload` / `mobsf_scan` |
 | Frida/Objection (approve + allowlist) | `frida_status` / `frida_run_script` / `objection_explore` |
 | Console / set cookie (Playwright) | `browser_console` / `browser_set_cookie` |

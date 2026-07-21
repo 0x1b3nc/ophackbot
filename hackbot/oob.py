@@ -96,6 +96,35 @@ def poll_oob(canary: dict[str, Any], *, timeout: float = 8.0) -> dict[str, Any]:
         return {"ok": False, "polled": True, "error": f"{type(exc).__name__}: {exc}", "hits": []}
 
 
+def wait_and_poll(
+    canary: dict[str, Any],
+    *,
+    rounds: int = 3,
+    delay_sec: float = 2.0,
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    """Wait/poll loop for OOB hits (capped rounds)."""
+    import time
+
+    hits: list[dict[str, Any]] = []
+    last: dict[str, Any] = {}
+    for i in range(max(1, min(rounds, 5))):
+        if i:
+            time.sleep(max(0.5, min(delay_sec, 10.0)))
+        last = poll_oob(canary, timeout=timeout)
+        if last.get("hits"):
+            hits.extend(last["hits"])
+        if last.get("signal"):
+            break
+    return {
+        "ok": True,
+        "rounds": rounds,
+        "hits": hits,
+        "signal": bool(hits) or bool(last.get("signal")),
+        "last": last,
+    }
+
+
 def enrich_ssrf_payloads(
     existing: list[tuple[str, tuple[str, ...]]],
     *,

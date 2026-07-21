@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "endpoints": [
+    {"url": "https://example.com/login", "method": "GET", "params": [], "source": "seed", "notes": "login"},
+    {"url": "https://example.com/api/orders?id=1", "method": "GET", "params": ["id"], "source": "html", "notes": ""},
+    {"url": "https://example.com/graphql", "method": "POST", "params": [], "source": "discover_paths", "notes": "status=200"},
+    {"url": "https://example.com/openapi.json", "method": "GET", "params": [], "source": "discover_paths", "notes": "status=200"},
+    {"url": "wss://example.com/ws", "method": "GET", "params": [], "source": "js", "notes": "websocket"}
+  ],
+  "tags": ["login", "graphql", "openapi", "websocket", "spa"]
+}

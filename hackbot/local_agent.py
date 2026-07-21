@@ -311,6 +311,18 @@ def interpret(text: str) -> Interpretation:
         intents.append("ssti")
     if _wants(text, "xxe", "xml external", "external entity"):
         intents.append("xxe")
+    if _wants(
+        text,
+        "bootstrap session",
+        "session bootstrap",
+        "faz login",
+        "fazer login",
+        "accounts.yaml",
+        "usa accounts",
+        "login com accounts",
+        "autentica a/b",
+    ):
+        intents.append("session_bootstrap")
     if _wants(text, "ssrf", "server-side request", "metadata.google", "169.254.169.254"):
         intents.append("ssrf")
     if _wants(
@@ -831,6 +843,26 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
         )
     if "oob" in intents:
         plan.append(Action("Mint OOB/blind canary.", "oob_mint", {"kind": "ssrf"}))
+    if "session_bootstrap" in intents and (target or host):
+        plan.append(
+            Action(
+                "Show masked accounts readiness.",
+                "show_accounts",
+                {"target_dir": interp.target_dir},
+            )
+        )
+        plan.append(
+            Action(
+                "Bootstrap A/B sessions from accounts.yaml.",
+                "session_bootstrap",
+                {
+                    "target_dir": interp.target_dir,
+                    "base_url": target or (host if "://" in (host or "") else f"https://{host}"),
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
 
     if "race" in intents and (target or host):
         plan.append(

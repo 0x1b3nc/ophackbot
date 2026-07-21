@@ -922,3 +922,25 @@ def browser_set_cookie(
 
     payload = {"ok": True, "url": url, "title": title, "cookie_name": name, "cookies": cookies}
     return RunnerResult(cmd, True, 0, json.dumps(payload), "", "executed")
+
+
+def cdp_attach(cdp_url: str = "http://127.0.0.1:9222", *, approve: bool = False) -> dict[str, Any]:
+    """Probe a local Chromium remote-debugging CDP HTTP endpoint (no target traffic)."""
+    import urllib.request
+
+    plan = {"cdp_url": cdp_url, "approve": approve}
+    if not approve:
+        return {
+            "ok": True,
+            "dry_run": True,
+            **plan,
+            "hint": "Pass approve=true to GET /json/version on the local CDP port",
+        }
+    try:
+        url = cdp_url.rstrip("/") + "/json/version"
+        req = urllib.request.Request(url, headers={"User-Agent": "hackbot-cdp"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            body = resp.read(4000).decode("utf-8", errors="replace")
+        return {"ok": True, "up": True, "version": body[:500], **plan}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "up": False, "error": f"{type(exc).__name__}: {exc}", **plan}

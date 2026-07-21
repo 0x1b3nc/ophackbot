@@ -79,6 +79,21 @@ def discover_paths(
         ui.dry_run_banner()
         return RunnerResult(cmd, False, None, json.dumps({"dry_run": True, **plan}), "", "dry-run")
 
+    # Adaptive baseline: probe a random 404 path to filter soft-404s
+    baseline_len = -1
+    baseline_status = -1
+    try:
+        probe = urljoin(origin + "/", f"__hackbot_missing_{int(__import__('time').time())}__")
+        req = urllib.request.Request(probe, method="GET", headers={"User-Agent": "hackbot-discover"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            baseline_status = int(getattr(resp, "status", None) or resp.getcode())
+            baseline_len = len(resp.read(4000))
+    except urllib.error.HTTPError as exc:
+        baseline_status = int(exc.code)
+        baseline_len = len(exc.read(2000)) if exc.fp else 0
+    except Exception:  # noqa: BLE001
+        pass
+
     hits: list[dict[str, Any]] = []
     endpoints: list[Endpoint] = []
     for path in wordlist:
@@ -93,6 +108,9 @@ def discover_paths(
             body = exc.read(2000).decode("utf-8", errors="replace") if exc.fp else ""
         except Exception as exc:  # noqa: BLE001
             hits.append({"path": path, "error": type(exc).__name__})
+            continue
+        # Soft-404 filter: same status+length as baseline → skip
+        if baseline_len >= 0 and status == baseline_status and abs(len(body) - baseline_len) < 8:
             continue
         if status in INTERESTING:
             row = {

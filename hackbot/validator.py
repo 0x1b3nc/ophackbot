@@ -39,14 +39,19 @@ def validate_and_log(
     write_finding: bool = True,
     write_resume: bool = True,
     verdict: str = "confirmed",
+    rehit: bool = False,
+    execute_tool: Any = None,
+    approve: bool = False,
+    force: bool = False,
 ) -> ValidationResult:
     """Prove a candidate and optionally append FINDINGS.md.
 
     Rules:
     - Requires non-empty evidence path or observed proof text
     - Rejects empty / speculative claims
-    - Writes redacted evidence snapshot under evidence/safe/
-    - verdict defaults to confirmed; use 'likely' for soft signals (e.g. A/B browser hint)
+    - Optional independent re-hit + negative control before FINDINGS
+    - Dedup by sink fingerprint (module+url)
+    - verdict defaults to confirmed; use 'likely' for soft signals
     """
     memory = HuntMemory(target_dir)
     proof = (observed or candidate.detail or "").strip()
@@ -55,6 +60,46 @@ def validate_and_log(
         candidate.detail = "no reproducible proof"
         memory.upsert_candidate(candidate)
         return ValidationResult(False, "rejected", detail="no reproducible proof")
+
+    # Dedup: same module+url already in FINDINGS
+    existing = _findings_text(target_dir).lower()
+    sink_fp = f"{candidate.module}|{candidate.url}".lower()
+    if candidate.url and candidate.url.lower() in existing and candidate.module.lower() in existing:
+        candidate.status = "rejected"
+        candidate.detail = "duplicate_sink"
+        memory.upsert_candidate(candidate)
+        return ValidationResult(False, "rejected", detail="duplicate_sink")
+
+    rehit_info: dict[str, Any] = {}
+    if rehit and execute_tool and candidate.url and approve:
+        try:
+            # Independent re-hit as anonymous (negative control) then with label
+            neg = execute_tool(
+                "http_request",
+                {
+                    "target_dir": str(target_dir),
+                    "url": candidate.url,
+                    "approve": True,
+                    "force": force,
+                    "label": "validate_neg",
+                },
+            )
+            rehit_info["negative"] = json.loads(neg) if isinstance(neg, str) else neg
+            pos = execute_tool(
+                "http_request",
+                {
+                    "target_dir": str(target_dir),
+                    "url": candidate.url,
+                    "session": "A",
+                    "approve": True,
+                    "force": force,
+                    "label": "validate_rehit",
+                },
+            )
+            rehit_info["rehit"] = json.loads(pos) if isinstance(pos, str) else pos
+            proof = proof + "\n\nrehit=" + json.dumps(rehit_info)[:1500]
+        except Exception as exc:  # noqa: BLE001
+            rehit_info["error"] = f"{type(exc).__name__}: {exc}"
 
     # Persist evidence artifact
     evidence_path = candidate.evidence
@@ -68,6 +113,8 @@ def validate_and_log(
                 "observed": proof[:8000],
                 "params": candidate.params,
                 "verdict": verdict,
+                "sink_fingerprint": sink_fp,
+                "rehit": rehit_info,
             },
             indent=2,
         )

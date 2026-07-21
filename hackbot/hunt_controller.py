@@ -15,8 +15,8 @@ from .audit import log_decision
 from .force import is_forced
 from .hunt_memory import Candidate, HuntMemory, HuntState
 from .identity import load_identity
-from .policy_guard import ScopePolicy, host_from_target
-from .surface import map_surface, normalize_seed, seed_candidates_from_surface
+from .policy_guard import ScopePolicy, host_from_target, policy_quote_for
+from .surface import normalize_seed, seed_candidates_from_surface
 from .validator import promote_campaign_row, validate_and_log
 
 ApproveFn = Callable[[str], bool]
@@ -34,6 +34,84 @@ class Hypothesis:
     title: str
     priority: int = 50
     params: dict[str, str] | None = None
+    aggression: int = 2
+    scope_quote: str = ""
+    signal_tags: tuple[str, ...] = ()
+    method: str = "GET"
+
+    def dedupe_key(self) -> str:
+        param = (self.params or {}).get("param", "")
+        return f"{self.module}|{self.method}|{self.url}|{param}"
+
+
+MODULE_AGGRESSION: dict[str, int] = {
+    "secrets": 1,
+    "discover_paths": 1,
+    "analyze_headers": 1,
+    "crt_subdomains": 0,
+    "wayback_urls": 0,
+    "analyze_js": 1,
+    "mine_params": 1,
+    "cors": 2,
+    "open_redirect": 2,
+    "graphql": 2,
+    "lfi": 2,
+    "ssti": 2,
+    "xxe": 2,
+    "ssrf": 2,
+    "xss": 2,
+    "sqli": 2,
+    "idor": 2,
+    "session_bootstrap": 2,
+    "auth-bypass": 2,
+    "oauth": 2,
+    "jwt_active": 2,
+    "browser_diff": 2,
+    "websocket": 2,
+    "race": 3,
+    "brute": 3,
+    "rate-limit": 3,
+    "oob_poll": 1,
+}
+
+
+def log_aggression(
+    target_dir: Path,
+    *,
+    module: str,
+    level: int,
+    quote: str,
+    host: str = "",
+    url: str = "",
+) -> None:
+    """Audit aggression level + SCOPE quote before an act (OPERATING_RULES)."""
+    log_decision(
+        "ALLOW",
+        f"aggression L{level} module={module} quote={quote[:160]}",
+        kind="aggression",
+        target=str(target_dir),
+        tool=module,
+        host=host,
+        extra={"aggression": level, "url": (url or "")[:120]},
+    )
+
+
+def unauth_only() -> bool:
+    return os.environ.get("HACKBOT_HUNT_UNAUTH", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def stop_on_finding() -> bool:
+    return os.environ.get("HACKBOT_HUNT_STOP_ON_FINDING", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def observe_osint_enabled() -> bool:
+    raw = os.environ.get("HACKBOT_OBSERVE_OSINT", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def request_stop() -> None:
@@ -83,7 +161,12 @@ def extract_seed_from_prompt(text: str, *, fallback: str = "") -> str:
 
 
 def hunt_status(target_dir: Path) -> dict[str, Any]:
-    return HuntMemory(target_dir).status_summary()
+    try:
+        from .hunt_telemetry import rich_hunt_status
+
+        return rich_hunt_status(target_dir)
+    except Exception:  # noqa: BLE001
+        return HuntMemory(target_dir).status_summary()
 
 
 def run_hunt(
@@ -141,6 +224,8 @@ def run_hunt(
         desc = (
             f"Approve AUTONOMOUS HUNT session?\n"
             f"  host={host}\n  budget={budget_total}\n  force={force_flag}\n"
+            f"  unauth_only={unauth_only()}\n"
+            f"  plan=observe_v2 → secrets/discover → authz/inject (SCOPE-gated)\n"
             f"  prompt={prompt[:120]}"
         )
         if not approve_fn(desc):
@@ -184,41 +269,44 @@ def run_hunt(
     ui.kv("budget", str(budget_total))
     ui.kv("approve_session", str(approve_session))
 
-    # --- Observe: map surface first ---
+    # --- Observe v2: deepen surface before Decide ---
     state.phase = "observe"
     memory.save_state(state)
-    surface_raw = map_surface(
+    from .observe import observe_v2
+
+    surface_raw = observe_v2(
         target_dir,
         seed,
         approve=approve_session,
         force=force_flag,
+        execute_tool=execute_tool if approve_session else None,
     )
     memory.append_attempt(
         {
             "phase": "observe",
-            "module": "recon",
+            "module": "observe_v2",
             "url": seed,
             "outcome": "ok" if surface_raw.get("ok") else "error",
-            "detail": surface_raw,
+            "detail": {"tags": surface_raw.get("tags"), "endpoints": surface_raw.get("endpoint_count")},
         }
     )
     if approve_session:
         state.budget_remaining -= 1
         state.acts_done += 1
-    acts.append({"module": "recon", "result": surface_raw})
+    acts.append({"module": "observe_v2", "result": surface_raw})
 
     # Seed baseline candidates from surface + always-on modules
     _seed_queue(memory, host, seed)
 
     # Always try secrets early (chaining source)
-    queue = _decide(memory, host, seed)
+    queue = _decide(memory, host, seed, target_dir=target_dir)
 
     while state.budget_remaining > 0 and not state.stopped and not _STOP_REQUESTED:
         state.phase = "decide"
         memory.save_state(state)
 
         if not queue:
-            queue = _decide(memory, host, seed)
+            queue = _decide(memory, host, seed, target_dir=target_dir)
         if not queue:
             state.stopped = True
             state.stop_reason = "no more hypotheses"
@@ -228,9 +316,30 @@ def run_hunt(
         if _already_attempted(memory, hyp):
             continue
 
+        # Skip authz modules in unauth-only mode
+        if unauth_only() and hyp.module in {"idor", "session_bootstrap", "browser_diff", "auth-bypass"}:
+            continue
+
+        from .hunt_telemetry import is_paused, record_telemetry
+
+        if is_paused(target_dir):
+            state.stopped = True
+            state.stop_reason = "paused"
+            break
+
         state.phase = "act"
         memory.save_state(state)
-        ui.info(f"act [{hyp.module}] {hyp.title}")
+        level = hyp.aggression if hyp.aggression else MODULE_AGGRESSION.get(hyp.module, 2)
+        quote = hyp.scope_quote or policy_quote_for(policy, level)
+        log_aggression(
+            target_dir,
+            module=hyp.module,
+            level=level,
+            quote=quote,
+            host=host,
+            url=hyp.url,
+        )
+        ui.info(f"act [L{level}] [{hyp.module}] {hyp.title}")
 
         try:
             act_result = _act(
@@ -286,16 +395,38 @@ def run_hunt(
                 "phase": "act",
                 "module": hyp.module,
                 "url": hyp.url,
+                "method": hyp.method,
+                "params": dict(hyp.params or {}),
+                "aggression": level,
+                "scope_quote": quote[:200],
+                "dedupe_key": hyp.dedupe_key(),
                 "outcome": act_result.get("outcome") or "done",
                 "detail": act_result.get("summary") or "",
+                "signal_tags": list(hyp.signal_tags),
             }
         )
 
-        # Chaining: inject follow-ups from this result
+        # Chaining: inject follow-ups from this result + re-rank
         for follow in _chain_from_result(hyp, act_result, memory, host):
             if not _already_attempted(memory, follow):
                 queue.append(follow)
-        queue.sort(key=lambda h: -h.priority)
+        queue = _rerank(queue, act_result)
+
+        try:
+            from .hunt_telemetry import record_telemetry
+
+            record_telemetry(
+                target_dir,
+                {
+                    "module": hyp.module,
+                    "url": hyp.url,
+                    "signal": bool(act_result.get("signal")),
+                    "outcome": act_result.get("outcome"),
+                    "aggression": level,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
         # Validate if signal
         if act_result.get("signal"):
@@ -311,14 +442,46 @@ def run_hunt(
                 status="pending",
             )
             memory.upsert_candidate(cand)
+            # Soft browser hints stay likely until ownership swap
+            verdict = "likely" if hyp.module in {"browser_diff"} else "confirmed"
+            if hyp.module == "idor" and str(
+                (act_result.get("detail") or {}).get("verdict")
+                if isinstance(act_result.get("detail"), dict)
+                else ""
+            ).lower() == "likely":
+                verdict = "likely"
             vr = validate_and_log(
                 target_dir,
                 cand,
                 observed=str(act_result.get("summary") or act_result.get("detail") or ""),
                 impact=f"Autonomous hunt signal for {hyp.module}",
+                verdict=verdict,
+                rehit=True,
+                execute_tool=execute_tool if approve_session else None,
+                approve=approve_session,
+                force=force_flag,
             )
             if vr.ok and vr.finding_id:
                 findings_logged.append(vr.finding_id)
+                try:
+                    from .hunt_resume import evidence_index_append
+
+                    evidence_index_append(
+                        target_dir,
+                        {
+                            "candidate": cand.id,
+                            "finding": vr.finding_id,
+                            "module": hyp.module,
+                            "url": hyp.url,
+                            "evidence": vr.evidence,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                if stop_on_finding():
+                    state.stopped = True
+                    state.stop_reason = f"stop_on_finding:{vr.finding_id}"
+                    break
             state.budget_remaining -= 1
             state.acts_done += 1
 
@@ -328,6 +491,13 @@ def run_hunt(
                 state.stopped = True
                 state.stop_reason = "circuit breaker (target failures)"
                 break
+
+        # Mid-hunt: turn top chain edges into hypotheses when we have signals
+        if act_result.get("signal") and state.acts_done % 4 == 0:
+            for ch in _hypotheses_from_chains(target_dir, host)[:3]:
+                if not _already_attempted(memory, ch):
+                    queue.append(ch)
+            queue = _rerank(queue, act_result)
 
         memory.save_state(state)
 
@@ -344,6 +514,9 @@ def run_hunt(
 
         chains = build_chains(target_dir)
         acts.append({"module": "build_chains", "result": {"count": chains.get("count")}})
+        for ch in _hypotheses_from_chains(target_dir, host)[:5]:
+            # Record as suggested next acts in summary only (budget done)
+            acts.append({"module": "chain_hyp", "result": {"module": ch.module, "url": ch.url}})
     except Exception:  # noqa: BLE001
         chains = {}
 
@@ -354,6 +527,32 @@ def run_hunt(
         acts.append({"module": "learn_ingest", "result": learned})
     except Exception:  # noqa: BLE001
         learned = {}
+
+    # Auto report drafts for new findings
+    if findings_logged and approve_session:
+        for fid in findings_logged[:3]:
+            try:
+                execute_tool(
+                    "write_report_draft",
+                    {"target_dir": str(target_dir), "finding_id": fid, "platform": "generic"},
+                    approve_fn=tool_approve,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    try:
+        from .hunt_resume import write_hunt_resume
+
+        write_hunt_resume(
+            target_dir,
+            host=host,
+            summary=f"stop={state.stop_reason or 'complete'} tags={surface_raw.get('tags')}",
+            acts_done=state.acts_done,
+            findings=findings_logged,
+            failures=[a.get("error", "") for a in acts if a.get("error")][:5],
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
     state.last_summary = (
         f"acts={state.acts_done} findings={len(findings_logged)} "
@@ -400,10 +599,15 @@ def _seed_queue(memory: HuntMemory, host: str, seed: str) -> None:
         memory.save_surface(data)
 
 
-def _decide(memory: HuntMemory, host: str, seed: str) -> list[Hypothesis]:
+def _decide(
+    memory: HuntMemory,
+    host: str,
+    seed: str,
+    *,
+    target_dir: Path | None = None,
+) -> list[Hypothesis]:
+    """Build hypothesis queue — evidence-driven, not blind always-ons."""
     ideas: list[Hypothesis] = []
-
-    # Always-on pack (priority order) — boost from cross-program learning
     try:
         from .learning import suggest_for_host
 
@@ -412,16 +616,31 @@ def _decide(memory: HuntMemory, host: str, seed: str) -> list[Hypothesis]:
         learned = []
     boost = {s["module"]: int(s.get("score") or 0) for s in learned if isinstance(s, dict)}
 
+    # Negative learning: skip modules marked dead for this host
+    banned: set[str] = set()
+    if target_dir:
+        neg = Path(target_dir) / "hunt" / "negative_learning.json"
+        if neg.exists():
+            try:
+                banned = set(json.loads(neg.read_text(encoding="utf-8")).get("banned_modules") or [])
+            except Exception:  # noqa: BLE001
+                banned = set()
+
+    from .observe import load_observe_tags
+
+    tags = load_observe_tags(target_dir) if target_dir else set()
     origin = seed if "://" in seed else f"https://{host}"
     parsed = urlparse(origin)
     origin_base = f"{parsed.scheme}://{parsed.netloc}"
 
+    # Early always: secrets + discover
     ideas.append(
         Hypothesis(
             module="secrets",
             url=seed,
             title="Secrets / credential leak scan",
             priority=95 + boost.get("secrets", 0),
+            aggression=MODULE_AGGRESSION["secrets"],
         )
     )
     ideas.append(
@@ -430,43 +649,7 @@ def _decide(memory: HuntMemory, host: str, seed: str) -> list[Hypothesis]:
             url=origin_base,
             title="Content discovery / path fuzz",
             priority=88 + boost.get("discover_paths", 0),
-        )
-    )
-    ideas.append(
-        Hypothesis(
-            module="recon",
-            url=seed,
-            title="Surface already mapped — skip if done",
-            priority=5,
-        )
-    )
-
-    for idea in seed_candidates_from_surface(memory):
-        ideas.append(
-            Hypothesis(
-                module=str(idea["module"]),
-                url=str(idea["url"]),
-                title=str(idea["title"]),
-                priority=int(idea.get("priority") or 50),
-                params=dict(idea.get("params") or {}),
-            )
-        )
-
-    # Login guesses
-    ideas.append(
-        Hypothesis(
-            module="auth-bypass",
-            url=origin_base + "/login",
-            title="Auth-bypass at /login",
-            priority=65 + boost.get("auth-bypass", 0),
-        )
-    )
-    ideas.append(
-        Hypothesis(
-            module="rate-limit",
-            url=seed,
-            title="Bounded rate-limit probe",
-            priority=30 + boost.get("rate-limit", 0),
+            aggression=MODULE_AGGRESSION["discover_paths"],
         )
     )
     ideas.append(
@@ -475,104 +658,292 @@ def _decide(memory: HuntMemory, host: str, seed: str) -> list[Hypothesis]:
             url=seed,
             title="Security headers fingerprint",
             priority=85 + boost.get("analyze_headers", 0),
-        )
-    )
-    ideas.append(
-        Hypothesis(
-            module="cors",
-            url=seed,
-            title="CORS Origin reflection",
-            priority=60 + boost.get("cors", 0),
-        )
-    )
-    ideas.append(
-        Hypothesis(
-            module="mine_params",
-            url=seed,
-            title="Hidden parameter mining",
-            priority=58 + boost.get("mine_params", 0),
-        )
-    )
-    ideas.append(
-        Hypothesis(
-            module="graphql",
-            url=origin_base + "/graphql",
-            title="GraphQL introspection",
-            priority=62 + boost.get("graphql", 0),
-        )
-    )
-    ideas.append(
-        Hypothesis(
-            module="open_redirect",
-            url=seed,
-            title="Open redirect probe",
-            priority=52 + boost.get("open_redirect", 0),
-            params={"param": "next"},
-        )
-    )
-    ideas.append(
-        Hypothesis(
-            module="lfi",
-            url=seed,
-            title="LFI / path traversal",
-            priority=54 + boost.get("lfi", 0),
-            params={"param": "file"},
-        )
-    )
-    ideas.append(
-        Hypothesis(
-            module="ssti",
-            url=seed,
-            title="SSTI math canary",
-            priority=53 + boost.get("ssti", 0),
-            params={"param": "q"},
-        )
-    )
-    ideas.append(
-        Hypothesis(
-            module="ssrf",
-            url=seed,
-            title="SSRF param probe",
-            priority=56 + boost.get("ssrf", 0),
-            params={"param": "url"},
-        )
-    )
-    ideas.append(
-        Hypothesis(
-            module="race",
-            url=seed,
-            title="Bounded race / parallel burst",
-            priority=48 + boost.get("race", 0),
+            aggression=1,
         )
     )
 
-    # Filter already attempted / validated
+    # Session bootstrap if accounts present and A/B missing
+    if target_dir and not unauth_only():
+        try:
+            from .accounts import has_accounts
+
+            ident = load_identity(target_dir)
+            ready = set(ident.ready_sessions())
+            if has_accounts(target_dir) and not ({"A", "B"} <= ready or len(ready) >= 2):
+                ideas.append(
+                    Hypothesis(
+                        module="session_bootstrap",
+                        url=origin_base,
+                        title="Bootstrap A/B sessions from accounts.yaml",
+                        priority=99,
+                        aggression=2,
+                        signal_tags=("login",),
+                    )
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+    for idea in seed_candidates_from_surface(memory):
+        mod = str(idea["module"])
+        if mod in banned:
+            continue
+        params = dict(idea.get("params") or {})
+        method = "GET"
+        if mod == "idor":
+            method = params.get("method") or "GET"
+            # Prefer write matrix when endpoint looks mutable
+            if any(x in idea["url"].lower() for x in ("/api/", "order", "user", "account")):
+                params.setdefault("methods", "GET,PATCH")
+                params.setdefault("matrix", "both")
+        ideas.append(
+            Hypothesis(
+                module=mod,
+                url=str(idea["url"]),
+                title=str(idea["title"]),
+                priority=int(idea.get("priority") or 50) + boost.get(mod, 0),
+                params=params,
+                method=method,
+                aggression=MODULE_AGGRESSION.get(mod, 2),
+            )
+        )
+
+    # Conditional seeds from tags / surface
+    eps = list(memory.endpoints())
+    has_graphql = any("graphql" in e.url.lower() for e in eps) or "graphql" in tags
+    has_login = any("login" in e.url.lower() for e in eps) or "login" in tags
+    has_ws = any(e.url.startswith("ws") for e in eps) or "websocket" in tags
+    has_xml = "xml" in tags or any(".xml" in e.url.lower() or "soap" in e.url.lower() for e in eps)
+    has_oauth = any("oauth" in e.url.lower() or "authorize" in e.url.lower() for e in eps)
+    has_jwt = any("jwt" in (e.notes or "").lower() or "token" in e.url.lower() for e in eps)
+
+    if has_login and "auth-bypass" not in banned:
+        ideas.append(
+            Hypothesis(
+                module="auth-bypass",
+                url=origin_base + "/login",
+                title="Auth-bypass at /login",
+                priority=65 + boost.get("auth-bypass", 0),
+                aggression=2,
+            )
+        )
+    if has_graphql and "graphql" not in banned:
+        gql = next((e.url for e in eps if "graphql" in e.url.lower()), origin_base + "/graphql")
+        ideas.append(
+            Hypothesis(
+                module="graphql",
+                url=gql,
+                title="GraphQL introspection",
+                priority=72 + boost.get("graphql", 0),
+                aggression=2,
+                signal_tags=("graphql",),
+            )
+        )
+    if has_ws and "websocket" not in banned:
+        ws = next((e.url for e in eps if e.url.startswith("ws")), f"wss://{host}/ws")
+        ideas.append(
+            Hypothesis(
+                module="websocket",
+                url=ws,
+                title="Websocket handshake",
+                priority=55,
+                aggression=2,
+            )
+        )
+    if has_xml and "xxe" not in banned:
+        xml_url = next((e.url for e in eps if "xml" in e.url.lower() or "soap" in e.url.lower()), seed)
+        ideas.append(
+            Hypothesis(
+                module="xxe",
+                url=xml_url,
+                title="XXE probe on XML sink",
+                priority=60,
+                aggression=2,
+            )
+        )
+    if has_oauth and "oauth" not in banned:
+        ou = next((e.url for e in eps if "oauth" in e.url.lower() or "authorize" in e.url.lower()), seed)
+        ideas.append(
+            Hypothesis(
+                module="oauth",
+                url=ou,
+                title="OAuth misconfig probe",
+                priority=68,
+                aggression=2,
+            )
+        )
+    if has_jwt and "jwt_active" not in banned:
+        ideas.append(
+            Hypothesis(
+                module="jwt_active",
+                url=seed,
+                title="JWT active probe",
+                priority=66,
+                aggression=2,
+            )
+        )
+
+    # Mine params / CORS only when we have HTML-ish endpoints
+    if eps:
+        ideas.append(
+            Hypothesis(
+                module="mine_params",
+                url=seed,
+                title="Hidden parameter mining",
+                priority=58 + boost.get("mine_params", 0),
+                aggression=1,
+            )
+        )
+        ideas.append(
+            Hypothesis(
+                module="cors",
+                url=seed,
+                title="CORS Origin reflection",
+                priority=60 + boost.get("cors", 0),
+                aggression=2,
+            )
+        )
+
+    # SSRF/LFI/SSTI only when surface has matching params
+    for ep in eps:
+        for p in ep.url_like_params():
+            ideas.append(
+                Hypothesis(
+                    module="ssrf",
+                    url=ep.url,
+                    title=f"SSRF via {p}",
+                    priority=70,
+                    params={"param": p},
+                    aggression=2,
+                )
+            )
+        for p in ep.params:
+            pl = p.lower()
+            if pl in {"file", "path", "template", "page", "doc"}:
+                ideas.append(
+                    Hypothesis(
+                        module="lfi",
+                        url=ep.url,
+                        title=f"LFI via {p}",
+                        priority=54,
+                        params={"param": p},
+                        aggression=2,
+                    )
+                )
+            if pl in {"q", "query", "search", "name", "template"}:
+                ideas.append(
+                    Hypothesis(
+                        module="ssti",
+                        url=ep.url,
+                        title=f"SSTI via {p}",
+                        priority=53,
+                        params={"param": p},
+                        aggression=2,
+                    )
+                )
+
+    # Browser A/B when sessions ready
+    if target_dir and not unauth_only():
+        ident = load_identity(target_dir)
+        if {"A", "B"} <= set(ident.ready_sessions()):
+            ideas.append(
+                Hypothesis(
+                    module="browser_diff",
+                    url=seed,
+                    title="Browser A/B soft IDOR",
+                    priority=75,
+                    aggression=2,
+                )
+            )
+
+    # OOB poll when configured
+    if os.environ.get("HACKBOT_OOB_BASE", "").strip():
+        ideas.append(
+            Hypothesis(
+                module="oob_poll",
+                url=seed,
+                title="OOB canary poll",
+                priority=40,
+                aggression=1,
+            )
+        )
+
     pending = []
+    seen: set[str] = set()
     for hyp in ideas:
-        if hyp.module == "recon":
-            continue  # recon done at start
+        if hyp.module == "recon" or hyp.module in banned:
+            continue
+        key = hyp.dedupe_key()
+        if key in seen:
+            continue
+        seen.add(key)
         if _already_attempted(memory, hyp):
             continue
         pending.append(hyp)
 
     pending.sort(key=lambda h: -h.priority)
-    # Cap queue growth
     return pending[:40]
 
 
+def _rerank(queue: list[Hypothesis], act_result: dict[str, Any]) -> list[Hypothesis]:
+    """Boost queue items related to last signal."""
+    if not act_result.get("signal"):
+        queue.sort(key=lambda h: -h.priority)
+        return queue
+    summary = str(act_result.get("summary") or "").lower()
+    for h in queue:
+        if h.module in summary or any(t in summary for t in h.signal_tags):
+            h.priority += 5
+        if act_result.get("outcome") == "needs_setup" and h.module == "session_bootstrap":
+            h.priority += 20
+    queue.sort(key=lambda h: -h.priority)
+    return queue
+
+
+def _hypotheses_from_chains(target_dir: Path, host: str) -> list[Hypothesis]:
+    out: list[Hypothesis] = []
+    try:
+        from .chain_builder import build_chains
+
+        chains = build_chains(target_dir)
+        for edge in (chains.get("chains") or [])[:8]:
+            to_mod = str(edge.get("to") or edge.get("module") or "")
+            if not to_mod:
+                continue
+            url = str(edge.get("url") or edge.get("endpoint") or f"https://{host}")
+            out.append(
+                Hypothesis(
+                    module=to_mod if to_mod in MODULE_AGGRESSION else "idor",
+                    url=url,
+                    title=f"Chain follow-up → {to_mod}",
+                    priority=80,
+                    aggression=MODULE_AGGRESSION.get(to_mod, 2),
+                    signal_tags=("chain",),
+                )
+            )
+    except Exception:  # noqa: BLE001
+        return []
+    return out
+
+
 def _already_attempted(memory: HuntMemory, hyp: Hypothesis) -> bool:
-    key = f"{hyp.module}|{hyp.url}|{(hyp.params or {}).get('param', '')}"
-    for row in memory.recent_attempts(80):
+    key = hyp.dedupe_key()
+    for row in memory.recent_attempts(120):
         if row.get("phase") != "act":
             continue
-        prev = (
-            f"{row.get('module')}|{row.get('url')}|"
+        row_key = row.get("dedupe_key") or (
+            f"{row.get('module')}|{row.get('method') or 'GET'}|{row.get('url')}|"
             f"{(row.get('params') or {}).get('param', '') if isinstance(row.get('params'), dict) else ''}"
         )
-        # attempts don't always store params — match module+url
-        if row.get("module") == hyp.module and row.get("url") == hyp.url:
+        if row_key == key:
             return True
-        if prev == key:
+        # legacy: module+url only when no method/param stored
+        if (
+            not row.get("dedupe_key")
+            and row.get("module") == hyp.module
+            and row.get("url") == hyp.url
+            and not (hyp.params or {}).get("param")
+            and hyp.method == "GET"
+        ):
             return True
     for c in memory.load_candidates():
         if c.module == hyp.module and c.url == hyp.url and c.status in {"validated", "rejected"}:
@@ -592,6 +963,36 @@ def _act(
 ) -> dict[str, Any]:
     """Execute one specialist module; return normalized result with optional signal."""
     target_s = str(target_dir)
+
+    if hyp.module == "session_bootstrap":
+        raw = execute_tool(
+            "session_bootstrap",
+            {
+                "target_dir": target_s,
+                "base_url": hyp.url or host,
+                "approve": approve,
+                "force": force,
+            },
+            approve_fn=approve_fn,
+        )
+        data = json.loads(raw)
+        if data.get("needs_setup"):
+            return {
+                "outcome": "needs_setup",
+                "signal": False,
+                "summary": "MFA/2FA detected — operator must complete login",
+                "detail": data,
+            }
+        # Real success = sessions ready
+        ident = load_identity(target_dir)
+        ready = ident.ready_sessions()
+        ok = len(ready) >= 1 and bool(data.get("signal") or data.get("ok"))
+        return {
+            "outcome": "ok" if ok else "failed",
+            "signal": ok,
+            "summary": f"bootstrap sessions={ready}",
+            "detail": data,
+        }
 
     if hyp.module == "secrets":
         # Prefer origin URL (scheme+host+port) for tools that take a host/base
@@ -632,6 +1033,9 @@ def _act(
                 "session_b": session_b,
                 "param": (hyp.params or {}).get("param") or "",
                 "swap_value": (hyp.params or {}).get("swap_value") or "",
+                "methods": (hyp.params or {}).get("methods") or hyp.method or "GET",
+                "matrix": (hyp.params or {}).get("matrix") or "bola",
+                "body": (hyp.params or {}).get("body") or "",
                 "approve": approve,
                 "force": force,
             },
@@ -726,6 +1130,7 @@ def _act(
         }
 
     if hyp.module == "auth-bypass":
+        before = set(load_identity(target_dir).ready_sessions())
         raw = execute_tool(
             "run_playbook",
             {
@@ -739,16 +1144,82 @@ def _act(
             approve_fn=approve_fn,
         )
         data = json.loads(raw)
-        signal = False
-        for step in data.get("steps") or []:
-            out = str(step.get("result") or "").lower()
-            if "200" in out and ("token" in out or "session" in out or "success" in out):
-                signal = True
+        after = set(load_identity(target_dir).ready_sessions())
+        # Real signal: new session material appeared (not string heuristics)
+        signal = len(after - before) > 0 or (len(after) > len(before))
         return {
-            "outcome": "done",
+            "outcome": "ok" if signal else "done",
             "signal": signal,
-            "summary": "auth-bypass probes done" + (" (interesting)" if signal else ""),
+            "summary": "auth-bypass: new session" if signal else "auth-bypass: no new session",
             "detail": data,
+        }
+
+    if hyp.module == "browser_diff":
+        raw = execute_tool(
+            "browser_diff_sessions",
+            {
+                "target_dir": target_s,
+                "url": hyp.url,
+                "session_a": "A",
+                "session_b": "B",
+                "approve": approve,
+                "force": force,
+            },
+            approve_fn=approve_fn,
+        )
+        data = json.loads(raw)
+        return {
+            "outcome": "found" if data.get("signal") or data.get("soft_idor") else "clean",
+            "signal": bool(data.get("signal") or data.get("soft_idor")),
+            "summary": str(data.get("reason") or "browser_diff"),
+            "detail": data,
+        }
+
+    if hyp.module == "oauth":
+        raw = execute_tool(
+            "oauth_probe",
+            {"target_dir": target_s, "url": hyp.url, "approve": approve, "force": force},
+            approve_fn=approve_fn,
+        )
+        data = json.loads(raw)
+        return {
+            "outcome": "found" if data.get("signal") else "clean",
+            "signal": bool(data.get("signal")),
+            "summary": str(data.get("reason") or "oauth"),
+            "detail": data,
+        }
+
+    if hyp.module == "jwt_active":
+        token = (hyp.params or {}).get("token") or ""
+        raw = execute_tool(
+            "jwt_active_probe",
+            {
+                "target_dir": target_s,
+                "url": hyp.url,
+                "token": token,
+                "approve": approve,
+                "force": force,
+            },
+            approve_fn=approve_fn,
+        )
+        data = json.loads(raw)
+        return {
+            "outcome": "found" if data.get("signal") else "clean",
+            "signal": bool(data.get("signal")),
+            "summary": str(data.get("reason") or "jwt_active"),
+            "detail": data,
+        }
+
+    if hyp.module == "oob_poll":
+        from .oob import mint_canary, poll_oob
+
+        canary = mint_canary(kind="ssrf")
+        poll = poll_oob(canary)
+        return {
+            "outcome": "hit" if poll.get("signal") else "clean",
+            "signal": bool(poll.get("signal")),
+            "summary": "oob poll",
+            "detail": {"canary": canary, "poll": poll},
         }
 
     if hyp.module == "brute":
@@ -973,10 +1444,30 @@ def _act(
             approve_fn=approve_fn,
         )
         data = json.loads(raw)
+        # Negative learning when clean XML sink repeatedly
+        if not data.get("signal"):
+            try:
+                record_negative_learning(target_dir, "xxe")
+            except Exception:  # noqa: BLE001
+                pass
         return {
             "outcome": "found" if data.get("signal") else "clean",
             "signal": bool(data.get("signal")),
             "summary": str(data.get("reason") or "xxe"),
+            "detail": data,
+        }
+
+    if hyp.module == "analyze_js":
+        raw = execute_tool(
+            "analyze_js",
+            {"target_dir": target_s, "url": hyp.url, "approve": approve, "force": force},
+            approve_fn=approve_fn,
+        )
+        data = json.loads(raw)
+        return {
+            "outcome": "mapped",
+            "signal": False,
+            "summary": str(data.get("message") or "analyze_js"),
             "detail": data,
         }
 
@@ -991,8 +1482,74 @@ def _chain_from_result(
 ) -> list[Hypothesis]:
     """Result-driven follow-ups (secrets → auth, id endpoints → idor, etc.)."""
     follows: list[Hypothesis] = []
+    detail = result.get("detail") if isinstance(result.get("detail"), dict) else {}
+
+    if hyp.module == "mine_params":
+        params = []
+        if isinstance(detail, dict):
+            params = list(detail.get("params") or detail.get("detail", {}).get("params") or [])
+            if isinstance(detail.get("detail"), dict):
+                params = params or list(detail["detail"].get("found") or detail["detail"].get("params") or [])
+        for p in params[:6]:
+            pname = p if isinstance(p, str) else str(p.get("name") if isinstance(p, dict) else p)
+            follows.append(
+                Hypothesis(
+                    module="sqli",
+                    url=hyp.url,
+                    title=f"SQLi after mine_params — {pname}",
+                    priority=70,
+                    params={"param": pname},
+                )
+            )
+            follows.append(
+                Hypothesis(
+                    module="xss",
+                    url=hyp.url,
+                    title=f"XSS after mine_params — {pname}",
+                    priority=65,
+                    params={"param": pname},
+                )
+            )
+            if "url" in pname.lower() or pname.lower() in {"url", "uri", "redirect", "next"}:
+                follows.append(
+                    Hypothesis(
+                        module="ssrf",
+                        url=hyp.url,
+                        title=f"SSRF after mine_params — {pname}",
+                        priority=72,
+                        params={"param": pname},
+                    )
+                )
+
+    if hyp.module == "session_bootstrap" and result.get("signal"):
+        for ep in memory.endpoints():
+            if ep.has_id_param() or re.search(r"/\d+(?:/|$)", ep.url):
+                follows.append(
+                    Hypothesis(
+                        module="idor",
+                        url=ep.url,
+                        title=f"IDOR after bootstrap — {ep.url}",
+                        priority=94,
+                        params={"methods": "GET,PATCH", "matrix": "both"},
+                        method="GET",
+                    )
+                )
+
+    if hyp.module == "graphql" and result.get("signal"):
+        # Queue mutation authz if schema exposed
+        follows.append(
+            Hypothesis(
+                module="idor",
+                url=hyp.url,
+                title="GraphQL mutation authz follow-up",
+                priority=90,
+                params={"methods": "POST", "matrix": "bfla", "body": '{"query":"mutation { __typename }"}'},
+                method="POST",
+                signal_tags=("graphql",),
+            )
+        )
+
     if hyp.module == "discover_paths":
-        # Fresh paths may unlock IDOR/authz targets
         for ep in memory.endpoints():
             if ep.source == "discover_paths" and (ep.has_id_param() or re.search(r"/\d+(?:/|$)", ep.url)):
                 follows.append(
@@ -1001,12 +1558,34 @@ def _chain_from_result(
                         url=ep.url,
                         title=f"IDOR after discovery — {ep.url}",
                         priority=91,
+                        params={"methods": "GET,PATCH", "matrix": "both"},
                     )
                 )
+            if any(x in ep.url.lower() for x in ("openapi", "swagger")):
+                follows.append(
+                    Hypothesis(
+                        module="analyze_js",
+                        url=ep.url,
+                        title=f"Parse API spec — {ep.url}",
+                        priority=86,
+                    )
+                )
+        # Negative learning: no interesting paths
+        if not result.get("signal") and not (detail.get("detail") or {}).get("hits"):
+            pass
+
     if hyp.module == "secrets" and result.get("signal"):
         origin = hyp.url if "://" in hyp.url else f"https://{host}"
         parsed = urlparse(origin)
         base = f"{parsed.scheme}://{parsed.netloc}"
+        follows.append(
+            Hypothesis(
+                module="session_bootstrap",
+                url=base,
+                title="Bootstrap after secrets",
+                priority=97,
+            )
+        )
         follows.append(
             Hypothesis(
                 module="auth-bypass",
@@ -1015,7 +1594,6 @@ def _chain_from_result(
                 priority=88,
             )
         )
-        # Promote IDOR if we have id-like endpoints
         for ep in memory.endpoints():
             if ep.has_id_param() or re.search(r"/\d+(?:/|$)", ep.url):
                 follows.append(
@@ -1024,8 +1602,10 @@ def _chain_from_result(
                         url=ep.url,
                         title=f"IDOR after secrets — {ep.url}",
                         priority=92,
+                        params={"methods": "GET,PATCH", "matrix": "both"},
                     )
                 )
+
     if hyp.module == "auth-bypass" and result.get("signal"):
         for ep in memory.endpoints():
             if ep.has_id_param():
@@ -1035,8 +1615,21 @@ def _chain_from_result(
                         url=ep.url,
                         title=f"IDOR after auth signal — {ep.url}",
                         priority=93,
+                        params={"methods": "GET,PATCH", "matrix": "both"},
                     )
                 )
+
+    # 401/403 → bootstrap
+    summary = str(result.get("summary") or "").lower()
+    if "401" in summary or "403" in summary:
+        follows.append(
+            Hypothesis(
+                module="session_bootstrap",
+                url=f"https://{host}",
+                title="Bootstrap after auth wall",
+                priority=96,
+            )
+        )
     return follows
 
 
@@ -1049,3 +1642,19 @@ def promote_campaign_findings(target_dir: Path, campaign_result: dict[str, Any])
         if vr and vr.ok and vr.finding_id:
             ids.append(vr.finding_id)
     return ids
+
+
+def record_negative_learning(target_dir: Path, module: str) -> None:
+    """Remember modules that are dead for this target (no graphql, etc.)."""
+    path = Path(target_dir) / "hunt" / "negative_learning.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data: dict[str, Any] = {"banned_modules": []}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            data = {"banned_modules": []}
+    banned = set(data.get("banned_modules") or [])
+    banned.add(module)
+    data["banned_modules"] = sorted(banned)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")

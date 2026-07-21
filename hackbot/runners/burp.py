@@ -159,10 +159,11 @@ def burp_rest_health(
                     "path": path,
                     "status": status,
                     "tried": tried,
+                    "control_plane": "rest_health",
                     "hint": (
-                        "Burp HTTP listener responded. Use export XML/HAR → "
-                        "import_burp_xml / import_har for surface seeding. "
-                        "Full Burp MCP control plane is not wired yet."
+                        "Burp HTTP listener responded. Use burp_issue_list / burp_proxy_history "
+                        "when API paths exist, or export XML/HAR → import_burp_xml / import_har. "
+                        "MCP stdio bridge remains optional (HACKBOT_BURP_MCP_CMD)."
                     ),
                 }
             except Exception as exc:  # noqa: BLE001
@@ -176,3 +177,68 @@ def burp_rest_health(
             "then: importa o burp.xml / traffic.har"
         ),
     }
+
+
+def burp_proxy_history(
+    *,
+    base_url: str = "http://127.0.0.1:1337",
+    timeout: float = 5.0,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Best-effort fetch of Burp REST proxy history (local only)."""
+    health = burp_rest_health(base_url=base_url, timeout=timeout)
+    if not health.get("up"):
+        return {"ok": False, "error": "burp_not_up", **health}
+    base = str(health.get("base") or base_url).rstrip("/")
+    items: list[dict[str, Any]] = []
+    for path in ("/burp/target/proxyhistory", "/v0.1/proxy/history", "/api/proxy/history"):
+        url = base + path
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "hackbot-burp-history"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read(100_000).decode("utf-8", errors="replace")
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                data = {"raw": redact_text(body[:500])}
+            if isinstance(data, list):
+                items = data[:limit]
+            elif isinstance(data, dict):
+                items = list(data.get("data") or data.get("history") or data.get("items") or [])[:limit]
+            return {"ok": True, "path": path, "count": len(items), "items": items, "base": base}
+        except Exception as exc:  # noqa: BLE001
+            continue
+    return {
+        "ok": False,
+        "error": "history_endpoint_missing",
+        "hint": "Export HAR/XML instead — this Burp build has no history REST path.",
+        "base": base,
+    }
+
+
+def burp_issue_list(
+    *,
+    base_url: str = "http://127.0.0.1:1337",
+    timeout: float = 5.0,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Best-effort Burp scanner issues list (local REST)."""
+    health = burp_rest_health(base_url=base_url, timeout=timeout)
+    if not health.get("up"):
+        return {"ok": False, "error": "burp_not_up", **health}
+    base = str(health.get("base") or base_url).rstrip("/")
+    for path in ("/burp/scanner/issues", "/v0.1/scan/issues", "/api/issues"):
+        url = base + path
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "hackbot-burp-issues"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read(100_000).decode("utf-8", errors="replace")
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                data = {"raw": redact_text(body[:500])}
+            issues = data if isinstance(data, list) else list(data.get("issues") or data.get("data") or [])[:limit]
+            return {"ok": True, "path": path, "count": len(issues), "issues": issues[:limit], "base": base}
+        except Exception:  # noqa: BLE001
+            continue
+    return {"ok": False, "error": "issues_endpoint_missing", "base": base}

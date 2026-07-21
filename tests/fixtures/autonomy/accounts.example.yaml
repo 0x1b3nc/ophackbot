@@ -1,0 +1,20 @@
+# Copy to targets/<name>/secrets/accounts.yaml (gitignored).
+# Used by session_bootstrap during autonomous hunt.
+
+accounts:
+  A:
+    username: "user_a@example.com"
+    password: "ChangeMe-A"
+    role: "user"
+  B:
+    username: "user_b@example.com"
+    password: "ChangeMe-B"
+    role: "user"
+
+login:
+  path: "/login"
+  # Optional overrides:
+  # method: POST
+  # user_field: username
+  # pass_field: password
+  # csrf_field: csrf_token
