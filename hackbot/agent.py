@@ -89,16 +89,14 @@ Filesystem: you CAN create, write, edit, append, move, and delete files
 (write_file, edit_file, append_file, make_dir, move_path, delete_path). Use them
 whenever it helps. The operator is ALWAYS asked to approve before each change.
 If denied, respect it and adjust.
-After SCOPE/setup file writes land, KEEP GOING on the original hunt task
-(run_hunt / map_surface / dry-run probes). Do not stop idle waiting for the
-operator to re-ask "now hunt".
+
+Step mode (default): do ONE meaningful step (one tool chain / one hunt act), then
+output the result + ONE next-step suggestion and STOP. Wait for the operator.
+YOLO only skips y/n approve - it does NOT mean keep executing forever.
 
 Lab autonomy: if `/tools` / capabilities shows Burp down or Go/gau missing, call
 `stack_prepare` and/or `burp_ensure` (and `lab_exec` with sudo when needed). Do not
-ask the operator to open Burp by hand. Under YOLO, approve is automatic — keep hunting
-until the deliverable is ready. OUT_OF_SCOPE stays blocked.
-When a finding is reportable / draft ready / stop criteria hit: output the result,
-ONE next-step suggestion, then STOP. No endless dry-run loops.
+ask the operator to open Burp by hand. OUT_OF_SCOPE stays blocked.
 
 Use tools instead of guessing file contents. Prefer open_playbook for a bug class
 before inventing steps. Prefer set_target when the user names a program folder.
@@ -149,13 +147,20 @@ def run_agent(
     messages.append({"role": "user", "content": user_prompt})
     _trim_history(messages)
 
+    from .step_mode import step_mode_enabled, step_mode_preamble
+
     chat_mode = is_chat_prompt(user_prompt)
     effort = resolve_effort_for_prompt(user_prompt)
     rounds = 1 if chat_mode else (max_rounds if max_rounds is not None else 8)
+    # Step mode: cap tool rounds so the model cannot chain forever in one turn.
+    if not chat_mode and max_rounds is None and step_mode_enabled():
+        rounds = min(rounds, 3)
     system = SYSTEM_CHAT if chat_mode else SYSTEM_HUNT
     active = get_active()
     if active and not chat_mode:
         system = system + "\n\n## Active target session\n" + active.context_block()
+    if not chat_mode:
+        system = system + step_mode_preamble()
     if chat_mode:
         tools = []
     else:

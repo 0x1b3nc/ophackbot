@@ -266,7 +266,10 @@ def start_repl(*, one_shot: str | None = None) -> int:
         ui.info("model brain active (from HACKBOT_PROVIDER or /provider). back home: /provider offline")
         ui.info("switch anytime:  /provider  /model  /effort  /status  /help")
     if is_yolo():
-        ui.warn("YOLO on — approve skipped; OOS still blocked. /yolo off to restore prompts.")
+        ui.warn(
+            "YOLO on - approve skipped; OOS still blocked. "
+            "Step mode still pauses after each hunt act. /yolo off to restore prompts."
+        )
 
     session = _Session()
 

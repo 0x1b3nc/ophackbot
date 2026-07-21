@@ -82,6 +82,8 @@ Hard rules:
 - Be concise, technical, first person.
 - Prefer calling the registered hackbot custom tools for recon/probes/traffic.
   Do not invent out-of-band shell/curl against live targets.
+- Do ONE meaningful step, then STOP with result + ONE next suggestion. Wait.
+  YOLO skips y/n only - it is not permission to run forever.
 """ + _FILEOP_RULES + """
 Only emit a file-op block when a file change is needed and you cannot use write_file.
 
@@ -155,7 +157,12 @@ def _build_prompt(user_prompt: str, *, chat_mode: bool, tools_on: bool, pack_lab
     preamble = PREAMBLE_CHAT if chat_mode else PREAMBLE_HUNT
     parts = [preamble]
     if not chat_mode:
+        from .step_mode import step_mode_preamble
+
         parts.append(tools_preamble_block(enabled=tools_on, pack_label=pack_label, tool_count=tool_count))
+        block = step_mode_preamble()
+        if block:
+            parts.append(block)
     parts.append(_file_create_hint(user_prompt))
     active = get_active()
     if active and not chat_mode:

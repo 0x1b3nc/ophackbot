@@ -234,7 +234,8 @@ inicie o hunting
 ```
 
 `/yolo on` skips approve prompts and turns force on. OOS stays blocked. Password
-never goes in git (`.hackbot/` is ignored).
+never goes in git (`.hackbot/` is ignored). Step mode still pauses after each
+hunt act (`HACKBOT_STEP_MODE=0` for the old full-budget loop).
 
 ## HexStrike and friends
 

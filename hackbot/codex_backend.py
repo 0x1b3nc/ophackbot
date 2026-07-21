@@ -233,7 +233,9 @@ def _should_continue_after_fileops(
     del answer  # unused; keep kw for call-site compat
     if not applied or not any(row.get("ok") for row in applied):
         return False
-    flag = os.environ.get("HACKBOT_FILEOP_CONTINUE", "1").strip().lower()
+    # Default OFF: one step then wait. Opt-in with HACKBOT_FILEOP_CONTINUE=1
+    # (still allowlist-only: SCOPE/accounts/sessions writes).
+    flag = os.environ.get("HACKBOT_FILEOP_CONTINUE", "0").strip().lower()
     if flag in {"0", "false", "off", "no"}:
         return False
     return _is_setup_fileop(applied)
@@ -273,7 +275,8 @@ Downloads/Desktop ARE allowed — never say you can only write inside the kit.
 ```
 
 Ops: write_file, append_file, edit_file, delete_path, make_dir, move_path.
-After you emit a file-op, hackbot applies it and continues you automatically.
+After you emit a file-op, hackbot applies it and stops for the operator by default.
+(Opt-in auto-continue after SCOPE/accounts/sessions: HACKBOT_FILEOP_CONTINUE=1.)
 Shell may have network + /tmp (not a read-only sandbox). Prefer hackbot tools
 (http_request, run_tool, burp_ensure, stack_prepare) when they fit; raw curl is
 ok for quick probes. Do NOT claim "network: restricted" or "/tmp read-only"
@@ -297,14 +300,14 @@ Hard rules:
   concrete command, expected evidence, stop criteria, cleanup.
 - Dry-run first. Label active work "ACTIVE - needs operator approve" (skipped under YOLO).
 - Be concise, technical, first person.
-- Lab: use hackbot tools stack_prepare / burp_ensure / lab_exec — do not ask the
+- Lab: use hackbot tools stack_prepare / burp_ensure / lab_exec - do not ask the
   operator to open Burp or fix PATH by hand. Prefer wayback_urls if gau hangs.
+- Do ONE meaningful step, then STOP with result + ONE next suggestion. Wait.
+  YOLO skips y/n only - it is not permission to run forever.
 """ + _FILEOP_RULES + """
 Only emit a file-op block when a file change is actually needed.
-After SCOPE/setup files land, keep going on the hunt — do not end the turn idle.
-When a finding is reportable / submission draft is ready / stop criteria hit:
-give the deliverable, ONE next-step suggestion, then STOP. Do not invent endless
-dry-run hypotheses or keep appending RESUME forever. Wait for the operator.
+After the step lands: short result + ONE next-step suggestion, then STOP.
+Do not invent endless dry-run hypotheses or keep appending RESUME forever.
 
 Task:
 """
@@ -434,6 +437,12 @@ def _build_prompt(
         )
     preamble = PREAMBLE_CHAT if chat_mode else PREAMBLE_HUNT
     parts = [preamble, hint]
+    if not chat_mode:
+        from .step_mode import step_mode_preamble
+
+        block = step_mode_preamble()
+        if block:
+            parts.append(block)
     if history and not chat_mode:
         recent = history[-4:]
         convo = "\n".join(f"{role}: {text}" for role, text in recent)

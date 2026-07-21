@@ -109,9 +109,8 @@ SCOPE checks, redaction, caps, and operator approve apply.
 Dry-run first (approve=false / omit approve). Only request approve=true after
 scope is IN_SCOPE and you showed what will run.
 Filesystem tools (write_file, edit_file, …) always ask the operator to approve
-(auto under /yolo). After a file write lands (SCOPE.md, accounts, notes), CONTINUE
-the original hunt task — call run_hunt / map_surface / probes next. Do not stop
-and wait for "now hunt" again.
+(auto under /yolo). After a file write or one hunt act: short result + ONE next
+suggestion, then STOP and wait for the operator. YOLO skips y/n only.
 If Burp/Go/gau is down: call stack_prepare and burp_ensure (lab_exec + sudo if needed).
 Do not ask the operator to open Burp manually.
 """

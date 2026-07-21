@@ -325,8 +325,10 @@ def run_hunt(
         and prior.budget_remaining > 0
         and (prior.host or "") in {host, ""}
         and (
-            prior.stop_reason in {"needs_setup", "paused", ""}
+            prior.stop_reason
+            in {"needs_setup", "paused", "paused_for_operator", ""}
             or (prior.stopped and prior.stop_reason == "needs_setup")
+            or (prior.stopped and prior.stop_reason == "paused_for_operator")
             or not prior.stopped
         )
     )
@@ -370,7 +372,7 @@ def run_hunt(
     if resumable and prior:
         state = prior
         state.stopped = False
-        if state.stop_reason in {"needs_setup", "paused"}:
+        if state.stop_reason in {"needs_setup", "paused", "paused_for_operator"}:
             state.stop_reason = ""
         state.host = host or state.host
         if prompt:
@@ -847,13 +849,30 @@ def run_hunt(
 
         memory.save_state(state)
 
+        # Step mode (default ON): one act (+ optional validate) then wait.
+        # YOLO skips y/n; it does not authorize full-budget unattended loops.
+        from .step_mode import step_mode_enabled
+
+        if step_mode_enabled():
+            state.stopped = True
+            state.stop_reason = "paused_for_operator"
+            detail = str(act_result.get("summary") or outcome)
+            state.last_summary = f"{hyp.module}: {detail}"[:400]
+            memory.save_state(state)
+            ui.warn(
+                "hunt step done - paused for operator. "
+                "Say continue / resume hunt (or /hunt …) for the next act."
+            )
+            break
+
     if _STOP_REQUESTED:
         state.stopped = True
         state.stop_reason = state.stop_reason or "operator /hunt stop"
     if state.budget_remaining <= 0 and not state.stop_reason:
         state.stop_reason = "budget exhausted"
 
-    state.phase = "done"
+    if state.stop_reason not in {"paused_for_operator", "needs_setup", "paused"}:
+        state.phase = "done"
     # Always attempt chain suggestions from whatever we learned
     try:
         from .chain_builder import build_chains
@@ -905,11 +924,12 @@ def run_hunt(
     except Exception:  # noqa: BLE001
         pass
 
-    state.last_summary = (
-        f"acts={state.acts_done} findings={len(findings_logged)} "
-        f"chains={chains.get('count', 0)} learned={learned.get('recorded', 0)} "
-        f"reason={state.stop_reason or 'complete'}"
-    )
+    if state.stop_reason != "paused_for_operator" or not state.last_summary:
+        state.last_summary = (
+            f"acts={state.acts_done} findings={len(findings_logged)} "
+            f"chains={chains.get('count', 0)} learned={learned.get('recorded', 0)} "
+            f"reason={state.stop_reason or 'complete'}"
+        )
     memory.save_state(state)
     clear_stop()
 
@@ -922,11 +942,15 @@ def run_hunt(
         "findings": findings_logged,
         "chains": chains.get("chains") if isinstance(chains, dict) else [],
         "stop_reason": state.stop_reason,
+        "last_summary": state.last_summary,
         "surface": surface_raw,
         "status": memory.status_summary(),
         "acts": acts[-12:],
     }
-    ui.rule("hunt done")
+    if state.stop_reason == "paused_for_operator":
+        ui.rule("hunt paused (step mode)")
+    else:
+        ui.rule("hunt done")
     ui.kv("acts", str(state.acts_done))
     ui.kv("findings", ", ".join(findings_logged) or "(none)")
     ui.kv("stop", state.stop_reason or "complete")

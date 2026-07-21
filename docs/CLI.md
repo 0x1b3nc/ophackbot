@@ -24,12 +24,16 @@ lab_exec              # local shell; sudo via HACKBOT_SUDO_PASS or .hackbot/sudo
 
 Boot already in YOLO: `HACKBOT_YOLO=1`.
 
+YOLO skips approve prompts. It does **not** mean run forever. Default step mode
+(`HACKBOT_STEP_MODE=1`) pauses the hunt after each act so you can say continue /
+resume. Full-budget unattended loop: `HACKBOT_STEP_MODE=0`.
+
 Codex sandbox (curl/httpx need this — old default was read-only and broke hunt):
 
 ```text
-# default: danger-full-access  (look for: sandbox=danger-full-access + green unlock line)
-export HACKBOT_CODEX_SANDBOX=workspace-write   # tighter, if you want
-export HACKBOT_CODEX_SANDBOX=read-only         # will break live hunt again
+# default: workspace-write + network
+# /yolo on  →  danger-full-access
+export HACKBOT_CODEX_SANDBOX=danger-full-access   # or workspace-write | read-only
 ```
 
 ## Pinning a provider (optional)

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
 from hackbot.hunt_controller import extract_host_from_prompt, hunt_status, run_hunt
@@ -213,14 +215,16 @@ class HuntControllerE2E(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
         (root / "SCOPE.md").write_text(SCOPE, encoding="utf-8")
-        result = run_hunt(
-            root,
-            "explora o que der em 127.0.0.1",
-            host="127.0.0.1",
-            approve_session=False,
-            budget=5,
-            force=True,
-        )
+        # Multi-act dry-run path (full budget); step mode covered in test_step_mode.
+        with mock.patch.dict(os.environ, {"HACKBOT_STEP_MODE": "0"}, clear=False):
+            result = run_hunt(
+                root,
+                "explora o que der em 127.0.0.1",
+                host="127.0.0.1",
+                approve_session=False,
+                budget=5,
+                force=True,
+            )
         self.assertTrue(result["ok"])
         self.assertEqual(result["approve_session"], False)
         st = hunt_status(root)
@@ -240,15 +244,16 @@ class HuntControllerE2E(unittest.TestCase):
         (root / "FINDINGS.md").write_text("# Findings\n\n", encoding="utf-8")
         (root / "RESUME.md").write_text("# Resume\n\n## Safe Next Step\n\n- TBD\n", encoding="utf-8")
 
-        result = run_hunt(
-            root,
-            f"explora o que der em {base}",
-            host=base,
-            approve_session=True,
-            budget=12,
-            approve_fn=lambda _d: True,
-            force=True,
-        )
+        with mock.patch.dict(os.environ, {"HACKBOT_STEP_MODE": "0"}, clear=False):
+            result = run_hunt(
+                root,
+                f"explora o que der em {base}",
+                host=base,
+                approve_session=True,
+                budget=12,
+                approve_fn=lambda _d: True,
+                force=True,
+            )
         self.assertTrue(result["ok"])
         self.assertGreaterEqual(int(result["acts_done"]), 1)
         # secrets should signal on /.env

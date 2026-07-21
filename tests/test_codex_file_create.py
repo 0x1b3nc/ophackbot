@@ -110,13 +110,17 @@ class CodexFileCreateTests(unittest.TestCase):
         )
         scope = [{"tool": "write_file", "path": "targets/aylo/SCOPE.md", "ok": True}]
         self.assertTrue(_is_setup_fileop(scope))
-        self.assertTrue(_should_continue_after_fileops(scope))
+        # Default HACKBOT_FILEOP_CONTINUE=0 → stop even after setup writes.
+        self.assertFalse(_should_continue_after_fileops(scope))
+        with mock.patch.dict(os.environ, {"HACKBOT_FILEOP_CONTINUE": "1"}, clear=False):
+            self.assertTrue(_should_continue_after_fileops(scope))
         # Mixed with non-setup → do not continue (avoid loops).
         mixed = scope + [
             {"tool": "append_file", "path": "targets/aylo/RESUME.md", "ok": True}
         ]
         self.assertFalse(_is_setup_fileop(mixed))
-        self.assertFalse(_should_continue_after_fileops(mixed))
+        with mock.patch.dict(os.environ, {"HACKBOT_FILEOP_CONTINUE": "1"}, clear=False):
+            self.assertFalse(_should_continue_after_fileops(mixed))
 
     def test_fileop_auto_continues_after_approve(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
