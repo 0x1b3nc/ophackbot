@@ -190,48 +190,38 @@ def _fileop_continue_prompt(
     )
 
 
-_STOP_TURN_RE = re.compile(
-    r"(?is)\b("
-    r"stop criteria|crit[eé]rio[s]? de parada|"
-    r"submet(er|a|ido)|submission[- ]ready|intigriti-ready|report[- ]ready|"
-    r"pronto para (revis[aã]o|submiss|submit)|"
-    r"draft (pronto|ready)|finding principal|"
-    r"n[aã]o (h[aá]|tenho) mais|sem mais etapa|esgotado|"
-    r"aguard(e|ando) (o )?operador|wait for (the )?operator|"
-    r"pr[oó]xima a[cç][aã]o fora"
-    r")\b"
-)
-
-_NOTE_PATH_RE = re.compile(
-    r"(?i)(?:^|[/\\])(RESUME|FINDINGS|PLAN|DEMO)\.md$|(?:^|[/\\])reports[/\\]"
+_SETUP_BASENAMES = frozenset(
+    {
+        "scope.md",
+        "accounts.yaml",
+        "accounts.yml",
+        "sessions.yaml",
+        "sessions.yml",
+    }
 )
 
 
-def answer_looks_complete(answer: str) -> bool:
-    """True when the model already wrapped up — do not auto-continue the turn."""
-    text = (answer or "").strip()
-    if not text:
-        return False
-    return bool(_STOP_TURN_RE.search(text))
+def _is_setup_fileop(applied: list[dict[str, Any]]) -> bool:
+    """Only program-setup writes (SCOPE/accounts/sessions) may auto-continue the hunt.
 
-
-def _ops_are_notes_only(applied: list[dict[str, Any]]) -> bool:
-    """RESUME/FINDINGS appends must not restart an endless hunt loop."""
+    Everything else (RESUME, FINDINGS, reports, random edits) ends the turn.
+    No phrase-matching — allowlist only, so we cannot loop on unknown cases.
+    """
     ok_rows = [r for r in applied if r.get("ok")]
     if not ok_rows:
         return False
+    saw_setup_write = False
     for row in ok_rows:
         tool = str(row.get("tool") or "")
         path = str(row.get("path") or "").replace("\\", "/")
-        if tool == "append_file":
+        base = path.rsplit("/", 1)[-1].lower()
+        if tool == "make_dir" and "/targets/" in f"/{path.lower()}/":
             continue
-        if tool in {"write_file", "edit_file"} and _NOTE_PATH_RE.search(path):
+        if tool == "write_file" and base in _SETUP_BASENAMES:
+            saw_setup_write = True
             continue
-        # SCOPE create / real code changes → may continue
-        if "SCOPE.md" in path or tool == "make_dir":
-            return False
         return False
-    return True
+    return saw_setup_write
 
 
 def _should_continue_after_fileops(
@@ -239,17 +229,14 @@ def _should_continue_after_fileops(
     *,
     answer: str = "",
 ) -> bool:
-    """Resume after setup writes — not after note-keeping or a finished finding."""
+    """Auto-continue ONLY after setup file creates — default is stop."""
+    del answer  # unused; keep kw for call-site compat
     if not applied or not any(row.get("ok") for row in applied):
         return False
     flag = os.environ.get("HACKBOT_FILEOP_CONTINUE", "1").strip().lower()
     if flag in {"0", "false", "off", "no"}:
         return False
-    if answer_looks_complete(answer):
-        return False
-    if _ops_are_notes_only(applied):
-        return False
-    return True
+    return _is_setup_fileop(applied)
 
 
 def file_mutation_result(tool: str, result_json: str) -> dict[str, Any] | None:

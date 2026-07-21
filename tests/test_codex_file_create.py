@@ -12,10 +12,9 @@ from unittest import mock
 from hackbot.codex_backend import (
     _build_prompt,
     _fileop_continue_prompt,
-    _ops_are_notes_only,
+    _is_setup_fileop,
     _should_continue_after_fileops,
     _try_direct_file_create,
-    answer_looks_complete,
     codex_sandbox_mode,
     run_codex_turn,
 )
@@ -92,25 +91,32 @@ class CodexFileCreateTests(unittest.TestCase):
         self.assertIn("inicie o hunting no aylo", text)
         self.assertIn("Do NOT re-emit", text)
 
-    def test_no_continue_after_resume_notes_or_stop(self) -> None:
-        notes = [{"tool": "append_file", "path": "targets/aylo/RESUME.md", "ok": True}]
-        self.assertTrue(_ops_are_notes_only(notes))
-        self.assertFalse(_should_continue_after_fileops(notes, answer="notas ok"))
-        self.assertTrue(
-            answer_looks_complete(
-                "Stop criteria atingido. Submeter o Adultforce no Intigriti."
+    def test_continue_only_after_setup_writes(self) -> None:
+        # Default: stop (no phrase list — allowlist only).
+        self.assertFalse(
+            _should_continue_after_fileops(
+                [{"tool": "append_file", "path": "targets/aylo/RESUME.md", "ok": True}]
             )
-        )
-        scope = [{"tool": "write_file", "path": "targets/aylo/SCOPE.md", "ok": True}]
-        self.assertTrue(
-            _should_continue_after_fileops(scope, answer="SCOPE criado, vou caçar")
         )
         self.assertFalse(
             _should_continue_after_fileops(
-                scope,
-                answer="Stop criteria atingido. Draft pronto para submissão.",
+                [{"tool": "write_file", "path": "targets/aylo/FINDINGS.md", "ok": True}]
             )
         )
+        self.assertFalse(
+            _should_continue_after_fileops(
+                [{"tool": "write_file", "path": "targets/aylo/notes.txt", "ok": True}]
+            )
+        )
+        scope = [{"tool": "write_file", "path": "targets/aylo/SCOPE.md", "ok": True}]
+        self.assertTrue(_is_setup_fileop(scope))
+        self.assertTrue(_should_continue_after_fileops(scope))
+        # Mixed with non-setup → do not continue (avoid loops).
+        mixed = scope + [
+            {"tool": "append_file", "path": "targets/aylo/RESUME.md", "ok": True}
+        ]
+        self.assertFalse(_is_setup_fileop(mixed))
+        self.assertFalse(_should_continue_after_fileops(mixed))
 
     def test_fileop_auto_continues_after_approve(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

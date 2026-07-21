@@ -11,7 +11,6 @@ from .codex_backend import (
     _MAX_FILEOP_CONTINUES,
     _fileop_continue_prompt,
     _should_continue_after_fileops,
-    answer_looks_complete,
     file_mutation_result,
 )
 from .intent import is_chat_prompt, resolve_effort_for_prompt
@@ -214,7 +213,6 @@ def run_agent(
                         pending_fileops, answer=response.text or ""
                     )
                     and fileop_continues < _MAX_FILEOP_CONTINUES
-                    and not answer_looks_complete(response.text or "")
                 ):
                     ui.info("file ops applied; continuing model (don't re-ask me)")
                     messages.append(
