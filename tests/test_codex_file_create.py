@@ -148,7 +148,7 @@ class CodexFileCreateTests(unittest.TestCase):
                 calls.append(prompt)
                 out = Path(cmd[cmd.index("-o") + 1])
                 out.write_text(answers.pop(0) if answers else second, encoding="utf-8")
-                return ("", "")
+                return ("", "", {})
 
             with mock.patch.dict(
                 os.environ,

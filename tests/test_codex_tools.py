@@ -11,19 +11,21 @@ from hackbot.codex_backend import (
     PREAMBLE_HUNT,
     _SESSION_RULES,
     _apply_tool_calls,
+    _curl_bypass_nudge,
     _extract_tool_calls,
     _normalize_tool_call,
+    _shell_http_urls,
     _tool_continue_prompt,
 )
 
 
 class CodexToolBridgeTests(unittest.TestCase):
-    def test_preamble_has_tools_and_allows_shell(self) -> None:
+    def test_preamble_requires_hackbot_tool_for_http(self) -> None:
         self.assertIn("hackbot-tool", PREAMBLE_HUNT)
         self.assertIn("http_request", PREAMBLE_HUNT)
-        self.assertIn("hackbot-tool", _SESSION_RULES)
+        self.assertIn("MUST emit", _SESSION_RULES)
+        self.assertIn("Do NOT use shell", _SESSION_RULES)
         self.assertNotIn("Do NOT run shell commands", PREAMBLE_CHAT)
-        self.assertIn("Never invent", PREAMBLE_CHAT)
 
     def test_extract_tool_block(self) -> None:
         raw = (
@@ -77,6 +79,14 @@ class CodexToolBridgeTests(unittest.TestCase):
         self.assertTrue(out[0]["ok"])
         ex.assert_called_once()
         self.assertEqual(ex.call_args[0][0], "http_request")
+
+    def test_shell_http_detection_and_nudge(self) -> None:
+        urls = _shell_http_urls("curl -s https://www.adultforce.com/api/")
+        self.assertEqual(urls, ["https://www.adultforce.com/api/"])
+        nudge = _curl_bypass_nudge("proximo passo", urls)
+        self.assertIn("http_request", nudge)
+        self.assertIn("hackbot-tool", nudge)
+        self.assertIn("adultforce.com", nudge)
 
     def test_continue_prompt_includes_result(self) -> None:
         text = _tool_continue_prompt(

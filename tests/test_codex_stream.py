@@ -19,10 +19,11 @@ class CodexStreamEventTests(unittest.TestCase):
         self.assertFalse(shown)
         self.assertEqual(printed, [])
 
-    def test_agent_message_captured_and_shown(self) -> None:
+    def test_agent_message_captured_not_dumped_as_say(self) -> None:
         stops: list[str] = []
         sink: list[str] = []
         hdr: dict = {}
+        meta: dict = {"shell_http": []}
         shown = _handle_event(
             {
                 "type": "item.completed",
@@ -31,25 +32,29 @@ class CodexStreamEventTests(unittest.TestCase):
             hdr,
             before_print=lambda: stops.append("x"),
             answer_sink=sink,
+            meta=meta,
         )
-        self.assertTrue(shown)
-        self.assertEqual(stops, ["x"])
+        self.assertFalse(shown)
+        self.assertEqual(stops, [])
         self.assertEqual(sink, ["Vou rodar o next step."])
 
-    def test_command_started_shows_run(self) -> None:
+    def test_command_started_shows_run_and_tracks_curl(self) -> None:
         hdr: dict = {}
+        meta: dict = {"shell_http": []}
         shown = _handle_event(
             {
                 "type": "item.started",
                 "item": {
                     "type": "command_execution",
-                    "command": "curl -s https://example.com",
+                    "command": "curl -s https://example.com/api/",
                     "status": "in_progress",
                 },
             },
             hdr,
+            meta=meta,
         )
         self.assertTrue(shown)
+        self.assertIn("https://example.com/api/", meta["shell_http"])
 
 
 if __name__ == "__main__":

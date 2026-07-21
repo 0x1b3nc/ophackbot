@@ -328,6 +328,43 @@ def _tool_continue_prompt(
     return "\n".join(chunks)
 
 
+_SHELL_HTTP_RE = re.compile(
+    r"(?i)\b(?:curl|wget|httpx|httpie)\b.*\bhttps?://[^\s\"']+",
+)
+
+
+def _shell_http_urls(command: str) -> list[str]:
+    """Extract http(s) URLs from a shell probe command (curl/wget/httpx)."""
+    text = command or ""
+    if not _SHELL_HTTP_RE.search(text) and not re.search(
+        r"(?i)\b(?:curl|wget|httpx)\b", text
+    ):
+        return []
+    return re.findall(r"https?://[^\s\"'\\]+", text)
+
+
+def _curl_bypass_nudge(user_prompt: str, urls: list[str]) -> str:
+    uniq = []
+    for u in urls:
+        if u not in uniq:
+            uniq.append(u)
+    listed = "\n".join(f"- {u}" for u in uniq[:8]) or "- (url from your curl)"
+    return (
+        "STOP. You used raw shell curl/wget/httpx against a target. That bypasses "
+        "Hackbot SCOPE/approve/redaction.\n"
+        "Re-do the SAME request now with ONE hackbot-tool block using http_request "
+        "(approve=true). Do NOT use shell curl for this.\n"
+        f"URLs you hit:\n{listed}\n\n"
+        "Example:\n"
+        "```hackbot-tool\n"
+        '{"tool": "http_request", "args": {"url": "'
+        + (uniq[0] if uniq else "https://example.com/")
+        + '", "method": "GET", "approve": true}}\n'
+        "```\n"
+        f"Original task: {user_prompt.strip()}"
+    )
+
+
 _SETUP_BASENAMES = frozenset(
     {
         "scope.md",
@@ -403,25 +440,25 @@ def file_mutation_result(tool: str, result_json: str) -> dict[str, Any] | None:
 ROOT = Path(__file__).resolve().parents[1]
 
 _TOOL_RULES = """
-TOOLS — you HAVE them in this Hackbot+Codex session. Do NOT invent excuses like
-"http_request unavailable" or "I cannot run shell". That is FALSE here.
+TOOLS — you HAVE them. Do NOT invent "http_request unavailable".
 
-To call a hackbot tool, emit ONE fenced hackbot-tool JSON block. Hackbot executes
-it (SCOPE + approve gate; approve is automatic under /yolo) and feeds you the result.
+For ANY HTTP(S) against the active/in-scope target, you MUST emit a hackbot-tool
+block with http_request (or idor_probe / map_surface / etc). Do NOT use shell
+curl/wget/httpx against bounty targets — that skips SCOPE/approve/redaction.
 
 ```hackbot-tool
-{"tool": "http_request", "args": {"target_dir": "targets/aylo", "url": "https://example.com/", "method": "GET", "approve": true}}
+{"tool": "http_request", "args": {"url": "https://example.com/api/", "method": "GET", "approve": true}}
 ```
+
+Hackbot runs the block and feeds you the result. target_dir is auto-filled when a
+target is active.
 
 Common tools: http_request, map_surface, scope_check, capabilities, run_tool,
 wayback_urls, crt_subdomains, burp_ensure, stack_prepare, lab_exec, run_hunt,
 set_session, detect_login, idor_probe, extract_page, read_file, list_dir.
 
-If target_dir is omitted and a target is active, Hackbot fills it in.
-Shell/curl/httpx is ALSO allowed (sandbox has network + /tmp). Prefer hackbot-tool
-for in-scope traffic so redaction/approve apply. Raw curl is fine for quick probes.
-NEVER claim "network: restricted" or "/tmp read-only" unless a command in THIS turn failed that way.
-There is NO standing rule that forbids shell for hunt work.
+Shell is ONLY for local lab (PATH, apt, reading local files, burp on localhost).
+NEVER claim "network: restricted" unless a command in THIS turn failed that way.
 """
 
 _FILEOP_RULES = """
@@ -441,8 +478,8 @@ _SESSION_RULES = _TOOL_RULES + "\n" + _FILEOP_RULES
 PREAMBLE_CHAT = """You are Hackbot, a short friendly authorized bounty/lab CLI agent.
 Answer briefly in first person.
 Greetings/thanks only: no tools, no shell.
-If they ask to fetch, probe, hunt, create files, or DO something: use hackbot-tool
-and/or shell. Never invent a "no tools / no shell" limitation.
+If they ask to fetch/probe/hunt/do something: emit hackbot-tool (http_request for
+HTTP). Never invent a "no tools" limitation. Never curl in-scope targets.
 """ + _SESSION_RULES + """
 Task:
 """
@@ -454,18 +491,14 @@ Hard rules:
 - Read local context only when the task needs it (SCOPE.md, notes). Skip for small talk.
 - Host is IN SCOPE only if it is in that program's SCOPE.md.
 - For hunt steps: falsifiable hypothesis, endpoint, aggression 0-3, policy quote,
-  concrete tool/command, expected evidence, stop criteria, cleanup.
-- Prefer ```hackbot-tool``` (http_request etc.) over guessing. Shell is allowed too.
-- Dry-run first when unsure. Under YOLO, approve is automatic.
+  ```hackbot-tool``` call (http_request), expected evidence, stop criteria.
+- Under YOLO, approve is automatic — still use hackbot-tool, not raw curl.
 - Be concise, technical, first person.
-- Lab: stack_prepare / burp_ensure / lab_exec via hackbot-tool — do not ask the
-  operator to open Burp or fix PATH by hand. Prefer wayback_urls if gau hangs.
+- Lab: stack_prepare / burp_ensure / lab_exec via hackbot-tool.
 - Do ONE meaningful step, then STOP with result + ONE next suggestion. Wait.
-  YOLO skips y/n only - it is not permission to run forever.
 """ + _SESSION_RULES + """
 Only emit a file-op block when a file change is actually needed.
 After the step lands: short result + ONE next-step suggestion, then STOP.
-Do not invent endless dry-run hypotheses or keep appending RESUME forever.
 
 Task:
 """
@@ -748,7 +781,7 @@ def run_codex_turn(
         ui.markdown_panel(answer, title="hackbot (codex)")
         ui.turn_timing(time.perf_counter() - started, 0)
         return answer
-    stdout, error = captured
+    stdout, error, stream_meta = captured
 
     answer = ""
     if out_path.exists():
@@ -790,6 +823,30 @@ def run_codex_turn(
     if allow_file_ops:
         answer, tool_calls = _extract_tool_calls(answer)
         answer, ops = _extract_fileops(answer)
+
+    # Codex ignored the bridge and curled the target — force one redo via http_request.
+    shell_http = list(stream_meta.get("shell_http") or [])
+    if (
+        allow_file_ops
+        and not tool_calls
+        and shell_http
+        and _fileop_depth == 0
+    ):
+        ui.warn("raw shell HTTP detected — forcing hackbot-tool http_request")
+        hist = list(history or [])
+        hist.append(("user", orig))
+        hist.append(("hackbot", answer or "(shell probe)"))
+        return run_codex_turn(
+            _curl_bypass_nudge(orig, shell_http),
+            history=hist,
+            model=model,
+            effort=effort,
+            timeout=timeout,
+            approve_fn=approve_fn,
+            allow_file_ops=allow_file_ops,
+            _fileop_depth=1,
+            _orig_user_prompt=orig,
+        )
 
     ui.markdown_panel(answer, title="hackbot (codex)")
     applied_tools: list[dict[str, Any]] = []
@@ -856,25 +913,6 @@ def run_codex_turn(
     return answer
 
 
-def _run_quiet(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str] | None:
-    try:
-        with ui.console.status("[cyan]codex is thinking...[/]", spinner="dots"):
-            proc = subprocess.run(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-            )
-    except subprocess.TimeoutExpired:
-        return "", f"(codex timed out after {timeout}s)"
-    except OSError as exc:
-        return "", f"(could not launch codex: {exc})"
-    return proc.stdout or "", proc.stderr or ""
-
-
 def _fmt_command(cmd: Any) -> str:
     """Human one-liner for stream UI (not the raw zsh -lc dump)."""
     return ui.summarize_command(cmd)
@@ -885,13 +923,15 @@ def _handle_event(
     printed_hdr: dict[str, Any],
     *,
     before_print: Callable[[], None] | None = None,
+    after_print: Callable[[], None] | None = None,
     answer_sink: list[str] | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> bool:
     """Render one codex JSON event. Return True if something was printed.
 
-    ``before_print`` runs once before the first console write (stop spinner).
-    Agent messages are captured into ``answer_sink`` (last wins) so empty ``-o``
-    after resume still has a fallback.
+    ``before_print`` / ``after_print`` bracket console writes (stop/restart spinner).
+    Agent messages are captured into ``answer_sink`` only — not dumped as ``say``
+    lines (that looked like broken streaming). Final answer uses the panel.
     """
     shown = False
 
@@ -910,10 +950,14 @@ def _handle_event(
         key = f"{kind}:{text}"
         if printed_hdr.get("last") == key:
             return
+        if printed_hdr.get("v") and before_print:
+            before_print()
         hdr()
         ui.activity(kind, text, style=style)
         printed_hdr["last"] = key
         shown = True
+        if after_print:
+            after_print()
 
     etype = str(obj.get("type") or "")
     if etype in {"error", "turn.failed"}:
@@ -934,23 +978,22 @@ def _handle_event(
                 snippet = snippet[:117] + "…"
             line("think", snippet)
         elif "command" in ilow or "exec" in ilow:
+            raw_cmd = str(item.get("command") or item.get("cmd") or "")
+            if meta is not None:
+                for url in _shell_http_urls(raw_cmd):
+                    meta.setdefault("shell_http", []).append(url)
+            # Only show run on start (avoid duplicate completed lines).
             status = str(item.get("status") or "")
-            cmd_txt = _fmt_command(item.get("command") or item.get("cmd") or "")
-            if etype == "item.started" or status == "in_progress":
-                line("run", cmd_txt or "(command)", "hb.cmd")
-            else:
-                line("run", cmd_txt, "hb.cmd")
+            if etype == "item.started" or status == "in_progress" or etype == "item.completed":
+                if etype == "item.completed" and printed_hdr.get("last", "").startswith("run:"):
+                    return shown
+                line("run", _fmt_command(raw_cmd) or "(command)", "hb.cmd")
         elif "message" in ilow or ilow in {"agent_message", "assistant_message"}:
             text = (item.get("text") or "").strip()
             if text and answer_sink is not None:
                 answer_sink.clear()
                 answer_sink.append(text)
-            if text and etype in {"item.completed", "item.updated", ""}:
-                # Live progress preview; full answer still rendered via -o / panel.
-                flat = " ".join(text.split())
-                if len(flat) > 140:
-                    flat = flat[:137] + "…"
-                line("say", flat, "hb.info")
+            # Do NOT print as "say" — final answer goes to markdown_panel.
         elif "file" in ilow or "mcp" in ilow or "web_search" in ilow or "todo" in ilow:
             label = ilow.replace("_", " ") or "item"
             line("do", label)
@@ -967,20 +1010,44 @@ def _handle_event(
             snippet = snippet[:117] + "…"
         line("think", snippet)
     elif mtype == "exec_command_begin":
-        line("run", _fmt_command(msg.get("command") or ""), "hb.cmd")
+        raw_cmd = str(msg.get("command") or "")
+        if meta is not None:
+            for url in _shell_http_urls(raw_cmd):
+                meta.setdefault("shell_http", []).append(url)
+        line("run", _fmt_command(raw_cmd), "hb.cmd")
     elif mtype == "error":
         line("err", msg.get("message") or "error", "hb.warn")
     return shown
 
 
-def _run_streaming(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str] | None:
+def _run_quiet(
+    cmd: list[str], prompt: str, timeout: int
+) -> tuple[str, str, dict[str, Any]] | None:
+    try:
+        with ui.console.status("[cyan]codex is thinking...[/]", spinner="dots"):
+            proc = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+    except subprocess.TimeoutExpired:
+        return "", f"(codex timed out after {timeout}s)", {}
+    except OSError as exc:
+        return "", f"(could not launch codex: {exc})", {}
+    return proc.stdout or "", proc.stderr or "", {}
+
+
+def _run_streaming(
+    cmd: list[str], prompt: str, timeout: int
+) -> tuple[str, str, dict[str, Any]] | None:
     """Stream codex JSON events as concise progress.
 
-    Returns ``(last_agent_message_or_empty, non_json_stderr)``.
-
-    Important: never ``console.print`` while a Rich Status spinner is live — that
-    races the cursor and corrupts the next ``Prompt.ask`` line. Keep the spinner
-    until the first *visible* progress line (ignore thread.started noise).
+    Returns ``(last_agent_message, non_json_stderr, meta)``.
+    Progress = think/run only. Spinner stays up between events.
     """
     try:
         proc = subprocess.Popen(
@@ -994,11 +1061,12 @@ def _run_streaming(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str]
             bufsize=1,
         )
     except OSError as exc:
-        return "", f"(could not launch codex: {exc})"
+        return "", f"(could not launch codex: {exc})", {}
 
     errbuf: list[str] = []
     printed_hdr: dict[str, Any] = {}
     answer_sink: list[str] = []
+    meta: dict[str, Any] = {"shell_http": []}
     assert proc.stdout is not None and proc.stdin is not None
     status = ui.console.status("[cyan]codex is thinking...[/]", spinner="dots")
     status_live = False
@@ -1010,12 +1078,21 @@ def _run_streaming(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str]
             status_live = False
             ui.stop_live()
 
+    def _start_spinner() -> None:
+        nonlocal status_live
+        if not status_live:
+            try:
+                status.update("[cyan]codex is working...[/]")
+            except Exception:  # noqa: BLE001
+                pass
+            status.start()
+            status_live = True
+
     try:
         # Close stdin after writing so Codex does not hang waiting for more input.
         proc.stdin.write(prompt)
         proc.stdin.close()
-        status.start()
-        status_live = True
+        _start_spinner()
         for raw_line in proc.stdout:
             raw_line = raw_line.rstrip("\r\n")
             if not raw_line:
@@ -1030,13 +1107,15 @@ def _run_streaming(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str]
                     obj,
                     printed_hdr,
                     before_print=_stop_spinner,
+                    after_print=_start_spinner,
                     answer_sink=answer_sink,
+                    meta=meta,
                 )
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
-            return "", f"(codex timed out after {timeout}s)"
+            return "", f"(codex timed out after {timeout}s)", meta
     except KeyboardInterrupt:
         proc.kill()
         raise
@@ -1045,4 +1124,4 @@ def _run_streaming(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str]
         ui.stop_live()
     if printed_hdr.get("v"):
         ui.console.print()
-    return (answer_sink[-1] if answer_sink else ""), "\n".join(errbuf)
+    return (answer_sink[-1] if answer_sink else ""), "\n".join(errbuf), meta
