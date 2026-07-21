@@ -2243,14 +2243,38 @@ def execute_tool(
         )
 
 
+def _guess_target_name() -> str:
+    """Best-effort program folder when Cursor omits set_target.target."""
+    active = get_active()
+    if active:
+        return active.name
+    if not TARGETS.is_dir():
+        return ""
+    names = sorted(
+        p.name
+        for p in TARGETS.iterdir()
+        if p.is_dir() and p.name not in {"__pycache__", "demo"}
+    )
+    if len(names) == 1:
+        return names[0]
+    if "bmwgroup" in names:
+        return "bmwgroup"
+    return ""
+
+
 def _normalize_tool_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Fill target_dir/target from the active session when the model omits them."""
     out = dict(args)
     active = get_active()
     active_dir = f"targets/{active.name}" if active else ""
 
+    # Treat blank strings as missing (Cursor sometimes sends target="").
+    for key in ("target", "target_dir", "target_name", "program", "name"):
+        if key in out and isinstance(out[key], str) and not out[key].strip():
+            out.pop(key, None)
+
     if not out.get("target_dir"):
-        alias = out.get("target") or out.get("target_name") or out.get("program")
+        alias = out.get("target") or out.get("target_name") or out.get("program") or out.get("name")
         if isinstance(alias, str) and alias.strip():
             cand = alias.strip().replace("\\", "/")
             if cand.startswith("targets/"):
@@ -2268,19 +2292,10 @@ def _normalize_tool_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
             (out.get("target_dir") or "").replace("\\", "/").startswith("targets/")
         ):
             out["target"] = Path(str(out["target_dir"]).replace("\\", "/")).name
-        elif name in {"set_target", "write_report_draft", "policy_import"} and active:
-            out["target"] = active.name
-        elif name == "set_target" and TARGETS.is_dir():
-            # Cursor often calls set_target {} — pick sole non-demo program if obvious.
-            names = sorted(
-                p.name
-                for p in TARGETS.iterdir()
-                if p.is_dir() and p.name not in {"__pycache__", "demo"}
-            )
-            if len(names) == 1:
-                out["target"] = names[0]
-            elif "bmwgroup" in names:
-                out["target"] = "bmwgroup"
+        elif name in {"set_target", "write_report_draft", "policy_import"}:
+            guessed = _guess_target_name()
+            if guessed:
+                out["target"] = guessed
 
     return out
 
@@ -2295,7 +2310,26 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
     if name == "set_target":
         from . import session as sess
 
-        session = set_active(args["target"])
+        target_name = str(
+            args.get("target") or args.get("name") or _guess_target_name() or ""
+        ).strip()
+        if not target_name:
+            available = []
+            if TARGETS.is_dir():
+                available = sorted(
+                    p.name
+                    for p in TARGETS.iterdir()
+                    if p.is_dir() and p.name != "__pycache__"
+                )
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "target required (e.g. bmwgroup). Call list_targets first.",
+                    "kind": "bad_args",
+                    "targets": available,
+                }
+            )
+        session = set_active(target_name)
         ui.success(f"active target -> {session.name}")
         ui.info(sess.status_line())
         return json.dumps(

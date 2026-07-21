@@ -40,10 +40,22 @@ class NormalizeToolArgsTests(unittest.TestCase):
         self.assertEqual(out["target_dir"], "targets/bmwgroup")
 
     def test_missing_key_soft_error_not_tool_bug(self) -> None:
-        out = execute_tool("set_target", {})
+        empty = self.root / "empty_targets"
+        empty.mkdir(exist_ok=True)
+        with mock.patch("hackbot.tools.TARGETS", empty):
+            with mock.patch("hackbot.tools.get_active", return_value=None):
+                with mock.patch("hackbot.tools._guess_target_name", return_value=""):
+                    out = execute_tool("set_target", {})
         data = json.loads(out)
         self.assertFalse(data.get("ok", True))
         self.assertEqual(data.get("kind"), "bad_args")
+
+    def test_set_target_blank_uses_bmwgroup(self) -> None:
+        with mock.patch("hackbot.tools.ROOT", self.root):
+            with mock.patch("hackbot.tools.TARGETS", self.root / "targets"):
+                with mock.patch("hackbot.tools.get_active", return_value=None):
+                    out = _normalize_tool_args("set_target", {"target": ""})
+        self.assertEqual(out.get("target"), "bmwgroup")
 
 
 if __name__ == "__main__":

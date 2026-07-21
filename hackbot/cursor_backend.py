@@ -119,6 +119,21 @@ def close_cursor_agent() -> None:
         pass
 
 
+def _is_bridge_dead(exc: BaseException) -> bool:
+    err = str(exc).lower()
+    name = type(exc).__name__.lower()
+    needles = (
+        "connection refused",
+        "errno 111",
+        "connecterror",
+        "bridge request failed",
+        "networkerror",
+        "broken pipe",
+        "connection reset",
+    )
+    return any(n in err for n in needles) or any(n in name for n in ("networkerror", "connecterror"))
+
+
 def _cursor_mode() -> str:
     """Explicit HACKBOT_CURSOR_MODE wins; else agent when tools on, plan when off."""
     raw = (os.environ.get("HACKBOT_CURSOR_MODE") or "").strip().lower()
@@ -406,12 +421,9 @@ def run_cursor_turn(
     started = time.perf_counter()
     tool_fp = cursor_tools_fingerprint(user_prompt if tools_on else "")
 
+    agent_fp = f"{resolved.fingerprint()}|{tool_fp}"
     try:
-        agent = _ensure_agent(
-            selection,
-            f"{resolved.fingerprint()}|{tool_fp}",
-            custom_tools=custom_tools,
-        )
+        agent = _ensure_agent(selection, agent_fp, custom_tools=custom_tools)
         answer, used_label = _run_send(agent, prompt, selection=selection)
     except KeyboardInterrupt:
         ui.warn("cancelled")
@@ -420,9 +432,18 @@ def run_cursor_turn(
     except Exception as exc:
         name = type(exc).__name__
         err = str(exc)
-        if name == "CursorAgentError" or "CursorAgent" in name:
+        if _is_bridge_dead(exc):
+            close_cursor_agent()
+            msg = (
+                "cursor bridge died (Connection refused). "
+                "Usually happens if Approve y/n took too long. "
+                "Fix: /clear  then resend the task; answer y/n promptly. "
+                f"Detail: {exc}"
+            )
+        elif name == "CursorAgentError" or "CursorAgent" in name:
             msg = f"cursor startup failed: {exc}"
         elif "10038" in err or "não é um soquete" in err or "not a socket" in err.lower():
+            close_cursor_agent()
             msg = (
                 "cursor bridge failed on Windows (WinError 10038). "
                 "Update hackbot (cursor_bridge_win patch) and /exit then restart the REPL. "
