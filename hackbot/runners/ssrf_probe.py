@@ -13,7 +13,7 @@ from .. import ui
 from ..redaction import redact_text
 from .base import RunnerResult, require_in_scope
 
-# Non-destructive targets: look for reflected body markers, not exfil.
+# Tiny non-destructive Linux/Windows markers + optional OOB
 _PAYLOADS = (
     ("http://127.0.0.1/", ("localhost", "127.0.0.1", "nginx", "apache", "iis")),
     ("http://169.254.169.254/latest/meta-data/", ("ami-id", "instance-id", "local-ipv4", "meta-data")),
@@ -30,11 +30,29 @@ def ssrf_probe(
     approve: bool = False,
     force: bool = False,
     timeout: float = 10.0,
+    use_oob: bool = True,
 ) -> RunnerResult:
     require_in_scope(target_dir, url, action="ssrf probe", force=force)
     parsed = urllib.parse.urlparse(url if "://" in url else f"https://{url}")
     qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
-    plan = {"url": url, "param": param, "payloads": len(_PAYLOADS), "approve": approve}
+    payloads = list(_PAYLOADS)
+    canary = None
+    if use_oob:
+        try:
+            from ..oob import enrich_ssrf_payloads, mint_canary, oob_configured
+
+            if oob_configured():
+                canary = mint_canary(kind="ssrf")
+                payloads = enrich_ssrf_payloads(payloads, canary=canary)
+        except Exception:  # noqa: BLE001
+            pass
+    plan = {
+        "url": url,
+        "param": param,
+        "payloads": len(payloads),
+        "approve": approve,
+        "oob": bool(canary),
+    }
     ui.code_panel(json.dumps(plan, indent=2), title="ssrf_probe", lexer="json")
     cmd = ["ssrf_probe", url, f"param={param}"]
     if not approve:
@@ -44,7 +62,7 @@ def ssrf_probe(
     results: list[dict[str, Any]] = []
     signal = False
     reason = "no SSRF marker"
-    for payload, markers in _PAYLOADS:
+    for payload, markers in payloads:
         qs2 = dict(qs)
         qs2[param] = [payload]
         probe = urllib.parse.urlunparse(
@@ -88,5 +106,18 @@ def ssrf_probe(
         "reason": reason,
         "results": results,
         "param": param,
+        "canary": canary,
     }
+    if canary:
+        try:
+            from ..oob import poll_oob
+
+            poll = poll_oob(canary)
+            payload_out["oob_poll"] = poll
+            if poll.get("signal"):
+                signal = True
+                payload_out["signal"] = True
+                payload_out["reason"] = "OOB canary hit"
+        except Exception:  # noqa: BLE001
+            pass
     return RunnerResult(cmd, True, 0, json.dumps(payload_out), "", "executed")

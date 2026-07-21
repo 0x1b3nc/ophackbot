@@ -42,12 +42,14 @@ from .runners import burp, hexstrike, projectdiscovery, rate_probe, reconftw
 from .runners import graphql_probe as graphql_probe_runner
 from .runners import har_import as har_import_runner
 from .runners import http_request as http_request_runner
+from .runners import idor_probe as idor_probe_runner
 from .runners import js_analyze as js_analyze_runner
 from .runners import jwt_analyze as jwt_analyze_runner
 from .runners import frida_runner
 from .runners import lfi_probe as lfi_probe_runner
 from .runners import mobsf as mobsf_runner
 from .runners import mobile as mobile_runner
+from .runners import content_discovery as content_discovery_runner
 from .runners import race_probe as race_probe_runner
 from .runners import ssrf_probe as ssrf_probe_runner
 from .runners import websocket_probe as websocket_probe_runner
@@ -60,6 +62,7 @@ from .runners import web_probes as web_probes_runner
 from .runners import xss_probe as xss_probe_runner
 from .runners import xxe_probe as xxe_probe_runner
 from .session import get_active, set_active
+from . import oob as oob_mod
 
 # label -> last http_request response dict (process-local, for assert_diff / playbooks)
 _RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
@@ -144,8 +147,87 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "label": {"type": "string"},
                 "approve": {"type": "boolean", "default": False},
                 "force": {"type": "boolean", "default": False},
+                "use_jar": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Merge/update secrets/cookie_jar.json across hunt acts",
+                },
             },
             "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "idor_probe",
+        "description": (
+            "Systematic IDOR/BOLA A/B probe: fetch URL as session A then B "
+            "(optional ID param swap) and structured assert_idor_diff. Prefer over "
+            "manual http_request+assert_diff when A/B are loaded."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "param": {"type": "string", "description": "Optional ID query param to swap for B"},
+                "swap_value": {"type": "string", "description": "Value for param when requesting as B"},
+                "session_a": {"type": "string", "default": "A"},
+                "session_b": {"type": "string", "default": "B"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+                "use_jar": {"type": "boolean", "default": True},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "discover_paths",
+        "description": (
+            "Capped content discovery wordlist against origin; seeds hunt surface.yaml. "
+            "High-signal paths only (not a full brute dictionary)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "base_url": {"type": "string"},
+                "limit": {"type": "integer", "default": 40},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+                "seed_surface": {"type": "boolean", "default": True},
+            },
+            "required": ["target_dir", "base_url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "oob_mint",
+        "description": (
+            "Mint an OOB/blind canary (SSRF/XSS). Set HACKBOT_OOB_BASE for real "
+            "Interactsh/Collaborator URLs; otherwise local reflection markers."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "default": "ssrf"},
+                "tag": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "oob_poll",
+        "description": (
+            "Poll HACKBOT_OOB_POLL_URL for canary hits (token placeholder TOKEN). "
+            "Pass canary dict from oob_mint / ssrf_probe."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "canary": {"type": "object"},
+                "token": {"type": "string", "description": "Or pass token alone to rebuild minimal canary"},
+            },
             "additionalProperties": False,
         },
     },
@@ -1763,6 +1845,21 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
     if name == "http_request":
         return _tool_http_request(args, approve_fn=approve_fn)
 
+    if name == "idor_probe":
+        return _tool_idor_probe(args, approve_fn=approve_fn)
+
+    if name == "discover_paths":
+        return _tool_discover_paths(args, approve_fn=approve_fn)
+
+    if name == "oob_mint":
+        return json.dumps(oob_mod.mint_canary(kind=str(args.get("kind") or "ssrf"), tag=str(args.get("tag") or "")))
+
+    if name == "oob_poll":
+        canary = args.get("canary")
+        if not isinstance(canary, dict):
+            canary = {"token": args.get("token") or ""}
+        return json.dumps(oob_mod.poll_oob(canary))
+
     if name == "assert_diff":
         return _tool_assert_diff(args)
 
@@ -2477,6 +2574,7 @@ def _tool_http_request(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
         approve=approve,
         force=force,
         label=label,
+        use_jar=bool(args.get("use_jar", True)),
     )
     payload: dict[str, Any]
     try:
@@ -2513,6 +2611,104 @@ def _tool_http_request(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
             "sha256": payload.get("sha256"),
             "body_preview": (payload.get("body_preview") or "")[:1500],
             "error": payload.get("error") or result.stderr,
+        }
+    )
+
+
+def _tool_idor_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
+    target = _target_path(args["target_dir"])
+    url = args["url"]
+    approve = bool(args.get("approve"))
+    force = _resolve_force_arg(args)
+    if approve:
+        refusal = _require_approval(
+            approve_fn,
+            f"Approve ACTIVE idor_probe A/B?\n  url={url}\n  force={force}",
+            kind="active_traffic",
+            tool="idor_probe",
+            host=host_from_target(url),
+            force_override=force,
+            aggression=2,
+        )
+        if refusal:
+            return refusal
+    result = idor_probe_runner.idor_probe(
+        target,
+        url,
+        param=str(args.get("param") or ""),
+        swap_value=str(args.get("swap_value") or ""),
+        session_a=str(args.get("session_a") or "A"),
+        session_b=str(args.get("session_b") or "B"),
+        approve=approve,
+        force=force,
+        use_jar=bool(args.get("use_jar", True)),
+    )
+    try:
+        payload = json.loads(result.stdout) if result.stdout else {}
+    except json.JSONDecodeError:
+        payload = {"raw": result.stdout}
+    # Cache A/B labels if present for follow-up assert_diff
+    if result.executed and isinstance(payload, dict):
+        _RESPONSE_CACHE[_cache_key(target, "idor_A")] = {
+            "status": payload.get("status_a"),
+            "body": payload.get("preview_a") or "",
+            "url": payload.get("url_a"),
+        }
+        _RESPONSE_CACHE[_cache_key(target, "idor_B")] = {
+            "status": payload.get("status_b"),
+            "body": payload.get("preview_b") or "",
+            "url": payload.get("url_b"),
+        }
+    return json.dumps(
+        {
+            "ok": payload.get("ok", True) if isinstance(payload, dict) else True,
+            "executed": result.executed,
+            "signal": bool(payload.get("signal")) if isinstance(payload, dict) else False,
+            "verdict": payload.get("verdict") if isinstance(payload, dict) else None,
+            "reason": payload.get("reason") if isinstance(payload, dict) else "",
+            "detail": payload,
+            "message": result.message,
+        }
+    )
+
+
+def _tool_discover_paths(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
+    target = _target_path(args["target_dir"])
+    base_url = args.get("base_url") or args.get("url") or ""
+    approve = bool(args.get("approve"))
+    force = _resolve_force_arg(args)
+    if approve:
+        refusal = _require_approval(
+            approve_fn,
+            f"Approve ACTIVE discover_paths?\n  base={base_url}\n  force={force}",
+            kind="active_traffic",
+            tool="discover_paths",
+            host=host_from_target(base_url),
+            force_override=force,
+            aggression=1,
+        )
+        if refusal:
+            return refusal
+    result = content_discovery_runner.discover_paths(
+        target,
+        base_url,
+        approve=approve,
+        force=force,
+        limit=int(args.get("limit") or 40),
+        seed_surface=bool(args.get("seed_surface", True)),
+    )
+    try:
+        payload = json.loads(result.stdout) if result.stdout else {}
+    except json.JSONDecodeError:
+        payload = {"raw": result.stdout}
+    return json.dumps(
+        {
+            "ok": True,
+            "executed": result.executed,
+            "signal": bool(payload.get("signal")),
+            "reason": payload.get("reason") or "",
+            "detail": payload,
+            "message": result.message,
         }
     )
 

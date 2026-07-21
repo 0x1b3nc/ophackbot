@@ -313,6 +313,42 @@ def interpret(text: str) -> Interpretation:
         intents.append("xxe")
     if _wants(text, "ssrf", "server-side request", "metadata.google", "169.254.169.254"):
         intents.append("ssrf")
+    if _wants(
+        text,
+        "idor probe",
+        "probe idor",
+        "ownership swap",
+        "a/b idor",
+        "idor a/b",
+        "bola probe",
+        "testa idor",
+        "testar idor",
+        "authz probe",
+    ):
+        intents.append("idor_probe")
+    if _wants(
+        text,
+        "discover paths",
+        "content discovery",
+        "path fuzz",
+        "fuzz paths",
+        "dirbust",
+        "descobrir paths",
+        "descobrir rotas",
+        "content fuzz",
+    ):
+        intents.append("discover_paths")
+    if _wants(
+        text,
+        "oob canary",
+        "oob mint",
+        "blind canary",
+        "collaborator",
+        "interactsh",
+        "mint canary",
+        "canary oob",
+    ):
+        intents.append("oob")
     if _wants(text, "race condition", "race cond", "toctou", "parallel burst", "condicao de corrida", "condição de corrida"):
         intents.append("race")
     if _wants(text, "websocket", "websockets", "wss://", "ws://"):
@@ -759,6 +795,42 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
             if param:
                 args["param"] = param
             plan.append(Action(f"{inj.upper()} probe.", tool, args))
+
+    if "idor_probe" in intents and (target or host):
+        plan.append(
+            Action(
+                "Check A/B sessions are loaded (masked).",
+                "show_identity",
+                {"target_dir": interp.target_dir},
+            )
+        )
+        plan.append(
+            Action(
+                "Systematic IDOR A/B ownership probe.",
+                "idor_probe",
+                {
+                    "target_dir": interp.target_dir,
+                    "url": target or (host if "://" in (host or "") else f"https://{host}"),
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+    if "discover_paths" in intents and (target or host):
+        plan.append(
+            Action(
+                "Capped content discovery / path fuzz.",
+                "discover_paths",
+                {
+                    "target_dir": interp.target_dir,
+                    "base_url": target or (host if "://" in (host or "") else f"https://{host}"),
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+    if "oob" in intents:
+        plan.append(Action("Mint OOB/blind canary.", "oob_mint", {"kind": "ssrf"}))
 
     if "race" in intents and (target or host):
         plan.append(

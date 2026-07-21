@@ -267,12 +267,20 @@ def seed_candidates_from_surface(memory: HuntMemory) -> list[dict[str, Any]]:
     ideas: list[dict[str, Any]] = []
     for ep in memory.endpoints():
         if ep.has_id_param() or re.search(r"/\d+(?:/|$)", ep.url):
+            idor_params: dict[str, str] = {}
+            id_like = {"id", "user_id", "userid", "uid", "account_id", "order_id", "object_id", "uuid"}
+            for p in ep.params:
+                if p.lower() in id_like or p.lower().endswith("_id"):
+                    idor_params["param"] = p
+                    idor_params["swap_value"] = "999999"
+                    break
             ideas.append(
                 {
                     "module": "idor",
                     "url": ep.url,
                     "title": f"IDOR probe on {ep.url}",
                     "priority": 90,
+                    "params": idor_params,
                 }
             )
         for param in ep.url_like_params():

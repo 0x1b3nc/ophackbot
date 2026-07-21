@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .. import ui
 from ..identity import load_identity
@@ -32,11 +33,20 @@ def http_request(
     force: bool = False,
     timeout: float = 20.0,
     label: str = "",
+    use_jar: bool = True,
 ) -> RunnerResult:
     """Send one request with program + session headers. Dry-run unless approve."""
     method = (method or "GET").upper()
     identity = load_identity(target_dir)
     headers = identity.merge_headers(session)
+    if use_jar:
+        from ..hunt_jar import cookie_header
+
+        host = urlparse(url if "://" in url else f"https://{url}").hostname or ""
+        jar_cookie = cookie_header(target_dir, host=host)
+        if jar_cookie:
+            existing = headers.get("Cookie") or headers.get("cookie") or ""
+            headers["Cookie"] = f"{existing}; {jar_cookie}".strip("; ").strip()
     if extra_headers:
         headers.update(extra_headers)
     if body is not None and content_type:
@@ -82,9 +92,16 @@ def http_request(
     resp_headers: dict[str, str] = {}
     resp_body = ""
     err_msg = ""
+    set_cookies: list[str] = []
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             status = int(getattr(resp, "status", None) or resp.getcode())
+            set_cookies = []
+            get_all = getattr(resp.headers, "get_all", None)
+            if callable(get_all):
+                set_cookies = list(get_all("Set-Cookie") or [])
+            elif resp.headers.get("Set-Cookie"):
+                set_cookies = [resp.headers.get("Set-Cookie")]
             resp_headers = {k: v for k, v in resp.headers.items()}
             raw = resp.read(MAX_BODY_STORE + 1)
             truncated = len(raw) > MAX_BODY_STORE
@@ -93,6 +110,10 @@ def http_request(
             resp_body = raw.decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         status = int(exc.code)
+        set_cookies = []
+        get_all = getattr(exc.headers, "get_all", None) if exc.headers else None
+        if callable(get_all):
+            set_cookies = list(get_all("Set-Cookie") or [])
         resp_headers = {k: v for k, v in (exc.headers.items() if exc.headers else [])}
         try:
             raw = exc.read(MAX_BODY_STORE)
@@ -102,9 +123,19 @@ def http_request(
     except Exception as exc:  # noqa: BLE001
         err_msg = f"{type(exc).__name__}: {exc}"
         ui.error(err_msg)
+        set_cookies = []
 
     elapsed_ms = (time.perf_counter() - started) * 1000
     body_hash = hashlib.sha256(resp_body.encode("utf-8", errors="replace")).hexdigest()
+
+    if use_jar and set_cookies:
+        from ..hunt_jar import merge_set_cookie
+
+        try:
+            merge_set_cookie(target_dir, set_cookies, url=full_url)
+        except Exception:  # noqa: BLE001
+            pass
+
     result_obj: dict[str, Any] = {
         "ok": not err_msg,
         "method": method,

@@ -43,6 +43,11 @@ CRITICAL UX — natural language first:
 - If they ask for subdomains: `crt_subdomains`. Historical URLs: `wayback_urls`.
 - GraphQL / CORS / open redirect / SSRF / race / websocket / param mining / headers:
   use the matching probe tools.
+- IDOR A/B ownership: prefer `idor_probe` (systematic) over manual http_request+assert_diff.
+- Content discovery: `discover_paths` seeds surface early in hunt.
+- Blind/OOB: `oob_mint` / `oob_poll` when HACKBOT_OOB_BASE (+ optional POLL_URL) set;
+  `ssrf_probe` auto-injects OOB payloads when configured.
+- Cookie jar: `http_request` persists Set-Cookie under secrets/cookie_jar.json across acts.
 - Mobile deep: `mobsf_*`, `frida_run_script` / `objection_explore` (approve-gated allowlisted scripts).
 - CDP extras: `browser_console`, `browser_set_cookie`.
 - If they name a target folder: `set_target`. If they only name a host and a

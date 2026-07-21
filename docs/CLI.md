@@ -242,6 +242,10 @@ Uses `read_image` (tesseract OCR if installed; optional vision via
 | APK + HAR → surface (+ hunt) | `mobile_bridge` |
 | Draft bounty report (any portal) | `write_report_draft` (`generic` default) |
 | SSRF / race / websocket | `ssrf_probe` / `race_probe` / `websocket_probe` |
+| IDOR A/B systematic | `idor_probe` |
+| Content discovery (capped) | `discover_paths` |
+| OOB / blind canary | `oob_mint` / `oob_poll` (`HACKBOT_OOB_BASE`) |
+| Cookie jar across acts | `http_request` → `secrets/cookie_jar.json` |
 | MobSF health/upload/scan | `mobsf_health` / `mobsf_upload` / `mobsf_scan` |
 | Frida/Objection (approve + allowlist) | `frida_status` / `frida_run_script` / `objection_explore` |
 | Console / set cookie (Playwright) | `browser_console` / `browser_set_cookie` |
@@ -265,9 +269,14 @@ Optional browser install: `pip install 'hackbot-kit[browser]'` then `playwright 
 
 Frida hooks are **not** auto-run (operator-driven). Use `inspect_apk` / `mobile_bridge` + Burp HAR for mobile APIs.
 
-Autonomous `run_hunt` already chains headers, CORS, params, GraphQL, redirect,
-LFI/SSTI alongside secrets/authz, then runs `build_chains` and ingests validated
-signals into `learning/techniques.jsonl`.
+Autonomous `run_hunt` already chains content discovery, headers, CORS, params,
+GraphQL, redirect, LFI/SSTI/SSRF (with OOB when `HACKBOT_OOB_BASE` is set), and
+systematic `idor_probe` A/B when sessions are loaded — then `build_chains` and
+learning ingest. Cookie jar persists under `secrets/cookie_jar.json`.
+
+OOB blind: set `HACKBOT_OOB_BASE` (e.g. Interactsh URL) and optionally
+`HACKBOT_OOB_POLL_URL` (use `TOKEN` placeholder). Without them, canaries are
+local reflection markers only.
 
 ### Report drafts (any bounty platform)
 

@@ -412,12 +412,24 @@ def _decide(memory: HuntMemory, host: str, seed: str) -> list[Hypothesis]:
         learned = []
     boost = {s["module"]: int(s.get("score") or 0) for s in learned if isinstance(s, dict)}
 
+    origin = seed if "://" in seed else f"https://{host}"
+    parsed = urlparse(origin)
+    origin_base = f"{parsed.scheme}://{parsed.netloc}"
+
     ideas.append(
         Hypothesis(
             module="secrets",
             url=seed,
             title="Secrets / credential leak scan",
             priority=95 + boost.get("secrets", 0),
+        )
+    )
+    ideas.append(
+        Hypothesis(
+            module="discover_paths",
+            url=origin_base,
+            title="Content discovery / path fuzz",
+            priority=88 + boost.get("discover_paths", 0),
         )
     )
     ideas.append(
@@ -441,9 +453,6 @@ def _decide(memory: HuntMemory, host: str, seed: str) -> list[Hypothesis]:
         )
 
     # Login guesses
-    origin = seed if "://" in seed else f"https://{host}"
-    parsed = urlparse(origin)
-    origin_base = f"{parsed.scheme}://{parsed.netloc}"
     ideas.append(
         Hypothesis(
             module="auth-bypass",
@@ -609,26 +618,51 @@ def _act(
             return {
                 "outcome": "needs_setup",
                 "signal": False,
-                "summary": "IDOR needs A/B sessions (/session set …)",
+                "summary": "IDOR needs A/B sessions (load secrets or set_session)",
             }
+        sessions = sorted(ready)
+        session_a = "A" if "A" in ready else sessions[0]
+        session_b = "B" if "B" in ready else sessions[1]
         raw = execute_tool(
-            "run_playbook",
+            "idor_probe",
             {
                 "target_dir": target_s,
-                "task": "idor",
-                "host": host,
-                "endpoint": hyp.url,
+                "url": hyp.url,
+                "session_a": session_a,
+                "session_b": session_b,
+                "param": (hyp.params or {}).get("param") or "",
+                "swap_value": (hyp.params or {}).get("swap_value") or "",
                 "approve": approve,
                 "force": force,
             },
             approve_fn=approve_fn,
         )
         data = json.loads(raw)
-        verdict = (data.get("verdict") or "").lower()
+        detail = data.get("detail") if isinstance(data.get("detail"), dict) else data
+        verdict = str(data.get("verdict") or detail.get("verdict") or "").lower()
         return {
-            "outcome": verdict or "done",
-            "signal": verdict in {"confirmed", "likely"},
-            "summary": f"idor verdict={verdict}",
+            "outcome": verdict or ("found" if data.get("signal") else "clean"),
+            "signal": bool(data.get("signal")) or verdict in {"confirmed", "likely"},
+            "summary": f"idor verdict={verdict or data.get('reason')}",
+            "detail": data,
+        }
+
+    if hyp.module == "discover_paths":
+        raw = execute_tool(
+            "discover_paths",
+            {
+                "target_dir": target_s,
+                "base_url": hyp.url or host,
+                "approve": approve,
+                "force": force,
+            },
+            approve_fn=approve_fn,
+        )
+        data = json.loads(raw)
+        return {
+            "outcome": "found" if data.get("signal") else "mapped",
+            "signal": bool(data.get("signal")),
+            "summary": str(data.get("reason") or "discover_paths"),
             "detail": data,
         }
 
@@ -957,6 +991,18 @@ def _chain_from_result(
 ) -> list[Hypothesis]:
     """Result-driven follow-ups (secrets → auth, id endpoints → idor, etc.)."""
     follows: list[Hypothesis] = []
+    if hyp.module == "discover_paths":
+        # Fresh paths may unlock IDOR/authz targets
+        for ep in memory.endpoints():
+            if ep.source == "discover_paths" and (ep.has_id_param() or re.search(r"/\d+(?:/|$)", ep.url)):
+                follows.append(
+                    Hypothesis(
+                        module="idor",
+                        url=ep.url,
+                        title=f"IDOR after discovery — {ep.url}",
+                        priority=91,
+                    )
+                )
     if hyp.module == "secrets" and result.get("signal"):
         origin = hyp.url if "://" in hyp.url else f"https://{host}"
         parsed = urlparse(origin)
