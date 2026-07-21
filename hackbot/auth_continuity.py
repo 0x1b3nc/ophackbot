@@ -102,6 +102,142 @@ def mfa_needs_setup_payload(*, session: str = "", login_url: str = "") -> dict[s
     }
 
 
+def sso_needs_setup_payload(
+    *,
+    session: str = "",
+    login_url: str = "",
+    sso_urls: list[str] | None = None,
+) -> dict[str, Any]:
+    urls = list(sso_urls or [])[:6]
+    steps = [
+        "Complete SSO/IdP login in a browser for the test account (Hackbot will not automate IdP)",
+        "Copy Cookie / Authorization into secrets/sessions.yaml under A/B",
+        "Or: set_session / /session set A --cookie '...' then resume hunt",
+    ]
+    if urls:
+        steps.insert(0, f"Open IdP: {urls[0]}")
+    return {
+        "ok": False,
+        "needs_setup": True,
+        "reason": "sso_detected",
+        "session": session,
+        "login_url": login_url,
+        "sso_urls": urls,
+        "hint": (
+            "SSO/IdP login surface detected (OAuth/OIDC/SAML). Complete login manually, "
+            "persist the session, then resume. Hackbot will not bypass SSO/MFA."
+        ),
+        "next_steps": steps,
+    }
+
+
+_SMOKE_PATHS = (
+    "/api/me",
+    "/api/user",
+    "/api/v1/me",
+    "/me",
+    "/users/me",
+    "/account",
+)
+
+
+def session_smoke(
+    target_dir: Path,
+    base_url: str,
+    *,
+    session: str = "A",
+    approve: bool = False,
+    force: bool = False,
+    timeout: float = 12.0,
+    smoke_path: str = "",
+) -> dict[str, Any]:
+    """GET whoami-style paths with session auth; confirm the session is usable."""
+    from .accounts import load_accounts
+    from .identity import load_identity
+    from .runners.base import require_in_scope
+
+    raw = base_url if "://" in base_url else f"https://{base_url}"
+    parsed = urlparse(raw)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    require_in_scope(target_dir, origin + "/", action="session smoke whoami", force=force)
+
+    accounts = load_accounts(target_dir)
+    configured = (smoke_path or accounts.login.smoke_path or "").strip()
+    paths: list[str] = []
+    if configured:
+        paths.append(configured if configured.startswith("/") else f"/{configured}")
+    for p in _SMOKE_PATHS:
+        if p not in paths:
+            paths.append(p)
+    paths = paths[:7]
+
+    plan = {"origin": origin, "session": session, "paths": paths, "approve": approve}
+    if not approve:
+        return {"ok": True, "dry_run": True, "skipped": True, **plan}
+
+    headers = {"User-Agent": "hackbot-session-smoke"}
+    headers.update(load_identity(target_dir).merge_headers(session))
+    probes: list[dict[str, Any]] = []
+    for path in paths:
+        url = urljoin(origin + "/", path.lstrip("/"))
+        try:
+            resp = scoped_fetch_bytes(
+                url,
+                target_dir=target_dir,
+                action="session smoke whoami",
+                force=force,
+                timeout=timeout,
+                headers=headers,
+                max_bytes=40_000,
+                gate_initial=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            probes.append({"url": url, "error": type(exc).__name__})
+            continue
+        body = resp.body.decode("utf-8", errors="replace")
+        low = body.lower()
+        looks_login = "password" in low and ("login" in low or "sign in" in low)
+        final = getattr(resp, "url", url) or url
+        bounced = "login" in (urlparse(final).path or "").lower() and resp.status in {200, 302, 301}
+        row = {
+            "url": url,
+            "status": resp.status,
+            "final_url": final,
+            "looks_login": looks_login or bounced,
+        }
+        probes.append(row)
+        if resp.status == 200 and not looks_login and not bounced:
+            return {
+                "ok": True,
+                "skipped": False,
+                "session": session,
+                "smoke_url": url,
+                "status": resp.status,
+                "probes": probes,
+                "reason": "whoami_ok",
+            }
+        if resp.status in {401, 403}:
+            return {
+                "ok": False,
+                "skipped": False,
+                "session": session,
+                "smoke_url": url,
+                "status": resp.status,
+                "probes": probes,
+                "reason": "unauthorized",
+                "hint": "Session persisted but whoami returned 401/403 — re-login or set_session",
+            }
+
+    # No whoami endpoint answered usefully — skip rather than fail bootstrap
+    return {
+        "ok": True,
+        "skipped": True,
+        "session": session,
+        "probes": probes,
+        "reason": "no_whoami_endpoint",
+    }
+
+
 def _csrf_path(target_dir: Path) -> Path:
     return Path(target_dir) / "hunt" / CSRF_FILE
 

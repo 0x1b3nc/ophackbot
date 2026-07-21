@@ -485,20 +485,40 @@ def run_hunt(
                         "auth_refresh": refresh,
                     }
                 elif refresh.get("ok"):
-                    ui.info("auth continuity: sessions refreshed — retrying act once")
-                    retry = _act(
+                    from .auth_continuity import session_smoke as _session_smoke
+
+                    smoke = _session_smoke(
                         target_dir,
-                        hyp,
-                        host=host,
-                        approve=approve_session,
+                        base,
+                        session="A",
+                        approve=True,
                         force=force_flag,
-                        approve_fn=tool_approve,
-                        execute_tool=execute_tool,
                     )
-                    retry = dict(retry)
-                    retry["auth_refreshed"] = True
-                    retry["auth_refresh"] = act_result["auth_refresh"]
-                    act_result = retry
+                    act_result["auth_refresh"]["smoke"] = {
+                        "ok": smoke.get("ok"),
+                        "skipped": smoke.get("skipped"),
+                        "reason": smoke.get("reason"),
+                    }
+                    if smoke.get("ok") is False and not smoke.get("skipped"):
+                        ui.warn("auth continuity: refresh ok but whoami smoke failed")
+                        act_result["summary"] = str(
+                            smoke.get("hint") or smoke.get("reason") or "smoke_failed"
+                        )
+                    else:
+                        ui.info("auth continuity: sessions refreshed — retrying act once")
+                        retry = _act(
+                            target_dir,
+                            hyp,
+                            host=host,
+                            approve=approve_session,
+                            force=force_flag,
+                            approve_fn=tool_approve,
+                            execute_tool=execute_tool,
+                        )
+                        retry = dict(retry)
+                        retry["auth_refreshed"] = True
+                        retry["auth_refresh"] = act_result["auth_refresh"]
+                        act_result = retry
                 else:
                     ui.warn(
                         f"auth continuity: refresh failed ({refresh.get('reason') or refresh.get('error')})"
@@ -1368,21 +1388,48 @@ def _act(
         )
         data = json.loads(raw)
         if data.get("needs_setup"):
+            reason = str(data.get("reason") or "needs_setup")
+            if reason == "sso_detected":
+                summary = "SSO/IdP detected — operator must complete login (no bypass)"
+            else:
+                summary = "MFA/2FA detected — operator must complete login"
             return {
                 "outcome": "needs_setup",
                 "signal": False,
-                "summary": "MFA/2FA detected — operator must complete login",
+                "summary": summary,
                 "detail": data,
+                "sso_urls": list((data.get("detect") or {}).get("sso_urls") or data.get("sso_urls") or []),
             }
         # Real success = sessions ready (chainable, NEVER a FINDINGS signal)
         ident = load_identity(target_dir)
         ready = ident.ready_sessions()
         ok = len(ready) >= 1 and bool(data.get("signal") or data.get("ok"))
+        # Smoke fail on all rows → do not chain
+        rows = data.get("results") or data.get("detail", {}).get("results") or []
+        if isinstance(data.get("detail"), dict) and not rows:
+            rows = (data.get("detail") or {}).get("results") or []
+        smoke_fail = False
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            smoke = row.get("smoke") or {}
+            if smoke.get("ok") is False and not smoke.get("skipped"):
+                smoke_fail = True
+                break
+            if row.get("reason") == "smoke_failed":
+                smoke_fail = True
+                break
+        chain_ok = ok and not smoke_fail
         return {
-            "outcome": "ok" if ok else "failed",
+            "outcome": "ok" if chain_ok else ("failed" if smoke_fail or not ok else "ok"),
             "signal": False,
-            "chain": ok,
-            "summary": f"bootstrap sessions={ready}",
+            "chain": chain_ok,
+            "smoke_ok": None if not rows else (False if smoke_fail else True),
+            "summary": (
+                f"bootstrap smoke_failed sessions={ready}"
+                if smoke_fail
+                else f"bootstrap sessions={ready}"
+            ),
             "detail": data,
         }
 
@@ -2004,18 +2051,42 @@ def _chain_from_result(
                 )
 
     if hyp.module == "session_bootstrap" and (result.get("signal") or result.get("chain")):
-        for ep in memory.endpoints():
-            if ep.has_id_param() or re.search(r"/\d+(?:/|$)", ep.url):
-                follows.append(
-                    Hypothesis(
-                        module="idor",
-                        url=ep.url,
-                        title=f"IDOR after bootstrap — {ep.url}",
-                        priority=94,
-                        params={"methods": "GET,PATCH", "matrix": "both"},
-                        method="GET",
+        # Gate IDOR on smoke: fail → no IDOR; skipped/ok → allow
+        if result.get("smoke_ok") is not False:
+            for ep in memory.endpoints():
+                if ep.has_id_param() or re.search(r"/\d+(?:/|$)", ep.url):
+                    follows.append(
+                        Hypothesis(
+                            module="idor",
+                            url=ep.url,
+                            title=f"IDOR after bootstrap — {ep.url}",
+                            priority=94,
+                            params={"methods": "GET,PATCH", "matrix": "both"},
+                            method="GET",
+                        )
                     )
+    if hyp.module == "session_bootstrap":
+        sso_urls = list(result.get("sso_urls") or [])
+        blob = detail if isinstance(detail, dict) else {}
+        if not sso_urls:
+            sso_urls = list(
+                (blob.get("detect") or {}).get("sso_urls")
+                or blob.get("sso_urls")
+                or []
+            )
+        if sso_urls or (
+            result.get("outcome") == "needs_setup"
+            and "sso" in str(result.get("summary") or "").lower()
+        ):
+            ou = sso_urls[0] if sso_urls else f"https://{host}/oauth/authorize"
+            follows.append(
+                Hypothesis(
+                    module="oauth",
+                    url=ou,
+                    title="OAuth probe after SSO login surface",
+                    priority=88,
                 )
+            )
 
     if hyp.module == "graphql" and result.get("signal"):
         # Queue mutation authz if schema exposed
@@ -2159,7 +2230,7 @@ def _chain_from_result(
                 )
             )
     if result.get("outcome") == "needs_setup" and hyp.module == "session_bootstrap":
-        # Keep MFA visible; do not invent auth follow-ups
+        # Keep MFA/SSO visible; do not invent IDOR follow-ups (oauth probe allowed)
         follows = [f for f in follows if f.module != "idor"]
     return follows
 

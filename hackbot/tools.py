@@ -230,10 +230,55 @@ TOOL_SPECS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "detect_login",
+        "description": (
+            "Probe login candidates (form / JSON API / SSO / MFA) under SCOPE. "
+            "Optional persist of login.path/fields into accounts.yaml (never passwords). "
+            "Dry-run unless approve=true."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "base_url": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+                "persist": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Write detected login: fields into accounts.yaml",
+                },
+            },
+            "required": ["target_dir", "base_url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "session_smoke",
+        "description": (
+            "Whoami smoke: GET /api/me-style paths with session A/B to verify auth works. "
+            "Dry-run unless approve=true."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "base_url": {"type": "string"},
+                "session": {"type": "string", "default": "A"},
+                "smoke_path": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "base_url"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "session_bootstrap",
         "description": (
-            "Login with secrets/accounts.yaml (CSRF-aware), persist A/B sessions + cookie jar. "
-            "MFA → needs_setup. Prefer before idor_probe when sessions missing."
+            "Login with secrets/accounts.yaml (detect form/JSON/SSO, CSRF-aware), persist A/B "
+            "sessions + cookie jar, then whoami smoke. MFA/SSO → needs_setup (no bypass). "
+            "Prefer before idor_probe when sessions missing."
         ),
         "parameters": {
             "type": "object",
@@ -2228,6 +2273,12 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
     if name == "session_bootstrap":
         return _tool_session_bootstrap(args, approve_fn=approve_fn)
 
+    if name == "detect_login":
+        return _tool_detect_login(args, approve_fn=approve_fn)
+
+    if name == "session_smoke":
+        return _tool_session_smoke(args, approve_fn=approve_fn)
+
     if name == "show_accounts":
         target = _target_path(args["target_dir"])
         accounts_mod.ensure_accounts_example(target)
@@ -3242,6 +3293,66 @@ def _tool_extract_page(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
     if isinstance(payload, dict):
         return json.dumps({"ok": payload.get("ok", True), "executed": result.executed, **payload})
     return json.dumps({"ok": True, "executed": result.executed, "detail": payload})
+
+
+def _tool_detect_login(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
+    from .login_detect import detect_login
+
+    target = _target_path(args["target_dir"])
+    base_url = str(args.get("base_url") or args.get("url") or "")
+    approve = parse_bool(args.get("approve"))
+    force = _resolve_force_arg(args)
+    persist = parse_bool(args.get("persist"))
+    if approve:
+        refusal = _require_approval(
+            approve_fn,
+            f"Approve ACTIVE detect_login?\n  base={base_url}\n  persist={persist}\n  force={force}",
+            kind="active_traffic",
+            tool="detect_login",
+            host=host_from_target(base_url),
+            force_override=force,
+            aggression=1,
+        )
+        if refusal:
+            return refusal
+    payload = detect_login(
+        target,
+        base_url,
+        approve=approve,
+        force=force,
+        persist=persist and approve,
+    )
+    return json.dumps(payload)
+
+
+def _tool_session_smoke(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
+    from .auth_continuity import session_smoke
+
+    target = _target_path(args["target_dir"])
+    base_url = str(args.get("base_url") or args.get("url") or "")
+    approve = parse_bool(args.get("approve"))
+    force = _resolve_force_arg(args)
+    if approve:
+        refusal = _require_approval(
+            approve_fn,
+            f"Approve ACTIVE session_smoke?\n  base={base_url}\n  session={args.get('session') or 'A'}\n  force={force}",
+            kind="active_traffic",
+            tool="session_smoke",
+            host=host_from_target(base_url),
+            force_override=force,
+            aggression=1,
+        )
+        if refusal:
+            return refusal
+    payload = session_smoke(
+        target,
+        base_url,
+        session=str(args.get("session") or "A"),
+        approve=approve,
+        force=force,
+        smoke_path=str(args.get("smoke_path") or ""),
+    )
+    return json.dumps(payload)
 
 
 def _tool_session_bootstrap(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:

@@ -72,6 +72,8 @@ TOOL_AGGRESSION: dict[str, int] = {
     "browser_eval": 2,
     "websocket_probe": 2,
     "session_bootstrap": 2,
+    "detect_login": 1,
+    "session_smoke": 1,
     "oauth_probe": 2,
     "jwt_active": 2,
     "http_request": 2,

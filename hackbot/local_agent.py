@@ -659,6 +659,34 @@ def interpret(text: str) -> Interpretation:
         "autentica a/b",
     ) and "set_account" not in intents:
         intents.append("session_bootstrap")
+    if _wants(
+        text,
+        "detecta login",
+        "detectar login",
+        "detect login",
+        "find login",
+        "acha o login",
+        "onde e o login",
+        "onde é o login",
+        "login surface",
+        "superficie de login",
+        "superfície de login",
+    ):
+        intents.append("detect_login")
+    if _wants(
+        text,
+        "testa sessao",
+        "testa sessão",
+        "testar sessao",
+        "testar sessão",
+        "session smoke",
+        "whoami",
+        "verifica sessao",
+        "verifica sessão",
+        "smoke session",
+        "test session",
+    ):
+        intents.append("session_smoke")
     if _wants(text, "ssrf", "server-side request", "metadata.google", "169.254.169.254"):
         intents.append("ssrf")
     if _wants(
@@ -1571,6 +1599,42 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
                 {"target_dir": interp.target_dir},
             )
         )
+    if "detect_login" in intents and (target or host):
+        plan.append(
+            Action(
+                "Detect login surface (form/JSON/SSO).",
+                "detect_login",
+                {
+                    "target_dir": interp.target_dir,
+                    "base_url": target or (host if "://" in (host or "") else f"https://{host}"),
+                    "approve": interp.approve,
+                    "force": interp.force,
+                    "persist": bool(interp.approve),
+                },
+            )
+        )
+        return plan
+
+    if "session_smoke" in intents and (target or host):
+        sess = "A"
+        m_sess = re.search(r"(?i)\b(?:sess[aã]o|session)\s*([AB])\b", text)
+        if m_sess:
+            sess = m_sess.group(1).upper()
+        plan.append(
+            Action(
+                f"Whoami smoke for session {sess}.",
+                "session_smoke",
+                {
+                    "target_dir": interp.target_dir,
+                    "base_url": target or (host if "://" in (host or "") else f"https://{host}"),
+                    "session": sess,
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+        return plan
+
     if "session_bootstrap" in intents and (target or host):
         plan.append(
             Action(

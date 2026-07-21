@@ -25,7 +25,8 @@ pentests, and learning. I don't point it at systems without permission.
 - UI and audit logs show **masked** values only
 - Required program headers: SCOPE YAML `headers:` and/or `sessions.yaml` `headers:`
 - MFA/2FA → `needs_setup` with operator next-steps; Hackbot never bypasses MFA
-- Mid-hunt 401 may re-login from `accounts.yaml` (approve already granted) and retry once
+- SSO/IdP surfaces → `needs_setup` (manual browser login + `set_session`); no IdP automation bypass
+- Mid-hunt 401 may re-login from `accounts.yaml` (approve already granted), whoami-smoke, and retry once
 
 ## Operator model
 

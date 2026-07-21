@@ -131,6 +131,8 @@ _HIGH_SIGNAL_INTENTS = frozenset(
         "crt",
         "wayback",
         "session_bootstrap",
+        "detect_login",
+        "session_smoke",
         "hunt_checklist",
         "browser",
         "browser_session",

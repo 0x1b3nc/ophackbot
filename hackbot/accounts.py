@@ -40,6 +40,8 @@ class LoginConfig:
     user_field: str = "username"
     pass_field: str = "password"
     csrf_field: str = "csrf_token"
+    content_type: str = "application/x-www-form-urlencoded"
+    smoke_path: str = ""
 
 
 @dataclass
@@ -99,6 +101,10 @@ def load_accounts(target_dir: Path) -> AccountsFile:
             user_field=str(login_raw.get("user_field") or "username"),
             pass_field=str(login_raw.get("pass_field") or "password"),
             csrf_field=str(login_raw.get("csrf_field") or "csrf_token"),
+            content_type=str(
+                login_raw.get("content_type") or "application/x-www-form-urlencoded"
+            ),
+            smoke_path=str(login_raw.get("smoke_path") or ""),
         )
     accounts = raw.get("accounts") or {}
     if isinstance(accounts, dict):
@@ -140,9 +146,61 @@ def ensure_accounts_example(target_dir: Path) -> Path:
         "    role: user\n"
         "login:\n"
         "  path: /login\n"
+        "  method: POST\n"
+        "  content_type: application/x-www-form-urlencoded\n"
+        "  # smoke_path: /api/me\n"
     )
     dest.write_text(sample, encoding="utf-8")
     return dest
+
+
+def save_login_config(
+    target_dir: Path,
+    *,
+    path: str | None = None,
+    method: str | None = None,
+    user_field: str | None = None,
+    pass_field: str | None = None,
+    csrf_field: str | None = None,
+    content_type: str | None = None,
+    smoke_path: str | None = None,
+) -> AccountsFile:
+    """Merge login: block into accounts.yaml (never touches account passwords)."""
+    acct_path = accounts_path(target_dir)
+    acct_path.parent.mkdir(parents=True, exist_ok=True)
+    raw: dict[str, Any] = {}
+    if acct_path.exists():
+        try:
+            loaded = yaml.safe_load(acct_path.read_text(encoding="utf-8")) or {}
+            if isinstance(loaded, dict):
+                raw = loaded
+        except Exception:  # noqa: BLE001
+            raw = {}
+    login = dict(raw.get("login") or {}) if isinstance(raw.get("login"), dict) else {}
+    if path is not None:
+        login["path"] = str(path)
+    if method is not None:
+        login["method"] = str(method).upper()
+    if user_field is not None:
+        login["user_field"] = str(user_field)
+    if pass_field is not None:
+        login["pass_field"] = str(pass_field)
+    if csrf_field is not None:
+        login["csrf_field"] = str(csrf_field)
+    if content_type is not None:
+        login["content_type"] = str(content_type)
+    if smoke_path is not None:
+        login["smoke_path"] = str(smoke_path)
+    login.setdefault("path", "/login")
+    login.setdefault("method", "POST")
+    raw["login"] = login
+    if "accounts" not in raw:
+        raw["accounts"] = {}
+    acct_path.write_text(
+        yaml.safe_dump(raw, default_flow_style=False, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    return load_accounts(target_dir)
 
 
 def save_account(
