@@ -41,6 +41,8 @@ class CodexFileCreateTests(unittest.TestCase):
             resume=True,
         )
         self.assertIn("hackbot-fileop", prompt)
+        self.assertIn("hackbot-tool", prompt)
+        self.assertIn("http_request", prompt)
         self.assertIn("Downloads", prompt)
         self.assertIn("never say you can only write inside the kit", prompt.lower())
         self.assertIn("scopetest.md", prompt.replace("\\", "/"))

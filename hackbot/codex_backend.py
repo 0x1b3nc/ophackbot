@@ -64,6 +64,9 @@ def codex_sandbox_mode() -> str:
 # Prefer hackbot-fileop for disk mutations (approve/YOLO audit). Shell may have
 # network depending on sandbox — do not claim "read-only forever".
 _FILEOP_RE = re.compile(r"```hackbot-fileop\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+_TOOL_RE = re.compile(r"```hackbot-tool\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+_MAX_TOOL_CONTINUES = 2
+_MAX_TOOL_RESULT_CHARS = 6000
 
 _FILEOP_ALIASES = {
     "write": "write_file", "write_file": "write_file", "create": "write_file", "overwrite": "write_file",
@@ -190,6 +193,141 @@ def _fileop_continue_prompt(
     )
 
 
+def _known_tool_names() -> frozenset[str]:
+    from . import tools
+
+    return frozenset(str(spec.get("name") or "") for spec in tools.TOOL_SPECS if spec.get("name"))
+
+
+def _extract_tool_calls(answer: str) -> tuple[str, list[dict[str, Any]]]:
+    """Pull ```hackbot-tool``` JSON blocks out of the answer."""
+    calls: list[dict[str, Any]] = []
+    for match in _TOOL_RE.finditer(answer):
+        raw = match.group(1).strip()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for item in data if isinstance(data, list) else [data]:
+            if isinstance(item, dict):
+                calls.append(item)
+    cleaned = _TOOL_RE.sub("", answer).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned, calls
+
+
+def _tool_needs_target_dir(name: str) -> bool:
+    from . import tools
+
+    for spec in tools.TOOL_SPECS:
+        if spec.get("name") != name:
+            continue
+        props = (spec.get("parameters") or {}).get("properties") or {}
+        required = (spec.get("parameters") or {}).get("required") or []
+        return "target_dir" in props or "target_dir" in required
+    return False
+
+
+def _normalize_tool_call(item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    name = str(
+        item.get("tool") or item.get("name") or item.get("op") or ""
+    ).strip()
+    args = item.get("args") if isinstance(item.get("args"), dict) else None
+    if args is None:
+        args = item.get("arguments") if isinstance(item.get("arguments"), dict) else None
+    if args is None:
+        args = {
+            k: v
+            for k, v in item.items()
+            if k not in {"tool", "name", "op", "args", "arguments"}
+        }
+    else:
+        args = dict(args)
+    if name and _tool_needs_target_dir(name) and not args.get("target_dir"):
+        active = get_active()
+        if active is not None:
+            args["target_dir"] = str(active.target_dir)
+    return name, args
+
+
+def _apply_tool_calls(
+    calls: list[dict[str, Any]],
+    approve_fn: ApproveFn | None,
+    *,
+    source: str = "codex",
+) -> list[dict[str, Any]]:
+    """Execute ```hackbot-tool``` proposals through hackbot's gated tools."""
+    from . import tools
+
+    known = _known_tool_names()
+    applied: list[dict[str, Any]] = []
+    ui.console.print(ui_text(f"{source} proposes {len(calls)} tool call(s):", "hb.label"))
+    for item in calls:
+        name, args = _normalize_tool_call(item)
+        if not name or name not in known:
+            ui.error(f"unknown tool {name!r} - skipped")
+            applied.append(
+                {
+                    "tool": name or "?",
+                    "ok": False,
+                    "error": "unknown tool",
+                    "result": "",
+                }
+            )
+            continue
+        ui.tool_line(name, "run")
+        result = tools.execute_tool(name, args, approve_fn=approve_fn)
+        try:
+            parsed = json.loads(result)
+            ok = bool(parsed.get("ok", True)) if isinstance(parsed, dict) else True
+            err = parsed.get("error") if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            parsed = None
+            ok = not result.startswith("(")
+            err = None if ok else result[:200]
+        if ok:
+            ui.tool_line(name, "ok")
+        else:
+            ui.tool_line(name, "fail")
+            if err:
+                ui.error(str(err)[:300])
+        clipped = result if len(result) <= _MAX_TOOL_RESULT_CHARS else (
+            result[: _MAX_TOOL_RESULT_CHARS - 1] + "…"
+        )
+        applied.append(
+            {
+                "tool": name,
+                "ok": ok,
+                "error": err,
+                "result": clipped,
+                "args": {k: args.get(k) for k in ("url", "method", "host", "path", "target_dir") if k in args},
+            }
+        )
+    return applied
+
+
+def _tool_continue_prompt(
+    user_prompt: str, applied: list[dict[str, Any]]
+) -> str:
+    chunks: list[str] = [
+        "Hackbot executed your hackbot-tool call(s). Results follow.",
+        "Summarize briefly for the operator + ONE next step, then STOP.",
+        "Do NOT claim tools are missing. Emit another hackbot-tool only if one "
+        "more step is truly required this turn.",
+        "",
+    ]
+    for i, row in enumerate(applied, 1):
+        mark = "ok" if row.get("ok") else f"FAILED ({row.get('error') or 'error'})"
+        chunks.append(f"### tool {i}: {row.get('tool')} → {mark}")
+        if row.get("args"):
+            chunks.append(f"args: {json.dumps(row.get('args'), ensure_ascii=False)}")
+        chunks.append("result:")
+        chunks.append(str(row.get("result") or ""))
+        chunks.append("")
+    chunks.append(f"Original task: {user_prompt.strip()}")
+    return "\n".join(chunks)
+
+
 _SETUP_BASENAMES = frozenset(
     {
         "scope.md",
@@ -264,10 +402,31 @@ def file_mutation_result(tool: str, result_json: str) -> dict[str, Any] | None:
 
 ROOT = Path(__file__).resolve().parents[1]
 
+_TOOL_RULES = """
+TOOLS — you HAVE them in this Hackbot+Codex session. Do NOT invent excuses like
+"http_request unavailable" or "I cannot run shell". That is FALSE here.
+
+To call a hackbot tool, emit ONE fenced hackbot-tool JSON block. Hackbot executes
+it (SCOPE + approve gate; approve is automatic under /yolo) and feeds you the result.
+
+```hackbot-tool
+{"tool": "http_request", "args": {"target_dir": "targets/aylo", "url": "https://example.com/", "method": "GET", "approve": true}}
+```
+
+Common tools: http_request, map_surface, scope_check, capabilities, run_tool,
+wayback_urls, crt_subdomains, burp_ensure, stack_prepare, lab_exec, run_hunt,
+set_session, detect_login, idor_probe, extract_page, read_file, list_dir.
+
+If target_dir is omitted and a target is active, Hackbot fills it in.
+Shell/curl/httpx is ALSO allowed (sandbox has network + /tmp). Prefer hackbot-tool
+for in-scope traffic so redaction/approve apply. Raw curl is fine for quick probes.
+NEVER claim "network: restricted" or "/tmp read-only" unless a command in THIS turn failed that way.
+There is NO standing rule that forbids shell for hunt work.
+"""
+
 _FILEOP_RULES = """
-Files: for SCOPE/accounts/notes the operator cares about, emit ONE fenced
-hackbot-fileop block; Hackbot applies it (kit, home, Downloads, Desktop) after
-approve (auto under YOLO). Prefer that over raw shell redirects for those files.
+Files: for SCOPE/accounts/notes, emit ONE fenced hackbot-fileop block; Hackbot
+applies it (kit, home, Downloads, Desktop) after approve (auto under YOLO).
 Downloads/Desktop ARE allowed — never say you can only write inside the kit.
 
 ```hackbot-fileop
@@ -275,18 +434,16 @@ Downloads/Desktop ARE allowed — never say you can only write inside the kit.
 ```
 
 Ops: write_file, append_file, edit_file, delete_path, make_dir, move_path.
-After you emit a file-op, hackbot applies it and stops for the operator by default.
-(Opt-in auto-continue after SCOPE/accounts/sessions: HACKBOT_FILEOP_CONTINUE=1.)
-Shell may have network + /tmp (not a read-only sandbox). Prefer hackbot tools
-(http_request, run_tool, burp_ensure, stack_prepare) when they fit; raw curl is
-ok for quick probes. Do NOT claim "network: restricted" or "/tmp read-only"
-unless a command actually failed with that error in THIS turn.
 """
 
+_SESSION_RULES = _TOOL_RULES + "\n" + _FILEOP_RULES
+
 PREAMBLE_CHAT = """You are Hackbot, a short friendly authorized bounty/lab CLI agent.
-Answer briefly in first person. Do NOT read repo files. Do NOT run shell commands.
-If they want hunting work, ask for a concrete task (host, target folder, bug class).
-""" + _FILEOP_RULES + """
+Answer briefly in first person.
+Greetings/thanks only: no tools, no shell.
+If they ask to fetch, probe, hunt, create files, or DO something: use hackbot-tool
+and/or shell. Never invent a "no tools / no shell" limitation.
+""" + _SESSION_RULES + """
 Task:
 """
 
@@ -297,14 +454,15 @@ Hard rules:
 - Read local context only when the task needs it (SCOPE.md, notes). Skip for small talk.
 - Host is IN SCOPE only if it is in that program's SCOPE.md.
 - For hunt steps: falsifiable hypothesis, endpoint, aggression 0-3, policy quote,
-  concrete command, expected evidence, stop criteria, cleanup.
-- Dry-run first. Label active work "ACTIVE - needs operator approve" (skipped under YOLO).
+  concrete tool/command, expected evidence, stop criteria, cleanup.
+- Prefer ```hackbot-tool``` (http_request etc.) over guessing. Shell is allowed too.
+- Dry-run first when unsure. Under YOLO, approve is automatic.
 - Be concise, technical, first person.
-- Lab: use hackbot tools stack_prepare / burp_ensure / lab_exec - do not ask the
+- Lab: stack_prepare / burp_ensure / lab_exec via hackbot-tool — do not ask the
   operator to open Burp or fix PATH by hand. Prefer wayback_urls if gau hangs.
 - Do ONE meaningful step, then STOP with result + ONE next suggestion. Wait.
   YOLO skips y/n only - it is not permission to run forever.
-""" + _FILEOP_RULES + """
+""" + _SESSION_RULES + """
 Only emit a file-op block when a file change is actually needed.
 After the step lands: short result + ONE next-step suggestion, then STOP.
 Do not invent endless dry-run hypotheses or keep appending RESUME forever.
@@ -425,13 +583,13 @@ def _build_prompt(
 ) -> str:
     hint = _file_create_hint(user_prompt)
     if resume and history:
-        # Resume keeps session context but MUST restate file-op rules — otherwise
-        # Codex invents "I can only write inside the kit".
+        # Resume keeps session context but MUST restate tool/file rules — otherwise
+        # Codex invents "no http_request" / "cannot run shell" / kit-only writes.
         recent = history[-4:]
         convo = "\n".join(f"{role}: {text}" for role, text in recent)
         return (
             "Continue.\n"
-            + _FILEOP_RULES
+            + _SESSION_RULES
             + hint
             + f"\nRecent:\n{convo}\n\nUser: {user_prompt.strip()}\n"
         )
@@ -628,15 +786,45 @@ def run_codex_turn(
         answer = (error or "").strip() or "(codex produced no output)"
 
     ops: list[dict[str, Any]] = []
+    tool_calls: list[dict[str, Any]] = []
     if allow_file_ops:
+        answer, tool_calls = _extract_tool_calls(answer)
         answer, ops = _extract_fileops(answer)
 
     ui.markdown_panel(answer, title="hackbot (codex)")
+    applied_tools: list[dict[str, Any]] = []
+    if tool_calls:
+        applied_tools = _apply_tool_calls(tool_calls, approve_fn)
     applied: list[dict[str, Any]] = []
     if ops:
         applied = _apply_fileops(ops, approve_fn)
     _CODEX_SESSION_READY = True
     _CODEX_LAST_SANDBOX = sandbox
+
+    # Tool results must be fed back — otherwise Codex guesses and invents
+    # "I don't have http_request".
+    if applied_tools and _fileop_depth < _MAX_TOOL_CONTINUES:
+        ui.info("tool results ready; continuing codex")
+        hist = list(history or [])
+        hist.append(("user", orig))
+        hist.append(("hackbot", answer or "(tools ran)"))
+        cont = run_codex_turn(
+            _tool_continue_prompt(orig, applied_tools),
+            history=hist,
+            model=model,
+            effort=effort,
+            timeout=timeout,
+            approve_fn=approve_fn,
+            allow_file_ops=allow_file_ops,
+            _fileop_depth=_fileop_depth + 1,
+            _orig_user_prompt=orig,
+        )
+        combined = "\n\n".join(p for p in (answer, cont) if (p or "").strip()).strip()
+        ui.turn_timing(
+            time.perf_counter() - started,
+            len(ops) + len(applied_tools),
+        )
+        return combined or answer
 
     if (
         allow_file_ops
@@ -659,12 +847,12 @@ def run_codex_turn(
             _orig_user_prompt=orig,
         )
         combined = "\n\n".join(p for p in (answer, cont) if (p or "").strip()).strip()
-        ui.turn_timing(time.perf_counter() - started, len(ops))
+        ui.turn_timing(time.perf_counter() - started, len(ops) + len(applied_tools))
         return combined or answer
     if applied and not _should_continue_after_fileops(applied, answer=answer):
         ui.info("file ops done; turn complete (not auto-continuing)")
 
-    ui.turn_timing(time.perf_counter() - started, len(ops))
+    ui.turn_timing(time.perf_counter() - started, len(ops) + len(applied_tools))
     return answer
 
 
