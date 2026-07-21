@@ -47,6 +47,8 @@ PACKS: dict[str, tuple[str, ...]] = {
         "burp_rest_health",
         "burp_proxy_history",
         "burp_issue_list",
+        "burp_replay",
+        "burp_replay_history",
         "secrets_scan",
         "analyze_jwt",
         "discover_paths",

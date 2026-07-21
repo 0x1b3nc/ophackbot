@@ -1233,6 +1233,27 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
             )
     if "burp_rest" in intents:
         plan.append(Action("Check local Burp REST listener.", "burp_rest_health", {}))
+    if _wants(text, "burp replay", "replay burp", "burp send", "repeater", "replay history"):
+        replay_url = ""
+        if target and "://" in target:
+            replay_url = target
+        elif host:
+            replay_url = f"https://{host}/"
+        if replay_url:
+            plan.append(
+                Action(
+                    "Burp control-plane replay (dry-run).",
+                    "burp_replay",
+                    {
+                        "target_dir": interp.target_dir,
+                        "url": replay_url,
+                        "approve": False,
+                        "force": True,
+                    },
+                )
+            )
+        else:
+            plan.append(Action("Check Burp REST before replay.", "burp_rest_health", {}))
     if "learn_suggest" in intents:
         plan.append(
             Action(

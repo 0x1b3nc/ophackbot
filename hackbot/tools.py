@@ -1086,18 +1086,59 @@ TOOL_SPECS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "burp_replay",
+        "description": (
+            "Burp control-plane replay: REST send → optional MCP (HACKBOT_BURP_MCP_CMD) → "
+            "scoped http_request fallback. Approve-gated; SCOPE enforced."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "method": {"type": "string", "default": "GET"},
+                "body": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+                "base_url": {"type": "string"},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "burp_replay_history",
+        "description": "Replay item N from Burp proxy history via burp_replay.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "index": {"type": "integer", "default": 0},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+                "base_url": {"type": "string"},
+            },
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "interactsh_status",
-        "description": "Show HACKBOT_OOB_* / Interactsh env configuration.",
+        "description": (
+            "Show Interactsh / OOB config (HACKBOT_INTERACTSH*, HACKBOT_OOB_*)."
+        ),
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
         "name": "interactsh_register",
-        "description": "Mint OOB canary against HACKBOT_OOB_BASE.",
+        "description": (
+            "Register with Interactsh (real /register) or mint legacy OOB canary."
+        ),
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
         "name": "interactsh_poll",
-        "description": "Poll OOB canary (wait loop).",
+        "description": "Poll Interactsh session (decrypt) or legacy OOB poll URL.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2287,6 +2328,10 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
                 limit=int(args.get("limit") or 20),
             )
         )
+    if name == "burp_replay":
+        return _tool_burp_replay(args, approve_fn=approve_fn)
+    if name == "burp_replay_history":
+        return _tool_burp_replay_history(args, approve_fn=approve_fn)
     if name == "interactsh_status":
         from .interactsh_client import interactsh_status
 
@@ -3856,6 +3901,62 @@ def _tool_import_burp_xml(args: dict[str, Any]) -> str:
         return json.dumps({"ok": False, "error": str(exc), "kind": "path_blocked"})
     result = burp.seed_surface_from_xml(target, path)
     return json.dumps(result)
+
+
+def _tool_burp_replay(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
+    target = _target_path(args["target_dir"])
+    url = args["url"]
+    approve = bool(args.get("approve"))
+    force = _resolve_force_arg(args)
+    if approve:
+        refusal = _require_approval(
+            approve_fn,
+            f"Approve Burp replay / send?\n  url={url}\n  method={args.get('method') or 'GET'}\n  force={force}",
+            kind="active_traffic",
+            tool="burp_replay",
+            host=host_from_target(url),
+            force_override=force,
+            aggression=2,
+        )
+        if refusal:
+            return refusal
+    out = burp.burp_replay_request(
+        target,
+        url=url,
+        method=str(args.get("method") or "GET"),
+        body=str(args.get("body") or ""),
+        approve=approve,
+        force=force,
+        base_url=str(args.get("base_url") or ""),
+    )
+    return json.dumps(out)
+
+
+def _tool_burp_replay_history(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
+    target = _target_path(args["target_dir"])
+    approve = bool(args.get("approve"))
+    force = _resolve_force_arg(args)
+    idx = int(args.get("index") or 0)
+    if approve:
+        refusal = _require_approval(
+            approve_fn,
+            f"Approve Burp history replay?\n  index={idx}\n  force={force}",
+            kind="active_traffic",
+            tool="burp_replay_history",
+            host="127.0.0.1",
+            force_override=force,
+            aggression=2,
+        )
+        if refusal:
+            return refusal
+    out = burp.burp_replay_from_history(
+        target,
+        index=idx,
+        approve=approve,
+        force=force,
+        base_url=str(args.get("base_url") or ""),
+    )
+    return json.dumps(out)
 
 
 def _tool_mobile_bridge(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:

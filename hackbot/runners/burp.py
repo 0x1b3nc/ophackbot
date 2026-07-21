@@ -242,3 +242,250 @@ def burp_issue_list(
         except Exception:  # noqa: BLE001
             continue
     return {"ok": False, "error": "issues_endpoint_missing", "base": base}
+
+
+def _burp_base() -> str:
+    import os
+
+    return (os.environ.get("HACKBOT_BURP_BASE") or "http://127.0.0.1:1337").strip().rstrip("/")
+
+
+def _burp_headers() -> dict[str, str]:
+    import os
+
+    headers = {"User-Agent": "hackbot-burp-cp", "Content-Type": "application/json"}
+    key = (os.environ.get("HACKBOT_BURP_API_KEY") or "").strip()
+    if key:
+        headers["Authorization"] = key if " " in key else f"Bearer {key}"
+    return headers
+
+
+def burp_replay_request(
+    target_dir: Path,
+    *,
+    url: str,
+    method: str = "GET",
+    body: str = "",
+    headers: dict[str, str] | None = None,
+    approve: bool = False,
+    force: bool = False,
+    base_url: str = "",
+    timeout: float = 20.0,
+    prefer_mcp: bool = True,
+) -> dict[str, Any]:
+    """
+    Control-plane replay: try Burp REST send paths, optional MCP stdio, else
+    scoped http_request fallback (still approve/SCOPE gated).
+    """
+    from ..policy_guard import host_from_target
+    from .base import require_in_scope
+
+    require_in_scope(target_dir, url, action="burp replay / send request", force=force)
+    method_u = (method or "GET").upper()
+    plan = {
+        "url": url,
+        "method": method_u,
+        "approve": approve,
+        "burp_base": base_url or _burp_base(),
+        "mcp": bool(__import__("os").environ.get("HACKBOT_BURP_MCP_CMD")),
+    }
+    ui.code_panel(json.dumps(plan, indent=2), title="burp_replay", lexer="json")
+    if not approve:
+        ui.dry_run_banner()
+        return {"ok": True, "dry_run": True, **plan}
+
+    # 1) Optional MCP bridge
+    if prefer_mcp and (__import__("os").environ.get("HACKBOT_BURP_MCP_CMD") or "").strip():
+        mcp = burp_mcp_call(
+            "send_http_request",
+            {
+                "url": url,
+                "method": method_u,
+                "body": body or "",
+                "headers": headers or {},
+            },
+        )
+        if mcp.get("ok") and not mcp.get("error"):
+            return {
+                "ok": True,
+                "via": "mcp",
+                "host": host_from_target(url),
+                "result": mcp,
+            }
+
+    # 2) REST send/replay guesses (community extensions vary)
+    base = (base_url or _burp_base()).rstrip("/")
+    payload = {
+        "url": url,
+        "method": method_u,
+        "headers": headers or {},
+        "body": body or "",
+    }
+    tried: list[dict[str, Any]] = []
+    for path in (
+        "/burp/v0.1/proxy/request",
+        "/v0.1/proxy/request",
+        "/burp/proxy/request",
+        "/api/v1/request",
+        "/api/request/send",
+    ):
+        endpoint = base + path
+        try:
+            req = urllib.request.Request(
+                endpoint,
+                data=json.dumps(payload).encode("utf-8"),
+                method="POST",
+                headers=_burp_headers(),
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                status = int(getattr(resp, "status", None) or resp.getcode())
+                raw = resp.read(100_000).decode("utf-8", errors="replace")
+            tried.append({"path": path, "status": status, "up": True})
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                data = {"raw": redact_text(raw[:400])}
+            return {
+                "ok": True,
+                "via": "rest",
+                "path": path,
+                "base": base,
+                "status": status,
+                "response": data,
+                "tried": tried,
+            }
+        except Exception as exc:  # noqa: BLE001
+            tried.append({"path": path, "up": False, "error": type(exc).__name__})
+
+    # 3) Fallback: direct scoped HTTP (operator still approved)
+    from . import http_request as http_mod
+
+    result = http_mod.http_request(
+        target_dir,
+        url,
+        method=method_u,
+        body=body or None,
+        approve=True,
+        force=force,
+        timeout=timeout,
+        label="burp_fallback_http",
+        extra_headers=headers or {},
+    )
+    try:
+        detail = json.loads(result.stdout) if result.stdout else {}
+    except json.JSONDecodeError:
+        detail = {"raw": result.stdout}
+    return {
+        "ok": True,
+        "via": "http_fallback",
+        "hint": "Burp REST/MCP unavailable — replayed via scoped http_request",
+        "tried": tried,
+        "response": detail,
+        "message": result.message,
+    }
+
+
+def burp_mcp_call(
+    tool_name: str,
+    arguments: dict[str, Any] | None = None,
+    *,
+    _tried: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Best-effort JSON-RPC call over HACKBOT_BURP_MCP_CMD stdio (capped)."""
+    import os
+    import shutil
+    import subprocess
+
+    cmd = (os.environ.get("HACKBOT_BURP_MCP_CMD") or "").strip()
+    if not cmd:
+        return {"ok": False, "error": "HACKBOT_BURP_MCP_CMD not set"}
+    parts = cmd if isinstance(cmd, list) else cmd.split()
+    if not parts or (not shutil.which(parts[0]) and not Path(parts[0]).exists()):
+        return {"ok": False, "error": "mcp_cmd_not_found", "cmd": parts[:1]}
+
+    def _rpc(method: str, params: dict[str, Any] | None, msg_id: int) -> dict[str, Any]:
+        return {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params or {}}
+
+    messages = [
+        _rpc(
+            "initialize",
+            {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "hackbot", "version": "0.1"},
+            },
+            1,
+        ),
+        _rpc("tools/list", {}, 2),
+        _rpc("tools/call", {"name": tool_name, "arguments": arguments or {}}, 3),
+    ]
+    try:
+        proc = subprocess.Popen(
+            parts,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert proc.stdin and proc.stdout
+        replies: list[dict[str, Any]] = []
+        for msg in messages:
+            proc.stdin.write(json.dumps(msg) + "\n")
+            proc.stdin.flush()
+            out_line = proc.stdout.readline()
+            if not out_line:
+                break
+            try:
+                replies.append(json.loads(out_line))
+            except json.JSONDecodeError:
+                replies.append({"raw": out_line[:300]})
+        try:
+            proc.stdin.close()
+            proc.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+        call = next((r for r in reversed(replies) if r.get("id") == 3), replies[-1] if replies else {})
+        if call.get("error"):
+            tried = _tried + (tool_name,)
+            for alt in ("http_request", "repeater_send", "send_request", "proxy_send"):
+                if alt not in tried:
+                    return burp_mcp_call(alt, arguments, _tried=tried)
+            return {"ok": False, "error": call.get("error"), "replies": replies[:3]}
+        return {"ok": True, "tool": tool_name, "result": call.get("result"), "replies_count": len(replies)}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def burp_replay_from_history(
+    target_dir: Path,
+    *,
+    index: int = 0,
+    approve: bool = False,
+    force: bool = False,
+    base_url: str = "",
+) -> dict[str, Any]:
+    """Fetch proxy history item N and replay it through burp_replay_request."""
+    hist = burp_proxy_history(base_url=base_url or _burp_base(), limit=max(5, index + 1))
+    if not hist.get("ok"):
+        return hist
+    items = list(hist.get("items") or [])
+    if index < 0 or index >= len(items):
+        return {"ok": False, "error": "history_index_oob", "count": len(items)}
+    item = items[index] if isinstance(items[index], dict) else {}
+    url = str(item.get("url") or item.get("request", {}).get("url") or "")
+    method = str(item.get("method") or item.get("request", {}).get("method") or "GET")
+    body = str(item.get("body") or item.get("request", {}).get("body") or "")
+    if not url:
+        return {"ok": False, "error": "history_item_missing_url", "item_keys": list(item.keys())[:20]}
+    out = burp_replay_request(
+        target_dir,
+        url=url,
+        method=method,
+        body=body,
+        approve=approve,
+        force=force,
+        base_url=base_url,
+    )
+    out["history_index"] = index
+    out["history_url"] = url
+    return out

@@ -278,9 +278,35 @@ GraphQL, redirect, LFI/SSTI/SSRF (with OOB when `HACKBOT_OOB_BASE` is set), and
 systematic `idor_probe` A/B when sessions are loaded — then `build_chains` and
 learning ingest. Cookie jar persists under `secrets/cookie_jar.json`.
 
-OOB blind: set `HACKBOT_OOB_BASE` (e.g. Interactsh URL) and optionally
-`HACKBOT_OOB_POLL_URL` (use `TOKEN` placeholder). Without them, canaries are
-local reflection markers only.
+OOB / Interactsh (blind SSRF/XSS/XXE):
+
+```powershell
+# Real Interactsh client (register + encrypted poll) — preferred
+setx HACKBOT_INTERACTSH "1"
+# optional: setx HACKBOT_INTERACTSH_SERVER "oast.pro"
+# optional auth: setx HACKBOT_INTERACTSH_TOKEN "..."
+pip install cryptography
+
+# Legacy Collaborator-style base + poll URL
+setx HACKBOT_OOB_BASE "https://YOUR.oast.fun"
+setx HACKBOT_OOB_POLL_URL "https://YOUR/poll?id=TOKEN"
+setx HACKBOT_OOB_AUTH "Bearer ..."
+```
+
+SSRF / XSS / XXE probes auto-mint + poll when OOB is configured. Without env,
+canaries stay local reflection markers only.
+
+Burp control plane (local only):
+
+```powershell
+setx HACKBOT_BURP_BASE "http://127.0.0.1:1337"
+# optional API key / MCP stdio bridge
+setx HACKBOT_BURP_API_KEY "..."
+setx HACKBOT_BURP_MCP_CMD "path\to\burp-mcp-server.exe"
+```
+
+NL: `burp replay https://example.com/api` → `burp_replay` (dry-run until approve).
+If REST/MCP is down, replay falls back to scoped `http_request`.
 
 ### Report drafts (any bounty platform)
 

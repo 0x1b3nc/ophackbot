@@ -8,6 +8,7 @@ dependencies = [
     "rich>=13.7",
     "pyyaml>=6.0",
     "playwright>=1.40",
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]
@@ -16,6 +17,9 @@ browser = [
 ]
 mobile = [
     "frida-tools>=12.0",
+]
+oob = [
+    "cryptography>=42.0",
 ]
 dev = [
     "pytest>=8.0",
