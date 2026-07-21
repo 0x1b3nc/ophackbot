@@ -2203,15 +2203,57 @@ def execute_tool(
     approve_fn: ApproveFn | None = None,
 ) -> str:
     try:
-        return _execute(name, args, approve_fn=approve_fn)
+        return _execute(name, _normalize_tool_args(name, args or {}), approve_fn=approve_fn)
     except PermissionError as exc:
         ui.warn(f"scope denial: {exc}")
         return json.dumps({"ok": False, "error": str(exc), "kind": "scope_denied"})
+    except KeyError as exc:
+        key = exc.args[0] if exc.args else "?"
+        ui.warn(f"tool args: missing '{key}' for {name}")
+        return json.dumps(
+            {
+                "ok": False,
+                "error": f"missing required argument: {key}",
+                "kind": "bad_args",
+                "tool": name,
+            }
+        )
     except Exception as exc:
         ui.error(f"tool bug: {type(exc).__name__}: {exc}")
         return json.dumps(
             {"ok": False, "error": f"{type(exc).__name__}: {exc}", "kind": "internal_error"}
         )
+
+
+def _normalize_tool_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Fill target_dir/target from the active session when the model omits them."""
+    out = dict(args)
+    active = get_active()
+    active_dir = f"targets/{active.name}" if active else ""
+
+    if not out.get("target_dir"):
+        alias = out.get("target") or out.get("target_name") or out.get("program")
+        if isinstance(alias, str) and alias.strip():
+            cand = alias.strip().replace("\\", "/")
+            if cand.startswith("targets/"):
+                out["target_dir"] = cand
+            elif (ROOT / "targets" / cand).is_dir():
+                out["target_dir"] = f"targets/{cand}"
+            elif active_dir and cand == active.name:
+                out["target_dir"] = active_dir
+        elif active_dir:
+            # Cursor often calls hunt tools with only url/host — inject active target.
+            out["target_dir"] = active_dir
+
+    if not out.get("target"):
+        if name == "set_target" and (
+            (out.get("target_dir") or "").replace("\\", "/").startswith("targets/")
+        ):
+            out["target"] = Path(str(out["target_dir"]).replace("\\", "/")).name
+        elif name in {"set_target", "write_report_draft", "policy_import"} and active:
+            out["target"] = active.name
+
+    return out
 
 
 def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:

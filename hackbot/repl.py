@@ -43,7 +43,17 @@ def _approve(prompt: str) -> bool:
         # Fresh line so stream/tool status cannot stick to the Confirm prompt.
         ui.console.print()
         ui.permission(prompt)
-        return Confirm.ask("[bold yellow]Allow this action?[/]", default=False)
+        while True:
+            raw = Prompt.ask(
+                "[bold yellow]Allow this action?[/] [dim]y/n[/]",
+                default="n",
+            )
+            ans = (raw or "").strip().lower()
+            if ans in {"y", "yes", "approve", "--approve", "/approve"}:
+                return True
+            if ans in {"n", "no", "deny", "deny.", ""}:
+                return False
+            ui.warn("enter y or n (also: approve / deny)")
 
 
 def _describe(cfg) -> str:

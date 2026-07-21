@@ -251,33 +251,52 @@ def _run_send(agent: Any, prompt: str, *, selection: Any) -> tuple[str, str]:
         run = agent.send(prompt)
 
     stream_answer = ""
-    if streaming_enabled():
-        try:
-            stream = run.messages() if hasattr(run, "messages") else run.stream()
-            for message in stream:
-                mtype = getattr(message, "type", None)
-                if mtype == "assistant":
-                    piece = _assistant_text_from_messages([message])
-                    if not piece:
-                        continue
-                    # Keep snapshots for wait() fallback; do not live-print tokens
-                    # (Cursor deltas often arrive without spaces → "I'llload…").
-                    if (
-                        not stream_answer
-                        or piece.startswith(stream_answer)
-                        or len(piece) >= len(stream_answer)
-                    ):
-                        stream_answer = piece
-                elif mtype == "tool_call":
-                    if not stream_output_allowed():
-                        continue
-                    name = getattr(message, "name", "?")
-                    status = getattr(message, "status", "")
-                    ui.console.print(ui_text(f"cursor tool  {name}  {status}", "hb.dim"))
-        except Exception:
-            pass
+    # Live token print is off (mangled spaces); keep a spinner so the REPL isn't silent.
+    wait_status = ui.console.status("[cyan]thinking…[/]", spinner="dots")
+    wait_status.start()
+    try:
+        if streaming_enabled():
+            try:
+                stream = run.messages() if hasattr(run, "messages") else run.stream()
+                for message in stream:
+                    mtype = getattr(message, "type", None)
+                    if mtype == "assistant":
+                        piece = _assistant_text_from_messages([message])
+                        if not piece:
+                            continue
+                        # Keep snapshots for wait() fallback; do not live-print tokens
+                        # (Cursor deltas often arrive without spaces → "I'llload…").
+                        if (
+                            not stream_answer
+                            or piece.startswith(stream_answer)
+                            or len(piece) >= len(stream_answer)
+                        ):
+                            stream_answer = piece
+                        if stream_output_allowed():
+                            wait_status.update("[cyan]thinking…[/]")
+                    elif mtype == "tool_call":
+                        name = getattr(message, "name", "?")
+                        tstatus = str(getattr(message, "status", "") or "")
+                        # Stop spinner before tool UI / possible Confirm.ask (shared console).
+                        wait_status.stop()
+                        if stream_output_allowed():
+                            ui.console.print(
+                                ui_text(f"cursor tool  {name}  {tstatus}", "hb.dim")
+                            )
+                        # Resume spinner only after the tool finishes (not while approve waits).
+                        if tstatus.lower() in {"completed", "error", "failed", "cancelled"}:
+                            if stream_output_allowed():
+                                wait_status.start()
+                                wait_status.update("[cyan]thinking…[/]")
+            except Exception:
+                pass
 
-    result = run.wait() if hasattr(run, "wait") else None
+        if stream_output_allowed():
+            wait_status.start()
+            wait_status.update("[cyan]thinking…[/]")
+        result = run.wait() if hasattr(run, "wait") else None
+    finally:
+        wait_status.stop()
     status = getattr(result, "status", None) if result is not None else None
 
     resolved_label = format_selection_label(selection)

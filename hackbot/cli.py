@@ -429,14 +429,24 @@ def _dispatch(args: argparse.Namespace) -> int:
             return 2
 
         def _approve(prompt: str) -> bool:
-            from rich.prompt import Confirm
+            from rich.prompt import Prompt
 
             from .operator_gate import operator_prompt_active
 
             with operator_prompt_active():
                 ui.console.print()
                 ui.permission(prompt)
-                return Confirm.ask("[bold yellow]Allow this action?[/]", default=False)
+                while True:
+                    raw = Prompt.ask(
+                        "[bold yellow]Allow this action?[/] [dim]y/n[/]",
+                        default="n",
+                    )
+                    ans = (raw or "").strip().lower()
+                    if ans in {"y", "yes", "approve", "--approve", "/approve"}:
+                        return True
+                    if ans in {"n", "no", "deny", ""}:
+                        return False
+                    ui.warn("enter y or n (also: approve / deny)")
 
         out = execute_tool(
             "run_playbook",
