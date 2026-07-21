@@ -39,6 +39,24 @@ class LocalAgentAttackTests(unittest.TestCase):
         run = next(a for a in plan if a.tool == "run_tool")
         self.assertTrue(run.args.get("force"))
 
+    def test_write_file_plus_hunt_keeps_follow_on_plan(self) -> None:
+        """Offline must not early-return after write_file when hunt was asked."""
+        with mock.patch(
+            "hackbot.local_agent._parse_create_file_path",
+            return_value="targets/aylo/SCOPE.md",
+        ):
+            text = "cria SCOPE.md e inicia o hunting em example.com targets/aylo"
+            interp = interpret(text)
+            self.assertIn("write_file", interp.intents)
+            self.assertIn("playbook_run", interp.intents)
+            plan = build_plan(text, interp)
+        tools = [a.tool for a in plan]
+        self.assertIn("write_file", tools)
+        self.assertTrue(
+            any(t in tools for t in ("run_hunt", "run_campaign", "run_playbook", "run_tool")),
+            tools,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

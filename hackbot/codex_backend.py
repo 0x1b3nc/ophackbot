@@ -56,6 +56,18 @@ _FILEOP_ALIASES = {
     "move": "move_path", "move_path": "move_path", "rename": "move_path", "mv": "move_path",
 }
 
+# Shared with HTTP model agent + Cursor: tools that mutate disk via approve.
+FILE_MUTATION_TOOLS = frozenset(
+    {
+        "write_file",
+        "append_file",
+        "edit_file",
+        "delete_path",
+        "make_dir",
+        "move_path",
+    }
+)
+
 
 def _extract_fileops(answer: str) -> tuple[str, list[dict[str, Any]]]:
     """Pull ```hackbot-fileop``` JSON blocks out of codex's answer.
@@ -163,6 +175,27 @@ def _should_continue_after_fileops(applied: list[dict[str, Any]]) -> bool:
         return False
     flag = os.environ.get("HACKBOT_FILEOP_CONTINUE", "1").strip().lower()
     return flag not in {"0", "false", "off", "no"}
+
+
+def file_mutation_result(tool: str, result_json: str) -> dict[str, Any] | None:
+    """If tool is a disk mutation, return {tool, path, ok, error?} for continue logic."""
+    if tool not in FILE_MUTATION_TOOLS:
+        return None
+    try:
+        parsed = json.loads(result_json)
+    except json.JSONDecodeError:
+        return {"tool": tool, "path": "", "ok": False, "error": "bad json"}
+    if not isinstance(parsed, dict):
+        return {"tool": tool, "path": "", "ok": False, "error": "bad result"}
+    where = parsed.get("path") or parsed.get("to") or parsed.get("deleted") or ""
+    if parsed.get("ok"):
+        return {"tool": tool, "path": where, "ok": True}
+    return {
+        "tool": tool,
+        "path": where,
+        "ok": False,
+        "error": parsed.get("error") or "failed",
+    }
 
 
 ROOT = Path(__file__).resolve().parents[1]

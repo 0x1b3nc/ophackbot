@@ -7,6 +7,12 @@ import time
 from typing import Any, Callable
 
 from . import ui
+from .codex_backend import (
+    _MAX_FILEOP_CONTINUES,
+    _fileop_continue_prompt,
+    _should_continue_after_fileops,
+    file_mutation_result,
+)
 from .intent import is_chat_prompt, resolve_effort_for_prompt
 from .llm import LLMError, chat, detect_provider, streaming_enabled
 from .session import get_active
@@ -83,6 +89,9 @@ Filesystem: you CAN create, write, edit, append, move, and delete files
 (write_file, edit_file, append_file, make_dir, move_path, delete_path). Use them
 whenever it helps. The operator is ALWAYS asked to approve before each change.
 If denied, respect it and adjust.
+After SCOPE/setup file writes land, KEEP GOING on the original hunt task
+(run_hunt / map_surface / dry-run probes). Do not stop idle waiting for the
+operator to re-ask "now hunt".
 
 Use tools instead of guessing file contents. Prefer open_playbook for a bug class
 before inventing steps. Prefer set_target when the user names a program folder.
@@ -173,9 +182,13 @@ def run_agent(
 
     started = time.perf_counter()
     tools_used = 0
+    pending_fileops: list[dict[str, Any]] = []
+    fileop_continues = 0
+    # Extra budget when we auto-nudge after approved file writes (all providers).
+    max_iters = rounds + (_MAX_FILEOP_CONTINUES * 3 if not chat_mode else 0)
 
     try:
-        for _ in range(rounds):
+        for _ in range(max_iters):
             response = _one_llm_call(system, messages, tools, effort)
             if response is None:
                 _trim_history(messages)
@@ -184,6 +197,25 @@ def run_agent(
 
             if not response.tool_calls:
                 messages.append({"role": "assistant", "content": response.text})
+                # Same bug as Codex/Cursor fileop path: model writes SCOPE then
+                # idles. Nudge one more hunt round after successful mutations.
+                if (
+                    not chat_mode
+                    and _should_continue_after_fileops(pending_fileops)
+                    and fileop_continues < _MAX_FILEOP_CONTINUES
+                ):
+                    ui.info("file ops applied; continuing model (don't re-ask me)")
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": _fileop_continue_prompt(
+                                user_prompt, pending_fileops
+                            ),
+                        }
+                    )
+                    pending_fileops = []
+                    fileop_continues += 1
+                    continue
                 _trim_history(messages)
                 ui.turn_timing(time.perf_counter() - started, tools_used)
                 return messages
@@ -203,6 +235,7 @@ def run_agent(
                 }
             )
 
+            round_fileops: list[dict[str, Any]] = []
             for tc in response.tool_calls:
                 tools_used += 1
                 if _verbose():
@@ -219,6 +252,9 @@ def run_agent(
                         ok = False
                 except json.JSONDecodeError:
                     pass
+                mut = file_mutation_result(tc.name, result)
+                if mut is not None:
+                    round_fileops.append(mut)
                 if _verbose():
                     preview = result if len(result) < 1200 else result[:1200] + "...(truncated)"
                     ui.code_panel(preview, title="result", lexer="json")
@@ -232,6 +268,8 @@ def run_agent(
                         "content": result,
                     }
                 )
+            if round_fileops:
+                pending_fileops = round_fileops
 
         ui.warn("hit max tool rounds; stopping this turn")
     except KeyboardInterrupt:

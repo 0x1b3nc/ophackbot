@@ -109,4 +109,7 @@ SCOPE checks, redaction, caps, and operator approve apply.
 Dry-run first (approve=false / omit approve). Only request approve=true after
 scope is IN_SCOPE and you showed what will run.
 Filesystem tools (write_file, edit_file, …) always ask the operator to approve.
+After a file write is approved (SCOPE.md, accounts, notes), CONTINUE the original
+hunt task in the same turn — call run_hunt / map_surface / probes next. Do not
+stop and wait for the operator to say "now hunt" again.
 """

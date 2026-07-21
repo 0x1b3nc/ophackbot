@@ -495,7 +495,20 @@ def interpret(text: str) -> Interpretation:
     if _wants(text, "plan", "hypothesis", "approach", "strategy"):
         intents.append("plan")
     # Attack / hunt → executable playbook (dry-run by default)
-    if _wants(text, "hunt", "test for", "attack", "exploit", "run playbook", "execute playbook"):
+    if _wants(
+        text,
+        "hunt",
+        "hunting",
+        "caça",
+        "caca",
+        "caçar",
+        "cacar",
+        "test for",
+        "attack",
+        "exploit",
+        "run playbook",
+        "execute playbook",
+    ):
         intents.append("playbook_run")
     if tool or _wants(text, "run", "dry-run", "dry run", "scan", "probe", "crawl", "fuzz", "recon"):
         intents.append("run")
@@ -1042,7 +1055,19 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
                     },
                 )
             )
-        return plan  # file create is a single-job turn
+        # Pure create-file turns stop here. If they also asked to hunt/recon,
+        # keep planning so we don't stall after the approve on write_file.
+        follow_on = set(intents) - {
+            "write_file",
+            "edit_file",
+            "make_dir",
+            "delete_path",
+            "list",
+            "list_dir",
+            "read",
+        }
+        if not follow_on:
+            return plan
 
     if "set_target" in intents:
         tdir = interp.target_dir or ""
