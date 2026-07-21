@@ -48,7 +48,7 @@ setx HACKBOT_MODEL "o4-mini"
 setx HACKBOT_EFFORT "auto"   # auto | minimal | low | medium | high | xhigh
 ```
 
-`auto` keeps chat (hi/olá) on minimal effort with no tools, and hunt tasks on
+`auto` keeps chat (hi/hello) on minimal effort with no tools, and hunt tasks on
 medium with the full tool pack. In the REPL: `/providers`, `/provider`,
 `/model`, `/effort`, `/verbose`, `/status`. See [docs/CLI.md](docs/CLI.md).
 
@@ -83,8 +83,8 @@ and I back off. Reasoning streams live as I think (toggle with `/stream`).
 ## Hunt workflow
 
 ```text
-as credenciais estão no arquivo tokens.yaml em Downloads
-explora o que der em example.com approve
+credentials are in Downloads/tokens.yaml
+hunt whatever you can on example.com approve
 ```
 
 Or the short form (slash commands are optional shortcuts):
@@ -93,14 +93,14 @@ Or the short form (slash commands are optional shortcuts):
 /target demo
 /session set A --bearer <tokenA>
 /session set B --bearer <tokenB>
-/hunt explora o que der nesse host --approve
+/hunt explore this host --approve
 ```
 
 Natural language loads sessions from files, maps surface, chains specialists,
 validates proof, then writes FINDINGS. One `approve` covers active traffic;
 OOS stays hard-blocked. State under `targets/<name>/hunt/`.
 
-Screenshots: `leia a imagem Desktop/scope.png` → `read_image` (OCR/vision).
+Screenshots: `read the image Desktop/scope.png` → `read_image` (OCR/vision).
 
 Also first-class: HAR/Burp XML import, Playwright navigate/screenshot/cookies/storage/network
 + session inject / A-vs-B diff, mobile bridge, portable bug-bounty report drafts (any portal),
