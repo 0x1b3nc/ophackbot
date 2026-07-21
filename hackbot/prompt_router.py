@@ -80,10 +80,17 @@ def auto_route_enabled() -> bool:
 
 
 def model_usable_for_route() -> bool:
-    """True when an HTTP model provider is configured (not offline/codex-only)."""
+    """True only when the operator *explicitly* pinned an HTTP model provider.
+
+    Keys alone must not trigger paid auto-route while the REPL brain is offline
+    (avoids surprise OpenAI 429 / billing hits).
+    """
     if os.environ.get("HACKBOT_LOCAL", "").strip().lower() in {"1", "true", "yes"}:
         return False
-    if os.environ.get("HACKBOT_PROVIDER", "").strip().lower() in {"offline", "local"}:
+    # Only HACKBOT_PROVIDER opts into paid auto-route. HACKBOT_BACKEND may be
+    # leftover (e.g. codex) while resolve_config still infers OpenAI from keys.
+    forced = (os.environ.get("HACKBOT_PROVIDER") or "").strip().lower()
+    if not forced or forced in {"offline", "local", "codex", "cursor"}:
         return False
     try:
         from .providers import resolve_config
@@ -91,11 +98,10 @@ def model_usable_for_route() -> bool:
         cfg = resolve_config()
     except Exception:
         return False
-    if cfg.wire == "codex":
-        # Codex is fine for chat but routing JSON is simpler via HTTP wires.
-        # Still allow if user forced HACKBOT_ROUTE_CODEX=1 later; default skip.
-        return os.environ.get("HACKBOT_ROUTE_CODEX", "").strip() in {"1", "true", "yes"}
-    return True
+    if cfg.wire in {"codex", "cursor"}:
+        # Non-HTTP brains; routing JSON needs an OpenAI/Anthropic-style wire.
+        return False
+    return cfg.wire in {"openai", "anthropic"}
 
 
 def offline_confidence(prompt: str, *, host: str | None, intents: list[str], classes: list[str]) -> float:
@@ -116,6 +122,9 @@ def offline_confidence(prompt: str, *, host: str | None, intents: list[str], cla
         score += 0.1
     if "campaign" in intents or "playbook_run" in intents or "run" in intents:
         score += 0.1
+    # File create/edit is a clear offline task — don't escalate to paid route
+    if "write_file" in intents or "edit_file" in intents:
+        score += 0.45
     # Penalize very short / ambiguous prompts
     if len(norm.split()) < 4 and not host:
         score -= 0.2

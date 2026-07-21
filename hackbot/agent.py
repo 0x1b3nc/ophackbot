@@ -35,7 +35,9 @@ CRITICAL UX — natural language first:
   yeswehack/synack/immunefi — portable draft with severity/CVSS hints from bug class.
 - `browser_diff_sessions` soft IDOR hints auto-promote candidate → validator (verdict=likely).
 - Mobile: `mobile_status`, `adb_devices`, `inspect_apk`, `mobile_bridge` (APK+HAR→hunt).
-- Burp: `import_burp_xml` or `import_har`; `burp_rest_health` for local listener.
+- Burp: `import_burp_xml` / `import_har`; `burp_rest_health`; `burp_replay` /
+  `burp_replay_history` for local control-plane send (REST/MCP/fallback).
+
 - After findings: `build_chains`. Cross-program memory: `learn_suggest` / `learn_record`.
 - If they name a HAR / Burp export: call `import_har` / `import_burp_xml`.
 - If they name a JS bundle: call `analyze_js`.
@@ -45,8 +47,8 @@ CRITICAL UX — natural language first:
   use the matching probe tools.
 - IDOR A/B ownership: prefer `idor_probe` (systematic) over manual http_request+assert_diff.
 - Content discovery: `discover_paths` seeds surface early in hunt.
-- Blind/OOB: `oob_mint` / `oob_poll` when HACKBOT_OOB_BASE (+ optional POLL_URL) set;
-  `ssrf_probe` auto-injects OOB payloads when configured.
+- Blind/OOB: prefer `HACKBOT_INTERACTSH=1` (`interactsh_register` / `interactsh_poll`);
+  legacy `HACKBOT_OOB_BASE` + `oob_mint` / `oob_poll`. SSRF/XSS/XXE auto-mint+poll.
 - Cookie jar: `http_request` persists Set-Cookie under secrets/cookie_jar.json across acts.
 - Mobile deep: `mobsf_*`, `frida_run_script` / `objection_explore` (approve-gated allowlisted scripts).
 - CDP extras: `browser_console`, `browser_set_cookie`.
@@ -138,6 +140,21 @@ def run_agent(
             ui.info(f"tool packs: {','.join(packs)} ({len(tools)} tools)")
 
     provider, model = detect_provider()
+    try:
+        from .model_catalog import resolve_model
+
+        canonical, src = resolve_model(provider, model)
+        if canonical != model:
+            import os
+
+            os.environ["HACKBOT_MODEL"] = canonical
+            model = canonical
+        ui.info(f"model ok [{src}] {provider}:{model or '(default)'}")
+    except ValueError as exc:
+        ui.error(str(exc))
+        ui.info("fix with: /models  then  /model <id>")
+        messages.pop()  # drop the user turn we just appended
+        return messages
     mode_label = "chat" if chat_mode else "hunt"
     ui.info(f"model {provider}:{model}  effort={effort or '-'}  mode={mode_label}")
     if active and not chat_mode:

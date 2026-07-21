@@ -18,41 +18,61 @@ layer, you bring the model.
 
 ### Brains
 
-There are three. hackbot starts on offline and never changes it on its own. If I
-want a smarter brain I pick one (a key, or `/provider`).
+There are four. hackbot **always starts offline** unless I explicitly pin a
+provider (`/provider` or `HACKBOT_PROVIDER` in that shell). Keys alone do not
+switch the brain.
 
-- offline: no model, no network, rule based. It still reads my prompt and runs
-  tools. This is home base and the default.
+- offline: no model. Rule-based planner + tools. Home base and the default.
 - model: any HTTP provider (OpenAI, Anthropic, DeepSeek, GLM, OpenRouter, or a
-  local model). It calls my tools directly.
-- codex: the `codex` CLI running on my ChatGPT plan, so it spends plan quota
-  instead of paid API credit. Run `codex login` first.
+  local model). Same tool loop for all of them.
+- codex: optional ChatGPT-plan path via `codex exec` (same opt-in as the others).
+- cursor: optional Cursor-plan path via `cursor-sdk` local Agent (`CURSOR_API_KEY`).
+  Default `HACKBOT_CURSOR_MODE=plan` (brain / fileops); set `agent` to unlock
+  Cursor's own edit/shell tools. Active bounty traffic still needs hackbot approve.
+  Models are validated (`/models`, `/model grok-4.5|composer-2.5|auto`). Effort +
+  fast become real SDK params: `/effort high fast` or `/fast on`. Each turn prints
+  `used model …` from the SDK result so you can see what actually ran.
 
 ### Providers
 
-Set a key (or point at a local model) and hackbot detects it. It still won't
-switch until I ask, so I set `HACKBOT_PROVIDER` or use `/provider` when I want it.
+Set a key (optional), then pick in the REPL with `/provider <name>`. Prefer that
+over a permanent `setx HACKBOT_PROVIDER` so offline stays the default next open.
 
 ```powershell
-setx OPENAI_API_KEY "sk-..."          # OpenAI (paid API)
-setx ANTHROPIC_API_KEY "sk-..."       # Claude
-setx DEEPSEEK_API_KEY "sk-..."        # DeepSeek
-setx GLM_API_KEY "..."                # GLM / Zhipu
-setx OPENROUTER_API_KEY "sk-or-..."   # OpenRouter (hundreds of models, one key)
-setx HACKBOT_BASE_URL "http://localhost:11434/v1"   # Ollama / LM Studio / any gateway
+setx OPENAI_API_KEY "sk-..."          # then in REPL: /provider openai
+setx ANTHROPIC_API_KEY "sk-..."       # /provider anthropic
+setx DEEPSEEK_API_KEY "sk-..."        # /provider deepseek
+setx GLM_API_KEY "..."                # /provider glm
+setx OPENROUTER_API_KEY "sk-or-..."   # /provider openrouter
+setx HACKBOT_BASE_URL "http://localhost:11434/v1"   # /provider ollama
 
-# ChatGPT plan via Codex CLI (no API cost):
-codex login
-setx HACKBOT_PROVIDER codex
+# Optional Cursor SDK (Cursor plan):
+#   pip install 'hackbot-kit[cursor]'   # or: pip install cursor-sdk
+#   setx CURSOR_API_KEY "cursor_..."    # Dashboard → Integrations / API Keys
+#   /provider cursor
+#   /model composer-2.5
+
+# Optional Codex (ChatGPT plan) — not preferred over the others:
+#   codex login
+#   /provider codex
 ```
 
-Force a provider with `HACKBOT_PROVIDER`: openai, anthropic, codex, deepseek,
-glm, openrouter, ollama, lmstudio, custom, offline.
+Pin for one shell only if you want: `$env:HACKBOT_PROVIDER="openai"`.
+Legacy alias: `HACKBOT_BACKEND` (same values). Clear both if the REPL keeps
+opening on Codex/another model:
+`[Environment]::SetEnvironmentVariable("HACKBOT_BACKEND",$null,"User")` (and
+`HACKBOT_PROVIDER` the same way), then open a new terminal.
+Known names: openai, anthropic, codex, cursor, deepseek, glm, openrouter, ollama,
+lmstudio, custom, offline.
 
 ### Model and reasoning effort
 
+`/model` is **strict for every provider**: only real catalog ids (curated in
+the kit + live `/models` from the API/server when available). Garbage strings
+are rejected. List with `/models`.
+
 ```powershell
-setx HACKBOT_MODEL "o4-mini"          # any model your account supports
+setx HACKBOT_MODEL "o4-mini"          # must be a real id for that provider
 setx HACKBOT_EFFORT "auto"            # auto | minimal | low | medium | high | xhigh
 ```
 

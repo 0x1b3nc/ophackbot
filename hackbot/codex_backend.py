@@ -100,11 +100,16 @@ def _normalize_op_args(tool: str, item: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in item.items() if k != "op"}
 
 
-def _apply_fileops(ops: list[dict[str, Any]], approve_fn: ApproveFn | None) -> None:
-    """Execute codex's proposed file ops through hackbot's approve-gated tools."""
+def _apply_fileops(
+    ops: list[dict[str, Any]],
+    approve_fn: ApproveFn | None,
+    *,
+    source: str = "codex",
+) -> None:
+    """Execute proposed file ops through hackbot's approve-gated tools."""
     from . import tools  # local import avoids any import cycle
 
-    ui.console.print(ui_text(f"codex proposes {len(ops)} file change(s):", "hb.label"))
+    ui.console.print(ui_text(f"{source} proposes {len(ops)} file change(s):", "hb.label"))
     for item in ops:
         op = str(item.get("op", "")).strip().lower()
         tool = _FILEOP_ALIASES.get(op)
@@ -126,11 +131,23 @@ def _apply_fileops(ops: list[dict[str, Any]], approve_fn: ApproveFn | None) -> N
 
 ROOT = Path(__file__).resolve().parents[1]
 
+_FILEOP_RULES = """
+Files: your Codex sandbox is READ-ONLY — you never write disks yourself.
+When the user asks to create/edit/delete a file, emit ONE fenced hackbot-fileop
+block; Hackbot applies it (kit, home, Downloads, Desktop) after operator approve.
+NEVER say you can only write inside the repo/kit. Downloads/Desktop ARE allowed.
+
+```hackbot-fileop
+{"op": "write_file", "path": "C:/Users/me/Downloads/teste.md", "content": "# teste\\n"}
+```
+
+Ops: write_file, append_file, edit_file, delete_path, make_dir, move_path.
+"""
+
 PREAMBLE_CHAT = """You are Hackbot, a short friendly authorized bounty/lab CLI agent.
 Answer briefly in first person. Do NOT read repo files. Do NOT run shell commands.
-Do NOT emit file-op blocks unless the user explicitly asked to create/edit a file.
 If they want hunting work, ask for a concrete task (host, target folder, bug class).
-
+""" + _FILEOP_RULES + """
 Task:
 """
 
@@ -144,15 +161,8 @@ Hard rules:
   concrete command, expected evidence, stop criteria, cleanup.
 - Dry-run first. Label active work "ACTIVE - needs operator approve".
 - Be concise, technical, first person.
-
-Files: you are READ-ONLY. To change files, emit ONE fenced block per op (hackbot applies it with my approval):
-
-```hackbot-fileop
-{"op": "write_file", "path": "C:/Users/me/Downloads/teste.md", "content": "..."}
-```
-
-Ops: write_file, append_file, edit_file, delete_path, make_dir, move_path.
-Only emit a block when a file change is actually needed.
+""" + _FILEOP_RULES + """
+Only emit a file-op block when a file change is actually needed.
 
 Task:
 """
@@ -188,6 +198,79 @@ def codex_available(*, force: bool = False) -> bool:
     return ok
 
 
+def _file_create_hint(user_prompt: str) -> str:
+    """If NL clearly asks to create a file, pin the absolute path for Codex."""
+    try:
+        from .local_agent import (
+            _default_new_file_content,
+            _parse_create_file_path,
+            interpret,
+        )
+    except Exception:
+        return ""
+    if "write_file" not in interpret(user_prompt).intents:
+        return ""
+    path = _parse_create_file_path(user_prompt)
+    if not path:
+        return (
+            "\nUser asked to create/edit a file. Emit a hackbot-fileop write_file "
+            "block with an absolute path under Downloads/Desktop/home/kit. "
+            "Do not refuse.\n"
+        )
+    content = _default_new_file_content(path)
+    payload = json.dumps(
+        {"op": "write_file", "path": path.replace("\\", "/"), "content": content},
+        ensure_ascii=False,
+    )
+    return (
+        f"\nFILE CREATE: emit exactly this block (path is correct), then a one-line ack:\n"
+        f"```hackbot-fileop\n{payload}\n```\n"
+    )
+
+
+def _try_direct_file_create(
+    user_prompt: str, approve_fn: ApproveFn | None
+) -> str | None:
+    """Skip Codex for clear create-file NL — deterministic + no sandbox confusion."""
+    try:
+        from .local_agent import (
+            _default_new_file_content,
+            _parse_create_file_path,
+            interpret,
+        )
+        from . import tools
+    except Exception:
+        return None
+    if "write_file" not in interpret(user_prompt).intents:
+        return None
+    path = _parse_create_file_path(user_prompt)
+    if not path:
+        return None
+    content = _default_new_file_content(path)
+    ui.info("file create → write_file (model skipped; approve still required)")
+    result = tools.execute_tool(
+        "write_file",
+        {"path": path, "content": content},
+        approve_fn=approve_fn,
+    )
+    try:
+        parsed = json.loads(result)
+    except json.JSONDecodeError:
+        parsed = {"ok": False, "error": result}
+    if parsed.get("ok"):
+        msg = f"Criei `{parsed.get('path', path)}`."
+        ui.success(msg)
+        return msg
+    err = parsed.get("error") or "failed"
+    if parsed.get("kind") == "denied":
+        msg = "Ok — não gravei (approve recusado)."
+        ui.warn(msg)
+        return msg
+    msg = f"Não consegui criar o arquivo: {err}"
+    ui.error(msg)
+    return msg
+
+
 def _build_prompt(
     user_prompt: str,
     history: list[tuple[str, str]] | None,
@@ -195,13 +278,20 @@ def _build_prompt(
     chat_mode: bool,
     resume: bool,
 ) -> str:
+    hint = _file_create_hint(user_prompt)
     if resume and history:
-        # Resume already has session context; send a short turn only.
+        # Resume keeps session context but MUST restate file-op rules — otherwise
+        # Codex invents "I can only write inside the kit".
         recent = history[-4:]
         convo = "\n".join(f"{role}: {text}" for role, text in recent)
-        return f"Continue. Recent:\n{convo}\n\nUser: {user_prompt.strip()}\n"
+        return (
+            "Continue.\n"
+            + _FILEOP_RULES
+            + hint
+            + f"\nRecent:\n{convo}\n\nUser: {user_prompt.strip()}\n"
+        )
     preamble = PREAMBLE_CHAT if chat_mode else PREAMBLE_HUNT
-    parts = [preamble]
+    parts = [preamble, hint]
     if history and not chat_mode:
         recent = history[-4:]
         convo = "\n".join(f"{role}: {text}" for role, text in recent)
@@ -239,6 +329,23 @@ def run_codex_turn(
     `codex exec resume --last` when enabled (default on).
     """
     global _CODEX_SESSION_READY, _CODEX_AVAIL
+    if allow_file_ops:
+        direct = _try_direct_file_create(user_prompt, approve_fn)
+        if direct is not None:
+            ui.turn_timing(0.0, 1)
+            return direct
+    raw_model = model if model is not None else os.environ.get("HACKBOT_MODEL")
+    if raw_model and str(raw_model).strip():
+        try:
+            from .model_catalog import resolve_model
+
+            canonical, src = resolve_model("codex", str(raw_model))
+            model = canonical or None
+            ui.info(f"codex model ok [{src}] {model or '(plan default)'}")
+        except ValueError as exc:
+            ui.error(str(exc))
+            ui.info("fix with: /models  then  /model <id>")
+            return str(exc)
     chat_mode = is_chat_prompt(user_prompt)
     effort = effort if effort is not None else resolve_effort_for_prompt(user_prompt)
     timeout = timeout if timeout is not None else (90 if chat_mode else 300)
@@ -261,6 +368,8 @@ def run_codex_turn(
         out_path = Path(handle.name)
 
     # Flags belong on `codex exec` before the `resume` subcommand.
+    # Pass prompt via stdin (`-`) — Windows argv/NUL stdin caused
+    # "Reading additional input from stdin..." / empty answers.
     cmd = [
         "codex",
         "exec",
@@ -284,13 +393,13 @@ def run_codex_turn(
         cmd.append("--json")
     if resume:
         cmd.extend(["resume", "--last"])
-    cmd.append(prompt)
+    cmd.append("-")  # read PROMPT from stdin
 
     try:
         if streaming_enabled():
-            captured = _run_streaming(cmd, timeout)
+            captured = _run_streaming(cmd, prompt, timeout)
         else:
-            captured = _run_quiet(cmd, timeout)
+            captured = _run_quiet(cmd, prompt, timeout)
     except KeyboardInterrupt:
         out_path.unlink(missing_ok=True)
         ui.warn("cancelled")
@@ -352,17 +461,17 @@ def run_codex_turn(
     return answer
 
 
-def _run_quiet(cmd: list[str], timeout: int) -> tuple[str, str] | None:
+def _run_quiet(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str] | None:
     try:
         with ui.console.status("[cyan]codex is thinking...[/]", spinner="dots"):
             proc = subprocess.run(
                 cmd,
+                input=prompt,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 timeout=timeout,
-                stdin=subprocess.DEVNULL,
             )
     except subprocess.TimeoutExpired:
         return "", f"(codex timed out after {timeout}s)"
@@ -414,17 +523,17 @@ def _handle_event(obj: dict[str, Any], printed_hdr: dict[str, Any]) -> None:
         line(msg.get("message") or "error", "hb.warn")
 
 
-def _run_streaming(cmd: list[str], timeout: int) -> tuple[str, str] | None:
+def _run_streaming(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str] | None:
     """Stream codex JSON events as concise progress; return ('', raw-nonjson)."""
     try:
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            stdin=subprocess.DEVNULL,
             bufsize=1,
         )
     except OSError as exc:
@@ -432,8 +541,11 @@ def _run_streaming(cmd: list[str], timeout: int) -> tuple[str, str] | None:
 
     errbuf: list[str] = []
     printed_hdr: dict[str, Any] = {}
-    assert proc.stdout is not None
+    assert proc.stdout is not None and proc.stdin is not None
     try:
+        # Close stdin after writing so Codex does not hang waiting for more input.
+        proc.stdin.write(prompt)
+        proc.stdin.close()
         with ui.console.status("[cyan]codex is thinking...[/]", spinner="dots"):
             for line in proc.stdout:
                 line = line.rstrip("\r\n")

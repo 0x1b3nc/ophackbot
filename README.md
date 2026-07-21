@@ -4,10 +4,11 @@ My authorized bounty / lab agent. You type a prompt. I think out loud (live
 streaming), use tools, edit files, and answer. Scope first. Evidence redacted.
 Active traffic and every file change need your approve.
 
-It's model-agnostic: the default brain is **offline** (rule based, no key, no
-network). Plug in any model when you want more (OpenAI, Claude, DeepSeek, GLM,
-OpenRouter, local via Ollama/LM Studio, or your ChatGPT plan through Codex). It
-never switches brains on its own. you pick.
+It's model-agnostic: the default brain is always **offline** (hackbot's own
+rule-based planner + tools — no key, no model). Plug in a model only when you
+want one: OpenAI, Claude, DeepSeek, GLM, OpenRouter, Ollama/LM Studio, Codex
+(ChatGPT plan), or Cursor SDK. It never auto-switches; you pick with `/provider`
+(or `HACKBOT_PROVIDER` for that shell).
 
 ## Install
 
@@ -17,20 +18,28 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-hackbot is the knowledge + safety layer; you bring the model. Set a key for any
-provider and it auto-detects (reopen the terminal after `setx`):
+hackbot is the knowledge + safety layer; models are optional. Offline works with
+zero config. To use a model: set a key (reopen the terminal after `setx`), then
+in the REPL run `/provider <name>` (do **not** need a persistent
+`HACKBOT_PROVIDER` unless you want that shell pinned):
 
 ```powershell
-setx OPENAI_API_KEY "sk-..."        # OpenAI (paid API)
-setx ANTHROPIC_API_KEY "sk-..."     # Claude
-setx DEEPSEEK_API_KEY "sk-..."      # DeepSeek
-setx OPENROUTER_API_KEY "sk-or-..." # OpenRouter (many models, one key)
-setx HACKBOT_BASE_URL "http://localhost:11434/v1"  # Ollama / LM Studio (free, local)
-```
+setx OPENAI_API_KEY "sk-..."        # then: /provider openai
+setx ANTHROPIC_API_KEY "sk-..."     # then: /provider anthropic
+setx DEEPSEEK_API_KEY "sk-..."      # then: /provider deepseek
+setx OPENROUTER_API_KEY "sk-or-..." # then: /provider openrouter
+setx HACKBOT_BASE_URL "http://localhost:11434/v1"  # then: /provider ollama
 
-No key? Nothing to do. hackbot runs **offline** by default (rule based, still
-runs tools). Or use your ChatGPT plan via the Codex CLI (`codex login`, then
-`setx HACKBOT_PROVIDER codex`).
+# Cursor plan via Python SDK (optional):
+#   pip install 'hackbot-kit[cursor]'   # or: pip install cursor-sdk
+#   setx CURSOR_API_KEY "cursor_..."    # Dashboard → Integrations / API Keys
+#   /provider cursor
+#   /model composer-2.5
+
+# ChatGPT plan via Codex CLI (optional, same weight as the others):
+#   codex login
+#   /provider codex
+```
 
 Pick model + reasoning effort anytime:
 

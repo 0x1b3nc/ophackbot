@@ -1,0 +1,369 @@
+"""Bridge to the Cursor Python SDK so hackbot can think on a Cursor plan.
+
+Local Agent (cursor-sdk) against the kit cwd. Default conversation mode is
+``plan`` — Cursor reasons/reads; file mutations go through hackbot-fileop +
+approve (same pattern as Codex). Active bounty traffic stays on hackbot tools.
+
+Auth: ``CURSOR_API_KEY`` (Dashboard → Integrations / API Keys).
+Install: ``pip install 'hackbot-kit[cursor]'`` or ``pip install cursor-sdk``.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+from pathlib import Path
+from typing import Any, Callable
+
+from rich.text import Text as _Text
+
+from . import ui
+from .codex_backend import (
+    _FILEOP_RULES,
+    _apply_fileops,
+    _extract_fileops,
+    _file_create_hint,
+    _try_direct_file_create,
+)
+from .cursor_models import (
+    build_model_selection,
+    format_selection_label,
+    resolve_cursor_model,
+    set_last_resolved_label,
+)
+from .intent import is_chat_prompt, resolve_effort_for_prompt
+from .llm import streaming_enabled
+from .session import get_active
+
+ApproveFn = Callable[[str], bool]
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# Durable agent handle for this process (closed on clear / provider switch).
+_AGENT: Any = None
+_AGENT_ID: str | None = None
+_AGENT_FINGERPRINT: str | None = None
+
+
+def ui_text(text: str, style: str) -> _Text:
+    return _Text(text, style=style)
+
+
+PREAMBLE_CHAT = """You are Hackbot, a short friendly authorized bounty/lab CLI agent.
+Answer briefly in first person. Prefer not to edit the repo with your own tools.
+If they want hunting work, ask for a concrete task (host, target folder, bug class).
+""" + _FILEOP_RULES + """
+Task:
+"""
+
+PREAMBLE_HUNT = """You are Hackbot, my authorized bug-bounty / lab agent in this repo.
+
+Hard rules:
+- Authorized research only. Never attack unauthorized hosts.
+- Read local context only when the task needs it (SCOPE.md, notes). Skip for small talk.
+- Host is IN SCOPE only if it is in that program's SCOPE.md.
+- For hunt steps: falsifiable hypothesis, endpoint, aggression 0-3, policy quote,
+  concrete command, expected evidence, stop criteria, cleanup.
+- Dry-run first. Label active work "ACTIVE - needs operator approve".
+- Be concise, technical, first person.
+- Do NOT send live traffic yourself. Propose commands; the operator runs them via hackbot.
+""" + _FILEOP_RULES + """
+Only emit a file-op block when a file change is actually needed.
+
+Task:
+"""
+
+
+def cursor_available(*, force: bool = False) -> bool:
+    """True when CURSOR_API_KEY is set and cursor_sdk imports."""
+    del force  # reserved for future TTL cache
+    from .cursor_bridge_win import apply_windows_bridge_patch
+    from .providers import _first_env
+
+    if not _first_env(("CURSOR_API_KEY",)):
+        return False
+    try:
+        import cursor_sdk  # noqa: F401
+    except ImportError:
+        return False
+    apply_windows_bridge_patch()
+    return True
+
+
+def close_cursor_agent() -> None:
+    """Dispose the durable agent (e.g. /clear or leaving /provider cursor)."""
+    global _AGENT, _AGENT_ID, _AGENT_FINGERPRINT
+    agent = _AGENT
+    _AGENT = None
+    _AGENT_ID = None
+    _AGENT_FINGERPRINT = None
+    if agent is None:
+        return
+    try:
+        close = getattr(agent, "close", None)
+        if callable(close):
+            close()
+    except Exception:
+        pass
+
+
+def _cursor_mode() -> str:
+    raw = (os.environ.get("HACKBOT_CURSOR_MODE") or "plan").strip().lower()
+    return "agent" if raw == "agent" else "plan"
+
+
+def _api_key() -> str:
+    from .providers import _first_env
+
+    return _first_env(("CURSOR_API_KEY",)) or ""
+
+
+def _build_prompt(user_prompt: str, *, chat_mode: bool) -> str:
+    preamble = PREAMBLE_CHAT if chat_mode else PREAMBLE_HUNT
+    parts = [preamble, _file_create_hint(user_prompt)]
+    active = get_active()
+    if active and not chat_mode:
+        parts.append("\nActive target session:\n" + active.context_block() + "\n")
+    parts.append("\n" + user_prompt.strip() + "\n")
+    return "\n".join(parts)
+
+
+def _ensure_agent(selection: Any, fingerprint: str) -> Any:
+    """Return a live Agent handle, recreating when model/effort/fast/mode change."""
+    global _AGENT, _AGENT_ID, _AGENT_FINGERPRINT
+    from .cursor_bridge_win import apply_windows_bridge_patch
+
+    apply_windows_bridge_patch()
+    mode = _cursor_mode()
+    fp = f"{fingerprint}|mode={mode}"
+    if _AGENT is not None and _AGENT_FINGERPRINT == fp:
+        return _AGENT
+    if _AGENT is not None:
+        close_cursor_agent()
+
+    from cursor_sdk import Agent, LocalAgentOptions
+
+    key = _api_key()
+    if not key:
+        raise RuntimeError("CURSOR_API_KEY is not set")
+
+    try:
+        from cursor_sdk import AgentOptions
+
+        agent = Agent.create(
+            AgentOptions(
+                model=selection,
+                api_key=key,
+                mode=mode,
+                local=LocalAgentOptions(cwd=str(ROOT)),
+            )
+        )
+    except TypeError:
+        agent = Agent.create(
+            model=selection,
+            api_key=key,
+            local=LocalAgentOptions(cwd=str(ROOT)),
+        )
+    enter = getattr(agent, "__enter__", None)
+    if callable(enter):
+        agent = enter()
+    _AGENT = agent
+    _AGENT_ID = getattr(agent, "agent_id", None) or getattr(agent, "agentId", None)
+    _AGENT_FINGERPRINT = fp
+    return agent
+
+
+def _assistant_text_from_messages(messages: Any) -> str:
+    chunks: list[str] = []
+    for message in messages:
+        mtype = getattr(message, "type", None) or (
+            message.get("type") if isinstance(message, dict) else None
+        )
+        if mtype != "assistant":
+            continue
+        inner = getattr(message, "message", None)
+        if inner is None and isinstance(message, dict):
+            inner = message.get("message")
+        content = getattr(inner, "content", None) if inner is not None else None
+        if content is None and isinstance(inner, dict):
+            content = inner.get("content")
+        if not content:
+            continue
+        for block in content:
+            btype = getattr(block, "type", None) or (
+                block.get("type") if isinstance(block, dict) else None
+            )
+            if btype == "text":
+                text = getattr(block, "text", None) or (
+                    block.get("text") if isinstance(block, dict) else None
+                )
+                if text:
+                    chunks.append(str(text))
+    return "".join(chunks).strip()
+
+
+def _run_send(agent: Any, prompt: str, *, selection: Any) -> tuple[str, str]:
+    """Send one prompt; return (assistant_text, resolved_model_label). Always wait()."""
+    mode = _cursor_mode()
+    send_kwargs: dict[str, Any] = {}
+    try:
+        from cursor_sdk import SendOptions
+
+        send_kwargs["options"] = SendOptions(mode=mode, model=selection)
+    except Exception:
+        send_kwargs = {}
+
+    try:
+        if send_kwargs:
+            run = agent.send(prompt, **send_kwargs)
+        else:
+            run = agent.send(prompt)
+    except TypeError:
+        run = agent.send(prompt)
+
+    answer = ""
+    if streaming_enabled():
+        try:
+            stream = run.messages() if hasattr(run, "messages") else run.stream()
+            for message in stream:
+                mtype = getattr(message, "type", None)
+                if mtype == "assistant":
+                    piece = _assistant_text_from_messages([message])
+                    if piece:
+                        ui.console.print(piece, end="")
+                        answer += piece
+                elif mtype == "tool_call":
+                    name = getattr(message, "name", "?")
+                    status = getattr(message, "status", "")
+                    ui.console.print(ui_text(f"cursor tool  {name}  {status}", "hb.dim"))
+            if answer:
+                ui.console.print()
+        except Exception:
+            pass
+
+    result = run.wait() if hasattr(run, "wait") else None
+    status = getattr(result, "status", None) if result is not None else None
+
+    resolved_label = format_selection_label(selection)
+    if result is not None:
+        rm = getattr(result, "model", None)
+        if rm is not None:
+            resolved_label = format_selection_label(rm)
+
+    if not answer:
+        for attr in ("text", "result"):
+            if result is not None and hasattr(result, attr):
+                val = getattr(result, attr)
+                if callable(val):
+                    try:
+                        val = val()
+                    except TypeError:
+                        pass
+                if isinstance(val, str) and val.strip():
+                    answer = val.strip()
+                    break
+        if not answer and hasattr(run, "text") and callable(run.text):
+            try:
+                answer = (run.text() or "").strip()
+            except Exception:
+                pass
+
+    if status == "error":
+        rid = getattr(result, "id", None) or getattr(run, "id", "?")
+        raise RuntimeError(f"cursor run failed (status=error) id={rid}")
+    if status == "cancelled":
+        return "(cancelled)", resolved_label
+    return answer or "(cursor produced no output)", resolved_label
+
+
+def run_cursor_turn(
+    user_prompt: str,
+    *,
+    history: list[tuple[str, str]] | None = None,
+    model: str | None = None,
+    approve_fn: ApproveFn | None = None,
+    allow_file_ops: bool = True,
+) -> str:
+    """Run one turn through the Cursor SDK local agent and display the answer."""
+    del history  # durable Agent holds conversation; REPL still stores for /clear UX
+
+    if allow_file_ops:
+        direct = _try_direct_file_create(user_prompt, approve_fn)
+        if direct is not None:
+            ui.turn_timing(0.0, 1)
+            return direct
+
+    if not cursor_available():
+        msg = (
+            "cursor unavailable. Set CURSOR_API_KEY and install cursor-sdk:\n"
+            "  pip install 'hackbot-kit[cursor]'\n"
+            "  setx CURSOR_API_KEY \"cursor_...\""
+        )
+        ui.error(msg)
+        return msg
+
+    chat_mode = is_chat_prompt(user_prompt)
+    # Effort for ModelSelection: auto → skip on chat, medium on hunt; explicit levels always apply.
+    raw_eff = (os.environ.get("HACKBOT_EFFORT") or "auto").strip().lower()
+    if raw_eff in {"", "auto"} and chat_mode:
+        effort: str | None = None
+    else:
+        effort = resolve_effort_for_prompt(user_prompt)
+    try:
+        resolved = resolve_cursor_model(
+            model or os.environ.get("HACKBOT_MODEL"),
+            effort=effort,
+            api_key=_api_key(),
+            require_known=True,
+        )
+    except ValueError as exc:
+        ui.error(str(exc))
+        return str(exc)
+
+    selection = build_model_selection(resolved)
+    mode = _cursor_mode()
+    ui.info(
+        f"cursor  requested={resolved.display()}  mode={mode}  catalog={resolved.source}"
+    )
+
+    prompt = _build_prompt(user_prompt, chat_mode=chat_mode)
+    started = time.perf_counter()
+
+    try:
+        agent = _ensure_agent(selection, resolved.fingerprint())
+        answer, used_label = _run_send(agent, prompt, selection=selection)
+    except KeyboardInterrupt:
+        ui.warn("cancelled")
+        ui.turn_timing(time.perf_counter() - started, 0)
+        return "(cancelled)"
+    except Exception as exc:
+        name = type(exc).__name__
+        err = str(exc)
+        if name == "CursorAgentError" or "CursorAgent" in name:
+            msg = f"cursor startup failed: {exc}"
+        elif "10038" in err or "não é um soquete" in err or "not a socket" in err.lower():
+            msg = (
+                "cursor bridge failed on Windows (WinError 10038). "
+                "Update hackbot (cursor_bridge_win patch) and /exit then restart the REPL. "
+                f"Detail: {exc}"
+            )
+        else:
+            msg = f"cursor error: {name}: {exc}"
+        ui.error(msg)
+        ui.markdown_panel(msg, title="hackbot (cursor)")
+        ui.turn_timing(time.perf_counter() - started, 0)
+        return msg
+
+    set_last_resolved_label(used_label)
+    ui.success(f"used model  {used_label}")
+
+    ops: list[dict[str, Any]] = []
+    if allow_file_ops:
+        answer, ops = _extract_fileops(answer)
+
+    ui.markdown_panel(answer, title=f"hackbot (cursor · {used_label})")
+    if ops:
+        _apply_fileops(ops, approve_fn, source="cursor")
+
+    ui.turn_timing(time.perf_counter() - started, len(ops))
+    return answer

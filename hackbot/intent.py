@@ -66,6 +66,7 @@ _HUNT_RE = re.compile(
     r"plan|hypothesis|evidence|report|bugcrowd|hackerone|intigriti|"
     r"target|endpoint|fuzz|scan|crawl|probe|"
     r"write|create|edit|delete|append|mkdir|move|"
+    r"criar|crie|cria|escreve|escreva|arquivo|"
     r"read_file|SCOPE\.md|PLAN\.md|FINDINGS|"
     r"approve|dry[\s-]?run|campanha|campaign"
     r")\b"

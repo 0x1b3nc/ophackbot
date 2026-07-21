@@ -6,6 +6,7 @@ Pick a provider, a model, and a reasoning effort, then just talk.
 Brains:
   - model  : any HTTP provider (OpenAI, Anthropic, DeepSeek, GLM, OpenRouter, local)
   - codex  : the `codex` CLI, powered by your ChatGPT plan
+  - cursor : Cursor SDK local agent (CURSOR_API_KEY)
   - offline: no model, rule-based planner (still runs tools)
 """
 
@@ -18,6 +19,9 @@ from rich.prompt import Confirm, Prompt
 from . import ui
 from .agent import run_agent
 from .codex_backend import codex_available, run_codex_turn
+from .cursor_backend import close_cursor_agent, cursor_available, run_cursor_turn
+from .cursor_models import last_resolved_label, parse_effort_fast, resolve_cursor_model
+from .model_catalog import known_models, resolve_model
 from .force import disable_force, enable_force, is_forced
 from .hunt_controller import hunt_status, request_stop, run_hunt
 from .identity import save_session
@@ -47,53 +51,85 @@ def _describe(cfg) -> str:
 
 
 def _resolve_mode() -> tuple[str, str]:
-    """Return (mode, label). mode is 'model' | 'codex' | 'offline'."""
+    """Return (mode, label). mode is 'model' | 'codex' | 'cursor' | 'offline'.
+
+    Home base is always offline unless the operator *explicitly* sets
+    HACKBOT_PROVIDER / HACKBOT_BACKEND or uses /provider. Keys alone do not
+    auto-switch the REPL brain (avoids surprising Codex/OpenAI takeover).
+    """
     if os.environ.get("HACKBOT_LOCAL", "").strip() in {"1", "true", "yes"}:
         return "offline", "offline (forced by HACKBOT_LOCAL)"
 
-    # HACKBOT_BACKEND is a friendly alias for HACKBOT_PROVIDER.
+    provider = os.environ.get("HACKBOT_PROVIDER", "").strip().lower()
     backend = os.environ.get("HACKBOT_BACKEND", "").strip().lower()
-    if backend and not os.environ.get("HACKBOT_PROVIDER"):
-        if backend == "offline":
-            return "offline", "offline (forced by HACKBOT_BACKEND)"
-        os.environ["HACKBOT_PROVIDER"] = backend
+    # PROVIDER wins; BACKEND is a legacy alias
+    if provider:
+        forced, source = provider, "HACKBOT_PROVIDER"
+    elif backend:
+        forced, source = backend, "HACKBOT_BACKEND"
+        # Align for resolve_config / mid-session tool calls (same process only)
+        os.environ["HACKBOT_PROVIDER"] = forced
+    else:
+        forced, source = "", ""
 
-    forced = os.environ.get("HACKBOT_PROVIDER", "").strip().lower()
-    if forced == "offline":
-        return "offline", "offline (manual)"
+    if not forced or forced == "offline":
+        return "offline", "offline (default — /provider to pick a model)"
 
     try:
         cfg = resolve_config()
     except ConfigError as exc:
-        # Explicit provider but misconfigured (e.g. missing key): show why.
-        if forced:
-            reason = str(exc).splitlines()[0]
-            return "offline", f"offline ({reason})"
-        # Default: offline. Never auto-pick codex or anything else; the user
-        # chooses a model with /provider (or a key). Offline is home base.
-        return "offline", "offline (default - pick a model with /provider)"
+        reason = str(exc).splitlines()[0]
+        return "offline", f"offline ({reason})"
 
     if cfg.wire == "codex":
         if codex_available():
-            return "codex", _describe(cfg)
-        return "offline", "offline (codex not logged in - run `codex login`)"
-    return "model", _describe(cfg)
+            return "codex", _describe(cfg) + f" [{source}]"
+        return "offline", "offline (codex not logged in — run `codex login` or /provider offline)"
+    if cfg.wire == "cursor":
+        if cursor_available():
+            return "cursor", _describe(cfg) + f" [{source}]"
+        return (
+            "offline",
+            "offline (cursor needs CURSOR_API_KEY + pip install 'hackbot-kit[cursor]')",
+        )
+    return "model", _describe(cfg) + f" [{source}]"
 
 
 class _Session:
     def __init__(self) -> None:
         self.model_history: list = []
         self.codex_history: list[tuple[str, str]] = []
+        self.cursor_history: list[tuple[str, str]] = []
 
     def clear(self) -> None:
         self.model_history.clear()
         self.codex_history.clear()
+        self.cursor_history.clear()
+        close_cursor_agent()
         disable_force()
 
 
 def _prompt_label(mode: str) -> str:
     effort = os.environ.get("HACKBOT_EFFORT", "auto") or "auto"
     short = mode if mode != "model" else "model"
+    if mode == "cursor":
+        model = os.environ.get("HACKBOT_MODEL") or "composer-2.5"
+        fast = os.environ.get("HACKBOT_CURSOR_FAST", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        bits = [short, model, effort]
+        if fast:
+            bits.append("fast")
+        used = last_resolved_label()
+        if used:
+            bits.append(f"last={used}")
+        active = get_active()
+        if active:
+            bits.append(active.name)
+        return " · ".join(bits)
     active = get_active()
     if active:
         return f"{short} · {effort} · {active.name}"
@@ -126,6 +162,26 @@ def _run_turn(mode: str, text: str, session: _Session) -> None:
                 # Cap codex history too
                 if len(session.codex_history) > 12:
                     del session.codex_history[: len(session.codex_history) - 12]
+        elif mode == "cursor":
+            model = os.environ.get("HACKBOT_MODEL") or None
+            allow_file_ops = os.environ.get("HACKBOT_CURSOR_FILEOPS", "1").strip() not in {
+                "0",
+                "false",
+                "off",
+                "no",
+            }
+            answer = run_cursor_turn(
+                text,
+                history=session.cursor_history,
+                model=model,
+                approve_fn=_approve,
+                allow_file_ops=allow_file_ops,
+            )
+            if answer != "(cancelled)":
+                session.cursor_history.append(("user", text))
+                session.cursor_history.append(("hackbot", answer))
+                if len(session.cursor_history) > 12:
+                    del session.cursor_history[: len(session.cursor_history) - 12]
         else:
             run_local_agent(text, approve_fn=_approve)
     except KeyboardInterrupt:
@@ -133,10 +189,22 @@ def _run_turn(mode: str, text: str, session: _Session) -> None:
 
 
 def _cmd_providers() -> None:
+    from .providers import _first_env
+
     ui.rule("providers")
     for p in PROVIDERS.values():
-        has_key = any(os.environ.get(e) for e in p.key_envs) or not p.requires_key
-        mark = "ready" if has_key else "needs key"
+        has_key = bool(_first_env(p.key_envs)) if p.key_envs else True
+        if not p.requires_key:
+            has_key = True
+        if p.name == "cursor":
+            if not has_key:
+                mark = "needs key"
+            elif cursor_available():
+                mark = "ready"
+            else:
+                mark = "needs cursor-sdk"
+        else:
+            mark = "ready" if has_key else "needs key"
         ui.kv(p.name, f"{p.label}  [{mark}]")
         if p.note:
             ui.info(f"    {p.note}")
@@ -144,13 +212,13 @@ def _cmd_providers() -> None:
 
 
 def _cmd_models(provider_name: str) -> None:
-    p = PROVIDERS.get(provider_name)
-    ui.kv("provider", provider_name)
-    if p and p.models:
-        ui.info("model suggestions (any name your account supports works):")
-        for name in p.models:
-            ui.info(f"  {name}")
-    ui.info("set with:  /model <name>")
+    ui.rule(f"models ({provider_name})")
+    rows = known_models(provider_name, include_live=True)
+    if not rows:
+        ui.warn("no known models — start the local server or set the API key, then /models")
+    for mid, note in rows:
+        ui.kv(mid, note)
+    ui.info("ONLY these ids are accepted. set:  /model <id>")
 
 
 def _current_label() -> str:
@@ -166,9 +234,10 @@ def start_repl(*, one_shot: str | None = None) -> int:
 
     ui.success(f"ready  {label}")
     if mode == "offline":
-        ui.info("offline brain: rule-based. pick a model for real reasoning:")
-        ui.info("  /providers   then   /provider <name>   /model <name>   /effort <level>")
+        ui.info("default brain = offline (hackbot rules + tools). models are opt-in:")
+        ui.info("  /providers   →   /provider openai|anthropic|codex|cursor|…   /model   /effort")
     else:
+        ui.info("model brain active (from HACKBOT_PROVIDER or /provider). back home: /provider offline")
         ui.info("switch anytime:  /provider  /model  /effort  /status  /help")
 
     session = _Session()
@@ -204,6 +273,27 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.kv("config", label)
             ui.kv("hunt", status_line())
             ui.kv("force", "ON" if is_forced() else "off")
+            if mode == "cursor":
+                ui.kv("model", os.environ.get("HACKBOT_MODEL") or "composer-2.5")
+                ui.kv("effort", os.environ.get("HACKBOT_EFFORT", "auto"))
+                fast_on = os.environ.get("HACKBOT_CURSOR_FAST", "").strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+                ui.kv("fast", "on" if fast_on else "off (standard)")
+                used = last_resolved_label()
+                ui.kv("last used (from SDK)", used or "(no turn yet)")
+                try:
+                    r = resolve_cursor_model(
+                        os.environ.get("HACKBOT_MODEL"),
+                        effort=os.environ.get("HACKBOT_EFFORT"),
+                        require_known=True,
+                    )
+                    ui.kv("will request", r.display())
+                except ValueError as exc:
+                    ui.warn(str(exc))
             active = get_active()
             if active is not None:
                 st = hunt_status(active.target_dir)
@@ -382,16 +472,23 @@ def start_repl(*, one_shot: str | None = None) -> int:
                 ui.info("list: /providers   set: /provider <name>")
                 continue
             if arg not in PROVIDERS and arg not in {"offline", "local"}:
+                # Common typo: /provier
                 ui.error(f"unknown provider '{arg}'. try /providers")
+                ui.info("example:  /provider cursor")
                 continue
+            prev = mode
             if arg in {"offline", "local"}:
                 os.environ["HACKBOT_PROVIDER"] = "offline"
             else:
                 os.environ["HACKBOT_PROVIDER"] = arg
+            if prev == "cursor" and arg != "cursor":
+                close_cursor_agent()
             mode, label = _resolve_mode()
             ui.success(f"provider -> {label}  (brain: {mode})")
             continue
         if text in {"/codex"}:
+            if mode == "cursor":
+                close_cursor_agent()
             os.environ["HACKBOT_PROVIDER"] = "codex"
             # Force a fresh login-status check when the user asks for codex.
             codex_available(force=True)
@@ -400,6 +497,17 @@ def start_repl(*, one_shot: str | None = None) -> int:
                 ui.success(f"switched to codex  ({label})")
             else:
                 ui.error("codex not ready. run `codex login` (Sign in with ChatGPT) first.")
+            continue
+        if text in {"/cursor"}:
+            os.environ["HACKBOT_PROVIDER"] = "cursor"
+            mode, label = _resolve_mode()
+            if mode == "cursor":
+                ui.success(f"switched to cursor  ({label})")
+            else:
+                ui.error(
+                    "cursor not ready. set CURSOR_API_KEY and "
+                    "pip install 'hackbot-kit[cursor]' (or cursor-sdk)."
+                )
             continue
         if text in {"/codex-write", "/codexwrite", "/codex-files"}:
             on = os.environ.get("HACKBOT_CODEX_FILEOPS", "1").strip() not in {"0", "false", "off", "no"}
@@ -414,6 +522,8 @@ def start_repl(*, one_shot: str | None = None) -> int:
                 )
             continue
         if text in {"/local", "/offline"}:
+            if mode == "cursor":
+                close_cursor_agent()
             os.environ["HACKBOT_PROVIDER"] = "offline"
             mode, label = _resolve_mode()
             ui.success("switched to offline (rule-based) brain")
@@ -424,18 +534,53 @@ def start_repl(*, one_shot: str | None = None) -> int:
             try:
                 prov = resolve_config().provider
             except ConfigError:
-                prov = os.environ.get("HACKBOT_PROVIDER", "openai")
-            _cmd_models(prov)
+                prov = os.environ.get("HACKBOT_PROVIDER", "").strip().lower() or (
+                    "cursor" if mode == "cursor" else "openai"
+                )
+            if mode in {"cursor", "codex", "model"} and prov in {"", "offline"}:
+                prov = "cursor" if mode == "cursor" else ("codex" if mode == "codex" else prov)
+            _cmd_models(prov if prov and prov != "offline" else (os.environ.get("HACKBOT_PROVIDER") or "openai"))
+            if prov == "cursor" or mode == "cursor":
+                ui.info("effort+fast:  /effort high fast   |   /fast on|off")
+                ui.info("proof: after each turn, look for 'used model …'")
             continue
         if text.startswith("/model"):
             arg = text[len("/model"):].strip()
             if not arg:
                 ui.kv("model", os.environ.get("HACKBOT_MODEL") or "(provider default)")
-                ui.info("set with:  /model <name>   (list: /models)")
+                ui.info("set with:  /model <id>   (list: /models) — unknown ids are rejected")
                 continue
-            os.environ["HACKBOT_MODEL"] = arg
+            try:
+                prov = resolve_config().provider
+            except ConfigError:
+                prov = os.environ.get("HACKBOT_PROVIDER", "").strip().lower()
+            if not prov or prov == "offline":
+                if mode == "cursor":
+                    prov = "cursor"
+                elif mode == "codex":
+                    prov = "codex"
+                else:
+                    ui.error("pick a provider first: /provider openai|anthropic|cursor|…")
+                    continue
+            try:
+                canonical, source = resolve_model(prov, arg)
+            except ValueError as exc:
+                ui.error(str(exc))
+                ui.info("list valid ids: /models")
+                continue
+            os.environ["HACKBOT_MODEL"] = canonical
+            if prov == "cursor":
+                close_cursor_agent()
+                try:
+                    resolved = resolve_cursor_model(canonical, require_known=True)
+                    ui.success(f"model -> {canonical}  [{source}]")
+                    ui.info(f"will request: {resolved.display()}")
+                except ValueError:
+                    ui.success(f"model -> {canonical}  [{source}]")
+            else:
+                mode, label = _resolve_mode()
+                ui.success(f"model -> {canonical or '(plan default)'}  [{source}]")
             mode, label = _resolve_mode()
-            ui.success(f"model -> {arg}")
             continue
 
         # ---- reasoning effort --------------------------------------------
@@ -443,17 +588,56 @@ def start_repl(*, one_shot: str | None = None) -> int:
             arg = text[len("/effort"):].strip()
             if not arg:
                 ui.kv("effort", os.environ.get("HACKBOT_EFFORT", "auto"))
+                ui.kv(
+                    "fast",
+                    "on"
+                    if os.environ.get("HACKBOT_CURSOR_FAST", "").strip().lower()
+                    in {"1", "true", "yes", "on"}
+                    else "off",
+                )
                 ui.info("levels: " + " | ".join(EFFORT_LEVELS))
                 ui.info("auto = minimal for chat, medium for hunt tasks")
-                ui.info("set with:  /effort <level>")
+                ui.info("cursor:  /effort high fast   |   /effort medium   |   /effort high nofast")
+                ui.info("set with:  /effort <level>[ fast]")
                 continue
-            level = normalize_effort(arg)
+            level, fast = parse_effort_fast(arg)
             if not level:
-                ui.error(f"unknown effort '{arg}'. levels: {', '.join(EFFORT_LEVELS)}")
+                ui.error(
+                    f"unknown effort '{arg}'. examples: low | medium | high | high fast"
+                )
                 continue
             os.environ["HACKBOT_EFFORT"] = level
+            if fast is not None:
+                os.environ["HACKBOT_CURSOR_FAST"] = "1" if fast else "0"
+                close_cursor_agent()
             mode, label = _resolve_mode()
-            ui.success(f"effort -> {level}")
+            msg = f"effort -> {level}"
+            if fast is True:
+                msg += " + fast"
+            elif fast is False:
+                msg += " + standard (nofast)"
+            ui.success(msg)
+            continue
+
+        if text.startswith("/fast"):
+            arg = text[len("/fast") :].strip().lower()
+            if arg in {"on", "1", "true", "yes"}:
+                os.environ["HACKBOT_CURSOR_FAST"] = "1"
+                close_cursor_agent()
+                ui.success("cursor fast: ON")
+            elif arg in {"off", "0", "false", "no"}:
+                os.environ["HACKBOT_CURSOR_FAST"] = "0"
+                close_cursor_agent()
+                ui.success("cursor fast: OFF (standard)")
+            else:
+                cur = os.environ.get("HACKBOT_CURSOR_FAST", "").strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+                ui.kv("fast", "on" if cur else "off")
+                ui.info("set with:  /fast on | off   (Cursor ModelSelection param)")
             continue
 
         if text.startswith("/stream"):
@@ -489,12 +673,16 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.info("  as credenciais estão no arquivo tokens.yaml em Downloads; explora example.com approve")
             ui.info("  leia a imagem Desktop/scope.png")
             ui.info("  explora vulnerabilidades em example.com (targets/demo)")
-            ui.info("provider: /providers  /provider <name>  (/codex /local)")
-            ui.info("model:    /models  /model <name>")
-            ui.info("effort:   /effort <auto|minimal|low|medium|high|xhigh>")
+            ui.info("provider: /providers  /provider <name>  (/codex /cursor /local)")
+            ui.info("model:    /models  /model <id>   (ALL providers reject unknown ids)")
+            ui.info("effort:   /effort <auto|low|medium|high>[ fast]   /fast on|off")
             ui.info("stream:   /stream on|off   (live reasoning)")
             ui.info("verbose:  /verbose on|off  (full tool panels)")
             ui.info("codex:    /codex-write     (toggle codex file changes; on by default)")
+            ui.info("cursor:   /model grok-4.5 | composer-2.5 | auto")
+            ui.info("          /effort high fast   — real ModelSelection params")
+            ui.info("          after each turn: 'used model …' proves SDK selection")
+            ui.info("          HACKBOT_CURSOR_MODE=plan|agent  (default plan)")
             ui.info("shortcuts:/target  /hunt  /session  /force  /status")
             ui.info("session:  /clear  /exit   (Ctrl+C cancels a running turn)")
             continue

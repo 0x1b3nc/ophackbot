@@ -4011,8 +4011,15 @@ def _tool_list_dir(args: dict[str, Any]) -> str:
     if not path.is_dir():
         return json.dumps({"ok": False, "error": "not a directory", "path": str(path)})
     glob_pat = args.get("glob") or "*"
+    try:
+        limit = int(args.get("limit") or 40)
+    except (TypeError, ValueError):
+        limit = 40
+    limit = max(1, min(limit, 200))
+    children = sorted(path.glob(glob_pat))
+    total = len(children)
     entries = []
-    for child in sorted(path.glob(glob_pat))[:200]:
+    for child in children[:limit]:
         entries.append(
             {
                 "name": child.name,
@@ -4021,7 +4028,16 @@ def _tool_list_dir(args: dict[str, Any]) -> str:
                 "bytes": child.stat().st_size if child.is_file() else None,
             }
         )
-    return json.dumps({"ok": True, "path": str(path), "count": len(entries), "entries": entries})
+    return json.dumps(
+        {
+            "ok": True,
+            "path": str(path),
+            "count": len(entries),
+            "total": total,
+            "truncated": total > len(entries),
+            "entries": entries,
+        }
+    )
 
 
 def _tool_analyze_js(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:

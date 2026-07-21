@@ -189,6 +189,139 @@ def _wants(text: str, *words: str) -> bool:
     return any(w in low for w in words)
 
 
+_FOLDER_ALIASES = {
+    "downloads": "Downloads",
+    "download": "Downloads",
+    "desktop": "Desktop",
+    "documentos": "Documents",
+    "documents": "Documents",
+    "docs": "Documents",
+}
+
+
+def _folder_from_text(text: str) -> Path | None:
+    low = text.lower()
+    for key, canon in _FOLDER_ALIASES.items():
+        if re.search(rf"(?i)\b{re.escape(key)}\b", low):
+            return Path.home() / canon
+    return None
+
+
+def _with_default_suffix(name: str, text: str) -> str:
+    if Path(name).suffix:
+        return name
+    ext_m = re.search(r"(?i)(\.(?:md|txt|yaml|yml|json|csv))\b", text)
+    return name + (ext_m.group(1) if ext_m else ".md")
+
+
+def _parse_create_file_path(text: str) -> str | None:
+    """Parse PT/EN 'create file in Downloads named X' into an absolute path."""
+    # Absolute / home-relative path already in the prompt
+    m = re.search(
+        r"(?i)(?:arquivo|file)\s+[\"']?((?:[A-Za-z]:\\|\\\\|~/|/)[^\s\"']+)[\"']?",
+        text,
+    )
+    if m:
+        return str(Path(m.group(1)).expanduser())
+
+    m = re.search(
+        r"(?i)(?:create|write|cria(?:r)?|crie|escrev[ea]|salva(?:r)?|save)\s+"
+        r"(?:(?:um|a|the)\s+)?(?:arquivo|file)\s+[\"']?([^\s\"']+\.\w{1,8})[\"']?",
+        text,
+    )
+    if m and ("/" in m.group(1) or "\\" in m.group(1)):
+        return str(Path(m.group(1)).expanduser())
+
+    folder_pat = r"(?:pasta|folder|dir(?:ectory)?)\s+(?:de\s+|do\s+|da\s+|the\s+)?[\"']?([^\s\"']+)[\"']?"
+    name_pat = r"(?:chamado|chamada|named|called|name(?:d)?)\s+[\"']?([^\s\"']+)[\"']?"
+
+    # "... na pasta Downloads chamado scope.md"
+    m = re.search(rf"(?i){folder_pat}.*?{name_pat}", text)
+    if m:
+        folder_raw, name = m.group(1), m.group(2)
+        folder_key = folder_raw.strip().rstrip("/\\").lower()
+        if name.lower() in {"arquivo", "file"}:
+            return None
+        name = _with_default_suffix(name, text)
+        if folder_key in _FOLDER_ALIASES:
+            base = Path.home() / _FOLDER_ALIASES[folder_key]
+        elif Path(folder_raw).is_absolute():
+            base = Path(folder_raw)
+        else:
+            base = Path.home() / folder_raw
+        return str((base / name).expanduser())
+
+    # "... chamado scopetest na pasta de downloads" / "um .md chamado X … downloads"
+    m = re.search(rf"(?i){name_pat}.*?{folder_pat}", text)
+    if m:
+        name, folder_raw = m.group(1), m.group(2)
+        if name.lower() not in {"arquivo", "file"}:
+            name = _with_default_suffix(name, text)
+            folder_key = folder_raw.strip().rstrip("/\\").lower()
+            if folder_key in _FOLDER_ALIASES:
+                return str(Path.home() / _FOLDER_ALIASES[folder_key] / name)
+            base = Path(folder_raw) if Path(folder_raw).is_absolute() else Path.home() / folder_raw
+            return str(base / name)
+
+    # named file + known folder word anywhere (order-free)
+    m = re.search(rf"(?i){name_pat}", text)
+    folder = _folder_from_text(text)
+    if m and folder is not None:
+        name = m.group(1)
+        if name.lower() not in {"arquivo", "file", "pasta", "folder"}:
+            return str(folder / _with_default_suffix(name, text))
+
+    # "create scope.md in Downloads" / "cria scope.md em Downloads"
+    m = re.search(
+        r"(?i)(?:arquivo|file)\s+[\"']?([^\s\"']+\.\w{1,8})[\"']?"
+        r".*?(?:(?:na|em|in|into)\s+(?:pasta\s+(?:de\s+|do\s+|da\s+)?|folder\s+)?)[\"']?([^\s\"']+)[\"']?",
+        text,
+    )
+    if m:
+        name, folder_raw = m.group(1), m.group(2)
+        folder_key = folder_raw.strip().rstrip("/\\").lower()
+        if folder_key in _FOLDER_ALIASES:
+            return str(Path.home() / _FOLDER_ALIASES[folder_key] / name)
+        return str((Path(folder_raw).expanduser() / name))
+
+    m = re.search(
+        r"(?i)[\"']?([A-Za-z0-9_.-]+\.(?:md|txt|yaml|yml|json|csv))[\"']?"
+        r".*?(?:downloads|desktop|documentos|documents)",
+        text,
+    )
+    if m:
+        folder = _folder_from_text(text)
+        if folder is not None:
+            return str(folder / m.group(1))
+
+    m = re.search(
+        r"(?i)(?:downloads|desktop|documentos|documents).*?"
+        r"[\"']?([A-Za-z0-9_.-]+\.(?:md|txt|yaml|yml|json|csv))[\"']?",
+        text,
+    )
+    if m:
+        folder = _folder_from_text(text)
+        if folder is not None:
+            return str(folder / m.group(1))
+
+    return None
+
+
+def _default_new_file_content(path: str) -> str:
+    name = Path(path).name
+    if name.lower() == "scope.md":
+        return (
+            "# Scope\n\n"
+            "_Created by hackbot. Fill in-scope hosts, out-of-scope, and rules._\n\n"
+            "## In scope\n\n- \n\n"
+            "## Out of scope\n\n- \n\n"
+            "## Notes\n\n"
+        )
+    if Path(path).suffix.lower() in {".md", ".txt"}:
+        return f"# {Path(path).stem}\n\n"
+    return ""
+
+
 def interpret(text: str) -> Interpretation:
     full_target, host = _detect_targets(text)
     tool = _detect_tool(text)
@@ -200,7 +333,11 @@ def interpret(text: str) -> Interpretation:
     intents: list[str] = []
     if _wants(text, "list target", "which target", "what target", "show target"):
         intents.append("list")
-    if _wants(text, "scope", "in-scope", "in scope", "allowed", "is it ok"):
+    # Avoid treating "scope.md" / "criar arquivo … scope" as a SCOPE check
+    if _wants(text, "in-scope", "in scope", "out of scope", "out-of-scope", "is it ok") or (
+        _wants(text, "scope", "allowed")
+        and not _wants(text, "scope.md", "arquivo", "file", "crie", "cria", "criar", "create")
+    ):
         intents.append("scope")
     if _wants(
         text,
@@ -301,7 +438,44 @@ def interpret(text: str) -> Interpretation:
         intents.append("crt")
     if _wants(text, "wayback", "arquivo morto", "historical url", "urls antigas"):
         intents.append("wayback")
-    if _wants(text, "lista a pasta", "listar pasta", "list dir", "list folder", "o que tem na pasta", "na pasta"):
+    # Create/write file (PT-BR + EN) — must win over bare "na pasta" list_dir
+    if _wants(
+        text,
+        "crie um arquivo",
+        "cria um arquivo",
+        "criar arquivo",
+        "create a file",
+        "create file",
+        "write a file",
+        "write file",
+        "escreve um arquivo",
+        "escreva um arquivo",
+        "salva um arquivo",
+        "save a file",
+        "gera um arquivo",
+        "make a file",
+        "novo arquivo",
+        "new file",
+    ) or (
+        _wants(text, "crie", "cria", "criar", "create", "escreve", "escreva", "write")
+        and _wants(text, "arquivo", "file", ".md", ".txt", ".yaml", ".yml", ".json")
+        and not _wants(text, "credencial", "credentials", "tokens", "sessions.yaml")
+    ):
+        intents.append("write_file")
+    if _wants(
+        text,
+        "lista a pasta",
+        "listar pasta",
+        "list dir",
+        "list folder",
+        "o que tem na pasta",
+        "what's in the folder",
+        "conteudo da pasta",
+        "conteúdo da pasta",
+    ) or (
+        _wants(text, "na pasta")
+        and not _wants(text, "crie", "cria", "criar", "create", "escreve", "write", "arquivo chamado", "file called")
+    ):
         intents.append("list_dir")
     if _wants(text, "security header", "headers de seguranca", "headers de segurança", "analyze headers"):
         intents.append("analyze_headers")
@@ -549,6 +723,32 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
 
     if "list" in intents:
         plan.append(Action("List the target folders I know about.", "list_targets", {}))
+
+    if "write_file" in intents:
+        path = _parse_create_file_path(text)
+        if path:
+            content = _default_new_file_content(path)
+            plan.append(
+                Action(
+                    f"Criar arquivo `{path}` (pede approve antes de gravar).",
+                    "write_file",
+                    {"path": path, "content": content},
+                )
+            )
+        else:
+            plan.append(
+                Action(
+                    "Preciso do caminho + nome do arquivo.",
+                    "_note",
+                    {
+                        "message": (
+                            "ex: crie um arquivo na pasta Downloads chamado scope.md\n"
+                            "ou: create file C:/Users/me/Downloads/notes.txt"
+                        )
+                    },
+                )
+            )
+        return plan  # file create is a single-job turn
 
     if "show_identity" in intents:
         plan.append(

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import sys
+
 from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -12,6 +15,28 @@ from rich.text import Text
 from rich.theme import Theme
 
 from . import __version__
+
+
+def _enable_windows_vt() -> None:
+    """Enable ANSI/VT processing so Rich colors render in Windows PowerShell."""
+    if sys.platform != "win32":
+        return
+    # Some hosts already support VT; enabling is idempotent.
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        kernel32.SetConsoleMode(handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_enable_windows_vt()
 
 THEME = Theme(
     {
@@ -27,7 +52,16 @@ THEME = Theme(
     }
 )
 
-console = Console(theme=THEME, highlight=False, legacy_windows=False)
+# Let Rich pick legacy Windows renderer when VT is unavailable.
+# Forcing legacy_windows=False caused raw ←[36m escapes in plain PowerShell.
+_force_plain = os.environ.get("HACKBOT_PLAIN", "").strip().lower() in {"1", "true", "yes", "on"}
+console = Console(
+    theme=THEME,
+    highlight=False,
+    force_terminal=None if not _force_plain else False,
+    no_color=_force_plain or os.environ.get("NO_COLOR") is not None,
+    color_system=None if _force_plain else "auto",
+)
 
 _STATUS_STYLE = {
     "IN_SCOPE": "hb.ok",
