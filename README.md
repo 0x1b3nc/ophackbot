@@ -4,10 +4,10 @@ My authorized bounty / lab agent. You type a prompt. I think out loud (live
 streaming), use tools, edit files, and answer. Scope first. Evidence redacted.
 Active traffic and every file change need your approve.
 
-It's model-agnostic: the default brain is **offline** (rule-based, no key, no
+It's model-agnostic: the default brain is **offline** (rule based, no key, no
 network). Plug in any model when you want more (OpenAI, Claude, DeepSeek, GLM,
 OpenRouter, local via Ollama/LM Studio, or your ChatGPT plan through Codex). It
-never switches brains on its own - you pick.
+never switches brains on its own. you pick.
 
 ## Install
 
@@ -28,7 +28,7 @@ setx OPENROUTER_API_KEY "sk-or-..." # OpenRouter (many models, one key)
 setx HACKBOT_BASE_URL "http://localhost:11434/v1"  # Ollama / LM Studio (free, local)
 ```
 
-No key? Nothing to do - hackbot runs **offline** by default (rule-based, still
+No key? Nothing to do. hackbot runs **offline** by default (rule based, still
 runs tools). Or use your ChatGPT plan via the Codex CLI (`codex login`, then
 `setx HACKBOT_PROVIDER codex`).
 
@@ -63,8 +63,8 @@ hackbot: dry-run httpx against example.com for the demo target
 hackbot: create a scratch.md in my Downloads with today's plan
 ```
 
-I can create, edit, append, move, and delete files - anywhere, not just this
-repo. Every change pops an approval panel with the path and a preview first; deny
+I can create, edit, append, move, and delete files anywhere, not just this repo.
+Every change pops an approval panel with the path and a preview first. Deny it
 and I back off. Reasoning streams live as I think (toggle with `/stream`).
 
 ## Safety
