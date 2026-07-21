@@ -79,18 +79,25 @@ def discover_paths(
         ui.dry_run_banner()
         return RunnerResult(cmd, False, None, json.dumps({"dry_run": True, **plan}), "", "dry-run")
 
+    from ..scoped_http import scoped_fetch_bytes
+
     # Adaptive baseline: probe a random 404 path to filter soft-404s
     baseline_len = -1
     baseline_status = -1
     try:
         probe = urljoin(origin + "/", f"__hackbot_missing_{int(__import__('time').time())}__")
-        req = urllib.request.Request(probe, method="GET", headers={"User-Agent": "hackbot-discover"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            baseline_status = int(getattr(resp, "status", None) or resp.getcode())
-            baseline_len = len(resp.read(4000))
-    except urllib.error.HTTPError as exc:
-        baseline_status = int(exc.code)
-        baseline_len = len(exc.read(2000)) if exc.fp else 0
+        resp = scoped_fetch_bytes(
+            probe,
+            target_dir=target_dir,
+            action="content discovery path fuzz",
+            force=force,
+            timeout=timeout,
+            headers={"User-Agent": "hackbot-discover"},
+            max_bytes=4000,
+            gate_initial=False,
+        )
+        baseline_status = resp.status
+        baseline_len = len(resp.body)
     except Exception:  # noqa: BLE001
         pass
 
@@ -99,13 +106,18 @@ def discover_paths(
     for path in wordlist:
         url = urljoin(origin + "/", path.lstrip("/"))
         try:
-            req = urllib.request.Request(url, method="GET", headers={"User-Agent": "hackbot-discover"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                status = int(getattr(resp, "status", None) or resp.getcode())
-                body = resp.read(4000).decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as exc:
-            status = int(exc.code)
-            body = exc.read(2000).decode("utf-8", errors="replace") if exc.fp else ""
+            resp = scoped_fetch_bytes(
+                url,
+                target_dir=target_dir,
+                action="content discovery path fuzz",
+                force=force,
+                timeout=timeout,
+                headers={"User-Agent": "hackbot-discover"},
+                max_bytes=4000,
+                gate_initial=False,
+            )
+            status = resp.status
+            body = resp.body.decode("utf-8", errors="replace")
         except Exception as exc:  # noqa: BLE001
             hits.append({"path": path, "error": type(exc).__name__})
             continue

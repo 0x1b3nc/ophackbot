@@ -48,23 +48,27 @@ def graphql_probe(
         return RunnerResult(cmd, False, None, json.dumps({"dry_run": True, **plan}), "", "dry-run")
 
     payload_bytes = json.dumps({"query": body_q}).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload_bytes,
-        method="POST",
-        headers={
-            "User-Agent": "hackbot-graphql-probe",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            status = int(getattr(resp, "status", None) or resp.getcode())
-            raw = resp.read(500_000).decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        status = int(exc.code)
-        raw = exc.read(200_000).decode("utf-8", errors="replace") if exc.fp else ""
+        from ..scoped_http import scoped_fetch_bytes
+
+        resp = scoped_fetch_bytes(
+            url,
+            target_dir=target_dir,
+            action="graphql introspection probe",
+            force=force,
+            timeout=timeout,
+            method="POST",
+            data=payload_bytes,
+            headers={
+                "User-Agent": "hackbot-graphql-probe",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            max_bytes=500_000,
+            gate_initial=False,
+        )
+        status = resp.status
+        raw = resp.body.decode("utf-8", errors="replace")
     except Exception as exc:  # noqa: BLE001
         return RunnerResult(cmd, True, 1, "", str(exc), f"error:{type(exc).__name__}")
 

@@ -252,6 +252,26 @@ allowed:
                 tool="idor_probe",
             )
 
+    def test_cidr_in_scope(self) -> None:
+        yaml_scope = """---
+in_scope:
+  - 10.0.0.0/8
+  - 2001:db8::/32
+out_of_scope:
+  - 10.9.9.9
+allowed:
+  - Active testing
+---
+"""
+        policy = self._policy(yaml_scope)
+        self.assertTrue(policy.contains_host("10.1.2.3"))
+        self.assertTrue(policy.target_in_scope("http://10.1.2.3:8080/x"))
+        self.assertFalse(policy.contains_host("11.0.0.1"))
+        self.assertTrue(policy.is_explicitly_out_of_scope("10.9.9.9"))
+        with self.assertRaises(PermissionError):
+            policy.assert_action_allowed("http://10.9.9.9/", "httpx fingerprint", force=False)
+        self.assertTrue(policy.contains_host("2001:db8::1"))
+
 
 if __name__ == "__main__":
     unittest.main()

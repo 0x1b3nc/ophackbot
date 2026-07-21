@@ -69,24 +69,27 @@ def race_probe(
     data_bytes = body.encode() if body and method in {"POST", "PUT", "PATCH"} else None
 
     def one(_i: int) -> dict[str, Any]:
-        req = urllib.request.Request(full, data=data_bytes, method=method, headers=headers)
+        from ..scoped_http import scoped_fetch_bytes
+
         started = time.perf_counter()
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                status = int(getattr(resp, "status", None) or resp.getcode())
-                raw = resp.read(40_000)
+            resp = scoped_fetch_bytes(
+                full,
+                target_dir=target_dir,
+                action="race condition probe",
+                force=force,
+                timeout=timeout,
+                method=method,
+                data=data_bytes,
+                headers=headers,
+                max_bytes=40_000,
+                gate_initial=False,
+            )
+            raw = resp.body
             return {
-                "status": status,
+                "status": resp.status,
                 "len": len(raw),
                 "hash": hashlib.sha256(raw).hexdigest()[:12],
-                "ms": round((time.perf_counter() - started) * 1000, 1),
-            }
-        except urllib.error.HTTPError as exc:
-            raw = exc.read(20_000) if exc.fp else b""
-            return {
-                "status": int(exc.code),
-                "len": len(raw),
-                "hash": hashlib.sha256(raw).hexdigest()[:12] if raw else "",
                 "ms": round((time.perf_counter() - started) * 1000, 1),
             }
         except Exception as exc:  # noqa: BLE001

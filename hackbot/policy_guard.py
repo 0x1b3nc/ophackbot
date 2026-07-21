@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -120,10 +121,11 @@ class ScopeRule:
     """One SCOPE entry. Host-only rules leave scheme/port/path unconstrained."""
 
     raw: str
-    host: str
+    host: str = ""
     scheme: str | None = None
     port: int | None = None
     path_prefix: str | None = None
+    network: str | None = None  # CIDR / single IP as ip_network string
 
 
 @dataclass(frozen=True)
@@ -378,6 +380,11 @@ def parse_scope_rule(entry: str) -> ScopeRule:
     if not norm:
         return ScopeRule(raw=raw, host="")
 
+    # CIDR or bare IP (before host/path parsing so 10.0.0.0/8 is not path "/8")
+    cidr_rule = _try_parse_network_rule(raw, norm)
+    if cidr_rule is not None:
+        return cidr_rule
+
     # Bare wildcard host: *.parent.tld
     if (
         norm.startswith("*.")
@@ -409,6 +416,35 @@ def parse_scope_rule(entry: str) -> ScopeRule:
         path_prefix = _path_prefix_from_parsed("/" + rest)
     host, port = _split_host_port(hostport)
     return ScopeRule(raw=raw, host=host, port=port, path_prefix=path_prefix)
+
+
+def _try_parse_network_rule(raw: str, norm: str) -> ScopeRule | None:
+    if "://" in norm:
+        return None
+    candidate = norm
+    # Strip optional path from mistaken "10.0.0.1/24/extra" — only pure CIDR/IP.
+    if "/" in norm:
+        left, _, right = norm.partition("/")
+        left = left.strip()
+        # host/path like example.com/v1 — not a network
+        try:
+            ipaddress.ip_address(left.strip("[]"))
+        except ValueError:
+            return None
+        # right must be prefix length only
+        prefix = right.split("/", 1)[0].strip()
+        if not prefix.isdigit():
+            return None
+        candidate = f"{left}/{prefix}"
+    try:
+        net = ipaddress.ip_network(candidate.strip("[]"), strict=False)
+    except ValueError:
+        try:
+            addr = ipaddress.ip_address(candidate.strip("[]"))
+            net = ipaddress.ip_network(f"{addr}/{addr.max_prefixlen}", strict=False)
+        except ValueError:
+            return None
+    return ScopeRule(raw=raw, host="", network=str(net))
 
 
 def host_from_target(value: str) -> str:
@@ -552,8 +588,16 @@ def _split_host_port(hostport: str) -> tuple[str, int | None]:
 
 def _host_matches_rule(host: str, rule: ScopeRule) -> bool:
     host = host.lower().strip().rstrip(".")
+    if not host:
+        return False
+    if rule.network:
+        try:
+            addr = ipaddress.ip_address(host.strip("[]"))
+            return addr in ipaddress.ip_network(rule.network, strict=False)
+        except ValueError:
+            return False
     entry = rule.host.lower().strip().rstrip(".")
-    if not host or not entry:
+    if not entry:
         return False
     if entry.startswith("*."):
         parent = entry[2:]
@@ -564,7 +608,7 @@ def _host_matches_rule(host: str, rule: ScopeRule) -> bool:
 
 
 def _url_matches_rule(url: str, rule: ScopeRule) -> bool:
-    if not rule.host:
+    if not rule.host and not rule.network:
         return False
     parsed = urlparse(url if "://" in url else f"https://{url}")
     host = (parsed.hostname or "").lower().rstrip(".")

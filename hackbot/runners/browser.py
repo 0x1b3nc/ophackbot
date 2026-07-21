@@ -11,6 +11,7 @@ from .. import ui
 from ..evidence import EvidenceStore
 from ..hunt_memory import Endpoint, HuntMemory
 from ..redaction import redact_text
+from ..scoped_http import attach_playwright_scope_guard
 from .base import RunnerResult, require_in_scope
 
 
@@ -90,6 +91,28 @@ def _new_authed_context(browser: Any, url: str, headers: dict[str, str]) -> Any:
     return context
 
 
+def _guarded_page(
+    browser: Any,
+    target_dir: Path,
+    *,
+    action: str,
+    force: bool,
+    headers: dict[str, str] | None = None,
+    url_for_cookies: str = "",
+) -> tuple[Any, Any, list[dict[str, str]]]:
+    """New context+page with SCOPE route guard on every request/redirect."""
+    if headers:
+        context = _new_authed_context(browser, url_for_cookies or "https://localhost/", headers)
+    else:
+        context = browser.new_context()
+    blocked: list[dict[str, str]] = []
+    attach_playwright_scope_guard(
+        context, target_dir, action=action, force=force, blocked=blocked
+    )
+    page = context.new_page()
+    return context, page, blocked
+
+
 def _gate(
     target_dir: Path,
     url: str,
@@ -141,12 +164,54 @@ def browser_navigate(
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
-            page = browser.new_page()
-            page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+            _ctx, page, blocked = _guarded_page(
+                browser,
+                target_dir,
+                action="browser navigate playwright",
+                force=force,
+            )
+            try:
+                page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+            except Exception as exc:  # noqa: BLE001
+                if blocked:
+                    return RunnerResult(
+                        cmd,
+                        True,
+                        1,
+                        json.dumps(
+                            {
+                                "ok": False,
+                                "url": url,
+                                "error": "scope_blocked",
+                                "blocked": blocked[:20],
+                                "detail": str(exc)[:300],
+                            }
+                        ),
+                        "",
+                        "scope_blocked",
+                    )
+                raise
             title = page.title()
             final = page.url
             content = page.content()
             text = page.inner_text("body") if page.query_selector("body") else ""
+            if blocked:
+                return RunnerResult(
+                    cmd,
+                    True,
+                    1,
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "url": url,
+                            "final_url": final,
+                            "error": "scope_blocked",
+                            "blocked": blocked[:20],
+                        }
+                    ),
+                    "",
+                    "scope_blocked",
+                )
         finally:
             browser.close()
 
@@ -202,8 +267,25 @@ def browser_screenshot(
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
-            page = browser.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            _ctx, page, blocked = _guarded_page(
+                browser,
+                target_dir,
+                action="browser screenshot playwright",
+                force=force,
+            )
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            except Exception as exc:  # noqa: BLE001
+                if blocked:
+                    return RunnerResult(
+                        cmd,
+                        True,
+                        1,
+                        json.dumps({"ok": False, "error": "scope_blocked", "blocked": blocked[:20], "detail": str(exc)[:200]}),
+                        "",
+                        "scope_blocked",
+                    )
+                raise
             page.screenshot(path=str(shot_path), full_page=full_page)
             title = page.title()
         finally:
@@ -259,8 +341,25 @@ def browser_eval(
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
-            page = browser.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            _ctx, page, blocked = _guarded_page(
+                browser,
+                target_dir,
+                action="browser eval playwright",
+                force=force,
+            )
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            except Exception as exc:  # noqa: BLE001
+                if blocked:
+                    return RunnerResult(
+                        cmd,
+                        True,
+                        1,
+                        json.dumps({"ok": False, "error": "scope_blocked", "blocked": blocked[:20], "detail": str(exc)[:200]}),
+                        "",
+                        "scope_blocked",
+                    )
+                raise
             value: Any = page.evaluate(expr)
         finally:
             browser.close()
@@ -303,9 +402,25 @@ def browser_cookies(
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
-            context = browser.new_context()
-            page = context.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            context, page, blocked = _guarded_page(
+                browser,
+                target_dir,
+                action="browser cookies playwright",
+                force=force,
+            )
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            except Exception as exc:  # noqa: BLE001
+                if blocked:
+                    return RunnerResult(
+                        cmd,
+                        True,
+                        1,
+                        json.dumps({"ok": False, "error": "scope_blocked", "blocked": blocked[:20], "detail": str(exc)[:200]}),
+                        "",
+                        "scope_blocked",
+                    )
+                raise
             raw = context.cookies()
         finally:
             browser.close()
@@ -378,8 +493,25 @@ def browser_storage(
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
-            page = browser.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            _ctx, page, blocked = _guarded_page(
+                browser,
+                target_dir,
+                action="browser storage playwright",
+                force=force,
+            )
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            except Exception as exc:  # noqa: BLE001
+                if blocked:
+                    return RunnerResult(
+                        cmd,
+                        True,
+                        1,
+                        json.dumps({"ok": False, "error": "scope_blocked", "blocked": blocked[:20], "detail": str(exc)[:200]}),
+                        "",
+                        "scope_blocked",
+                    )
+                raise
             raw = page.evaluate(script)
         finally:
             browser.close()
@@ -466,9 +598,26 @@ def browser_network(
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
-            page = browser.new_page()
+            _ctx, page, blocked = _guarded_page(
+                browser,
+                target_dir,
+                action="browser network playwright",
+                force=force,
+            )
             page.on("response", on_response)
-            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            try:
+                page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            except Exception as exc:  # noqa: BLE001
+                if blocked:
+                    return RunnerResult(
+                        cmd,
+                        True,
+                        1,
+                        json.dumps({"ok": False, "error": "scope_blocked", "blocked": blocked[:20], "detail": str(exc)[:200]}),
+                        "",
+                        "scope_blocked",
+                    )
+                raise
             title = page.title()
             final = page.url
         finally:
@@ -595,15 +744,33 @@ def browser_with_session(
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
-            context = _new_authed_context(browser, url, headers)
-            page = context.new_page()
+            context, page, blocked = _guarded_page(
+                browser,
+                target_dir,
+                action="browser with session playwright",
+                force=force,
+                headers=headers,
+                url_for_cookies=url,
+            )
             if capture_network:
                 page.on("response", on_response)
-            page.goto(
-                url,
-                wait_until="networkidle" if capture_network else "domcontentloaded",
-                timeout=timeout_ms,
-            )
+            try:
+                page.goto(
+                    url,
+                    wait_until="networkidle" if capture_network else "domcontentloaded",
+                    timeout=timeout_ms,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if blocked:
+                    return RunnerResult(
+                        cmd,
+                        True,
+                        1,
+                        json.dumps({"ok": False, "error": "scope_blocked", "blocked": blocked[:20], "detail": str(exc)[:200]}),
+                        "",
+                        "scope_blocked",
+                    )
+                raise
             title = page.title()
             final = page.url
             text = page.inner_text("body") if page.query_selector("body") else ""
@@ -710,9 +877,33 @@ def browser_diff_sessions(
     from playwright.sync_api import sync_playwright
 
     def _snap(browser: Any, headers: dict[str, str], label: str) -> dict[str, Any]:
-        context = _new_authed_context(browser, url, headers)
-        page = context.new_page()
-        resp = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        context, page, blocked = _guarded_page(
+            browser,
+            target_dir,
+            action="browser diff sessions playwright",
+            force=force,
+            headers=headers,
+            url_for_cookies=url,
+        )
+        try:
+            resp = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        except Exception as exc:  # noqa: BLE001
+            context.close()
+            if blocked:
+                return {
+                    "session": label,
+                    "status": 0,
+                    "title": "",
+                    "final_url": url,
+                    "body_len": 0,
+                    "body_hash": "",
+                    "text_preview": "",
+                    "header_names": sorted(headers.keys()),
+                    "error": "scope_blocked",
+                    "blocked": blocked[:10],
+                    "detail": str(exc)[:200],
+                }
+            raise
         title = page.title()
         final = page.url
         text = page.inner_text("body") if page.query_selector("body") else ""
@@ -848,9 +1039,26 @@ def browser_console(
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
-            page = browser.new_page()
+            _ctx, page, blocked = _guarded_page(
+                browser,
+                target_dir,
+                action="browser console playwright",
+                force=force,
+            )
             page.on("console", on_console)
-            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            try:
+                page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            except Exception as exc:  # noqa: BLE001
+                if blocked:
+                    return RunnerResult(
+                        cmd,
+                        True,
+                        1,
+                        json.dumps({"ok": False, "error": "scope_blocked", "blocked": blocked[:20], "detail": str(exc)[:200]}),
+                        "",
+                        "scope_blocked",
+                    )
+                raise
             title = page.title()
         finally:
             browser.close()
@@ -902,12 +1110,28 @@ def browser_set_cookie(
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
-            context = (
-                _new_authed_context(browser, url, headers) if headers else browser.new_context()
+            context, page, blocked = _guarded_page(
+                browser,
+                target_dir,
+                action="browser set cookie playwright",
+                force=force,
+                headers=headers or None,
+                url_for_cookies=url,
             )
             context.add_cookies([{"name": name, "value": value, "url": url}])
-            page = context.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            except Exception as exc:  # noqa: BLE001
+                if blocked:
+                    return RunnerResult(
+                        cmd,
+                        True,
+                        1,
+                        json.dumps({"ok": False, "error": "scope_blocked", "blocked": blocked[:20], "detail": str(exc)[:200]}),
+                        "",
+                        "scope_blocked",
+                    )
+                raise
             title = page.title()
             cookies = [
                 {

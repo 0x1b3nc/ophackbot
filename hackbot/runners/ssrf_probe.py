@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import json
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 from .. import ui
 from ..redaction import redact_text
+from ..scoped_http import scoped_fetch_bytes
 from .base import RunnerResult, require_in_scope
 
 # Tiny non-destructive Linux/Windows markers + optional OOB + bypass pack (capped)
@@ -81,13 +80,18 @@ def ssrf_probe(
             )
         )
         try:
-            req = urllib.request.Request(probe, headers={"User-Agent": "hackbot-ssrf-probe"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                status = int(getattr(resp, "status", None) or resp.getcode())
-                body = resp.read(80_000).decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as exc:
-            status = int(exc.code)
-            body = exc.read(40_000).decode("utf-8", errors="replace") if exc.fp else ""
+            resp = scoped_fetch_bytes(
+                probe,
+                target_dir=target_dir,
+                action="ssrf probe",
+                force=force,
+                timeout=timeout,
+                headers={"User-Agent": "hackbot-ssrf-probe"},
+                max_bytes=80_000,
+                gate_initial=False,
+            )
+            status = resp.status
+            body = resp.body.decode("utf-8", errors="replace")
         except Exception as exc:  # noqa: BLE001
             results.append({"payload": payload, "error": type(exc).__name__})
             continue

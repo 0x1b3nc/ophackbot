@@ -155,8 +155,10 @@ below is for notes. Old Markdown-only scopes still work as a fallback.
 
 URL-shaped `in_scope` entries are honored when present: scheme, port, and path
 prefix (e.g. `https://api.example.com:8443/v1/*`). Bare hostnames still mean
-any scheme/port/path on that host. `prohibited` is enforced (force can soft-
-override; explicit OOS stays hard). Aggression prefers tool id over free text.
+any scheme/port/path on that host. CIDR / IP entries work too (`10.0.0.0/8`,
+`2001:db8::/32`). `prohibited` is enforced (force can soft-override; explicit
+OOS stays hard). Aggression prefers tool id over free text. Browser traffic
+(Playwright) re-gates every request/redirect the same way HTTP does.
 
 ### Config (`configs/hackbot.yaml`)
 

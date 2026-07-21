@@ -161,15 +161,22 @@ def session_bootstrap(
         if not acct:
             continue
         # GET login page for CSRF
+        from ..scoped_http import scoped_fetch_bytes
+
         csrf = ""
         try:
-            req = urllib.request.Request(login_url, headers={"User-Agent": "hackbot-bootstrap"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                html = resp.read(80_000).decode("utf-8", errors="replace")
-                pre_cookies = _set_cookies_from_headers(resp.headers)
-        except urllib.error.HTTPError as exc:
-            html = exc.read(40_000).decode("utf-8", errors="replace") if exc.fp else ""
-            pre_cookies = _set_cookies_from_headers(exc.headers)
+            resp = scoped_fetch_bytes(
+                login_url,
+                target_dir=target_dir,
+                action="session bootstrap login",
+                force=force,
+                timeout=timeout,
+                headers={"User-Agent": "hackbot-bootstrap"},
+                max_bytes=80_000,
+                gate_initial=False,
+            )
+            html = resp.body.decode("utf-8", errors="replace")
+            pre_cookies = _set_cookies_from_headers(resp.headers)
         except Exception as exc:  # noqa: BLE001
             results.append({"session": name, "error": type(exc).__name__, "detail": str(exc)[:120]})
             continue
@@ -188,15 +195,21 @@ def session_bootstrap(
         if pre_cookies:
             headers["Cookie"] = "; ".join(c.split(";", 1)[0] for c in pre_cookies)
         try:
-            req = urllib.request.Request(login_url, data=encoded, method=accounts.login.method, headers=headers)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                status = int(getattr(resp, "status", None) or resp.getcode())
-                resp_body = resp.read(80_000).decode("utf-8", errors="replace")
-                set_cookies = _set_cookies_from_headers(resp.headers) or pre_cookies
-        except urllib.error.HTTPError as exc:
-            status = int(exc.code)
-            resp_body = exc.read(40_000).decode("utf-8", errors="replace") if exc.fp else ""
-            set_cookies = _set_cookies_from_headers(exc.headers) or pre_cookies
+            resp = scoped_fetch_bytes(
+                login_url,
+                target_dir=target_dir,
+                action="session bootstrap login",
+                force=force,
+                timeout=timeout,
+                method=accounts.login.method,
+                data=encoded,
+                headers=headers,
+                max_bytes=80_000,
+                gate_initial=False,
+            )
+            status = resp.status
+            resp_body = resp.body.decode("utf-8", errors="replace")
+            set_cookies = _set_cookies_from_headers(resp.headers) or pre_cookies
         except Exception as exc:  # noqa: BLE001
             results.append({"session": name, "error": type(exc).__name__})
             continue

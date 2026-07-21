@@ -73,15 +73,21 @@ def rate_probe(
     latencies: list[float] = []
 
     def one(_i: int) -> tuple[int | None, float, str | None]:
-        req = urllib.request.Request(url, method=method)
+        from ..scoped_http import scoped_fetch_bytes
+
         started = time.perf_counter()
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                code = int(getattr(resp, "status", None) or resp.getcode())
-                _ = resp.read(64)
-            return code, time.perf_counter() - started, None
-        except urllib.error.HTTPError as exc:
-            return int(exc.code), time.perf_counter() - started, None
+            resp = scoped_fetch_bytes(
+                url,
+                target_dir=target_dir,
+                action="rate-limit testing dos stress",
+                force=force,
+                timeout=timeout,
+                method=method,
+                max_bytes=64,
+                gate_initial=False,
+            )
+            return resp.status, time.perf_counter() - started, None
         except Exception as exc:  # noqa: BLE001 — report, don't crash the probe
             return None, time.perf_counter() - started, f"{type(exc).__name__}: {exc}"
 

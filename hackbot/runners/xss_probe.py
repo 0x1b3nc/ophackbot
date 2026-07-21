@@ -66,15 +66,20 @@ def xss_probe(
             (parsed.scheme, parsed.netloc, parsed.path, "", query, "")
         )
         try:
-            req = urllib.request.Request(
-                probe_url, method="GET", headers={"User-Agent": "hackbot-xss-probe"}
+            from ..scoped_http import scoped_fetch_bytes
+
+            resp = scoped_fetch_bytes(
+                probe_url,
+                target_dir=target_dir,
+                action="xss reflection probe",
+                force=force,
+                timeout=timeout,
+                headers={"User-Agent": "hackbot-xss-probe"},
+                max_bytes=120_000,
+                gate_initial=False,
             )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                status = int(getattr(resp, "status", None) or resp.getcode())
-                body = resp.read(120_000).decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as exc:
-            status = int(exc.code)
-            body = exc.read(60_000).decode("utf-8", errors="replace") if exc.fp else ""
+            status = resp.status
+            body = resp.body.decode("utf-8", errors="replace")
         except Exception as exc:  # noqa: BLE001
             results.append({"label": label, "error": f"{type(exc).__name__}: {exc}"})
             continue

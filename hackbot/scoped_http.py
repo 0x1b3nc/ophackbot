@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urljoin, urlparse
 from urllib.request import (
     HTTPRedirectHandler,
@@ -156,6 +156,7 @@ def scoped_fetch_bytes(
     method: str = "GET",
     data: bytes | None = None,
     max_bytes: int | None = None,
+    gate_initial: bool = True,
 ) -> ScopedResponse:
     """Convenience GET/POST with scoped redirects."""
     full = url if "://" in url else f"https://{url}"
@@ -166,6 +167,7 @@ def scoped_fetch_bytes(
         action=action,
         force=force,
         timeout=timeout,
+        gate_initial=gate_initial,
     )
     if max_bytes is not None and len(resp.body) > max_bytes:
         resp = ScopedResponse(
@@ -176,3 +178,31 @@ def scoped_fetch_bytes(
             hops=resp.hops,
         )
     return resp
+
+
+def attach_playwright_scope_guard(
+    target: Any,
+    target_dir: Path,
+    *,
+    action: str,
+    force: bool = False,
+    blocked: list[dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    """Abort Playwright requests whose URL fails SCOPE (redirects/subresources)."""
+    hits = blocked if blocked is not None else []
+
+    def _handler(route: Any) -> None:  # noqa: ANN401
+        req_url = str(getattr(route.request, "url", "") or "")
+        if not req_url or req_url.startswith(("data:", "blob:", "about:", "chrome:")):
+            route.continue_()
+            return
+        try:
+            _gate(target_dir, req_url, action=action or "browser request", force=force)
+        except PermissionError as exc:
+            hits.append({"url": req_url, "error": str(exc)})
+            route.abort("blockedbyclient")
+            return
+        route.continue_()
+
+    target.route("**/*", _handler)
+    return hits

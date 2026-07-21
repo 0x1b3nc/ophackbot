@@ -66,23 +66,27 @@ def xxe_probe(
     signal = False
     reason = "no XXE file marker"
     for label, body, markers in bodies[:4]:  # cap
-        req = urllib.request.Request(
-            url,
-            data=body.encode("utf-8"),
-            method="POST",
-            headers={
-                "User-Agent": "hackbot-xxe-probe",
-                "Content-Type": "application/xml",
-                "Accept": "*/*",
-            },
-        )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                status = int(getattr(resp, "status", None) or resp.getcode())
-                text = resp.read(100_000).decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as exc:
-            status = int(exc.code)
-            text = exc.read(50_000).decode("utf-8", errors="replace") if exc.fp else ""
+            from ..scoped_http import scoped_fetch_bytes
+
+            resp = scoped_fetch_bytes(
+                url,
+                target_dir=target_dir,
+                action="xxe xml external entity probe",
+                force=force,
+                timeout=timeout,
+                method="POST",
+                data=body.encode("utf-8"),
+                headers={
+                    "User-Agent": "hackbot-xxe-probe",
+                    "Content-Type": "application/xml",
+                    "Accept": "*/*",
+                },
+                max_bytes=100_000,
+                gate_initial=False,
+            )
+            status = resp.status
+            text = resp.body.decode("utf-8", errors="replace")
         except Exception as exc:  # noqa: BLE001
             results.append({"label": label, "error": f"{type(exc).__name__}: {exc}"})
             continue
