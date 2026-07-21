@@ -14,6 +14,7 @@ from collections import Counter
 from pathlib import Path
 
 from .. import ui
+from ..config import get_config
 from .base import RunnerResult, require_in_scope
 
 # Hard caps — never exceed even if caller asks higher.
@@ -35,7 +36,9 @@ def rate_probe(
     approve: bool = False,
     force: bool = False,
 ) -> RunnerResult:
-    concurrency = max(1, min(int(concurrency), MAX_CONCURRENCY))
+    # Honor configs/hackbot*.yaml safety.default_max_rps (and HACKBOT_MAX_RPS).
+    cfg_rps = max(1, int(get_config().safety.default_max_rps))
+    concurrency = max(1, min(int(concurrency), MAX_CONCURRENCY, cfg_rps))
     total = max(1, min(int(total), MAX_TOTAL))
     timeout = max(0.5, min(float(timeout), 30.0))
     method = (method or "GET").upper()

@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
+import sys
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from .. import ui
+from ..config import get_config
 from ..policy_guard import ScopePolicy, host_from_target
 
 
@@ -58,11 +64,55 @@ def require_in_scope(
     return policy
 
 
+def _default_cancel_check() -> bool:
+    """Honor hunt /hunt stop while a subprocess is running."""
+    try:
+        from .. import hunt_controller
+
+        return bool(getattr(hunt_controller, "_STOP_REQUESTED", False))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def kill_process_tree(proc: subprocess.Popen[str]) -> None:
+    """Best-effort terminate process and children (Windows taskkill / POSIX group)."""
+    if proc.poll() is not None:
+        return
+    pid = proc.pid
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                check=False,
+            )
+        else:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                proc.terminate()
+            deadline = time.monotonic() + 3.0
+            while proc.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if proc.poll() is None:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    proc.kill()
+    except Exception:  # noqa: BLE001
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def run_command(
     command: list[str],
     *,
     approve: bool = False,
     cwd: Path | None = None,
+    timeout: float | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> RunnerResult:
     printable = " ".join(command)
     ui.code_panel(printable, title="command", lexer="bash")
@@ -76,27 +126,75 @@ def run_command(
             stderr="",
             message="dry-run",
         )
-    with ui.console.status("[cyan]running...[/]", spinner="dots"):
-        completed = subprocess.run(
-            command,
-            cwd=str(cwd) if cwd else None,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    if completed.stdout:
-        ui.code_panel(completed.stdout.rstrip(), title="stdout", lexer="text")
-    if completed.stderr:
-        ui.code_panel(completed.stderr.rstrip(), title="stderr", lexer="text")
-    if completed.returncode == 0:
-        ui.success(f"exit {completed.returncode}")
+
+    cfg_timeout = float(get_config().safety.subprocess_timeout_sec)
+    limit = float(timeout) if timeout is not None else cfg_timeout
+    limit = max(5.0, limit)
+    cancel = cancel_check or _default_cancel_check
+
+    popen_kwargs: dict[str, object] = {
+        "cwd": str(cwd) if cwd else None,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if sys.platform != "win32":
+        popen_kwargs["start_new_session"] = True
     else:
-        ui.error(f"exit {completed.returncode}")
+        # New process group so taskkill /T can reap children.
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+    with ui.console.status("[cyan]running...[/]", spinner="dots"):
+        proc = subprocess.Popen(command, **popen_kwargs)  # type: ignore[arg-type]
+        stdout = ""
+        stderr = ""
+        message = "executed"
+        returncode: int | None = None
+        deadline = time.monotonic() + limit
+        try:
+            while True:
+                if cancel():
+                    kill_process_tree(proc)
+                    stdout, stderr = proc.communicate(timeout=5)
+                    returncode = proc.returncode
+                    message = "cancelled"
+                    ui.warn("subprocess cancelled (hunt stop)")
+                    break
+                if time.monotonic() >= deadline:
+                    kill_process_tree(proc)
+                    stdout, stderr = proc.communicate(timeout=5)
+                    returncode = proc.returncode
+                    message = "timeout"
+                    ui.error(f"subprocess timed out after {limit:.0f}s")
+                    break
+                if proc.poll() is not None:
+                    stdout, stderr = proc.communicate(timeout=5)
+                    returncode = proc.returncode
+                    break
+                time.sleep(0.1)
+        except Exception:  # noqa: BLE001
+            kill_process_tree(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except Exception:  # noqa: BLE001
+                stdout, stderr = "", ""
+            returncode = proc.returncode
+            message = "error"
+
+    if stdout:
+        ui.code_panel(stdout.rstrip(), title="stdout", lexer="text")
+    if stderr:
+        ui.code_panel(stderr.rstrip(), title="stderr", lexer="text")
+    if message == "executed":
+        if returncode == 0:
+            ui.success(f"exit {returncode}")
+        else:
+            ui.error(f"exit {returncode}")
     return RunnerResult(
         command=command,
         executed=True,
-        returncode=completed.returncode,
-        stdout=completed.stdout,
-        stderr=completed.stderr,
-        message="executed",
+        returncode=returncode,
+        stdout=stdout or "",
+        stderr=stderr or "",
+        message=message,
     )

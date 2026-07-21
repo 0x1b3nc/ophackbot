@@ -10,11 +10,14 @@ from typing import Any
 
 import yaml
 
+from .fileutil import atomic_write_text, interprocess_lock
+
 HUNT_DIR = "hunt"
 SURFACE_FILE = "surface.yaml"
 ATTEMPTS_FILE = "attempts.jsonl"
 CANDIDATES_FILE = "candidates.yaml"
 STATE_FILE = "state.yaml"
+LOCK_FILE = ".memory.lock"
 
 
 @dataclass
@@ -78,31 +81,48 @@ class HuntMemory:
     def __init__(self, target_dir: Path) -> None:
         self.target_dir = Path(target_dir)
         self.root = hunt_dir(self.target_dir)
+        self._lock_path = self.root / LOCK_FILE
+
+    def _lock(self):
+        return interprocess_lock(self._lock_path, timeout=30.0)
 
     # --- surface ---
 
     def load_surface(self) -> dict[str, Any]:
+        with self._lock():
+            return self._load_surface_unlocked()
+
+    def _load_surface_unlocked(self) -> dict[str, Any]:
         path = self.root / SURFACE_FILE
         if not path.exists():
             return {"host": "", "endpoints": [], "tech_hints": [], "updated": ""}
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(data, dict):
+            return {"host": "", "endpoints": [], "tech_hints": [], "updated": ""}
         data.setdefault("endpoints", [])
         data.setdefault("tech_hints", [])
         data.setdefault("host", "")
         return data
 
     def save_surface(self, data: dict[str, Any]) -> Path:
+        with self._lock():
+            return self._save_surface_unlocked(data)
+
+    def _save_surface_unlocked(self, data: dict[str, Any]) -> Path:
         data = dict(data)
         data["updated"] = datetime.now(timezone.utc).isoformat()
         path = self.root / SURFACE_FILE
-        path.write_text(
+        atomic_write_text(
+            path,
             yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
         )
         return path
 
     def endpoints(self) -> list[Endpoint]:
         raw = self.load_surface().get("endpoints") or []
+        return self._endpoints_from_raw(raw)
+
+    def _endpoints_from_raw(self, raw: list[Any]) -> list[Endpoint]:
         out: list[Endpoint] = []
         for item in raw:
             if not isinstance(item, dict) or not item.get("url"):
@@ -120,35 +140,37 @@ class HuntMemory:
         return out
 
     def upsert_endpoints(self, endpoints: list[Endpoint], *, host: str = "") -> Path:
-        data = self.load_surface()
-        if host:
-            data["host"] = host
-        by_url = {e.url: e for e in self.endpoints()}
-        for ep in endpoints:
-            prev = by_url.get(ep.url)
-            if prev:
-                merged_params = sorted(set(prev.params) | set(ep.params))
-                by_url[ep.url] = Endpoint(
-                    url=ep.url,
-                    method=ep.method or prev.method,
-                    params=merged_params,
-                    auth_required=ep.auth_required or prev.auth_required,
-                    source=ep.source or prev.source,
-                    notes=ep.notes or prev.notes,
-                )
-            else:
-                by_url[ep.url] = ep
-        data["endpoints"] = [asdict(e) for e in by_url.values()]
-        return self.save_surface(data)
+        with self._lock():
+            data = self._load_surface_unlocked()
+            if host:
+                data["host"] = host
+            by_url = {e.url: e for e in self._endpoints_from_raw(data.get("endpoints") or [])}
+            for ep in endpoints:
+                prev = by_url.get(ep.url)
+                if prev:
+                    merged_params = sorted(set(prev.params) | set(ep.params))
+                    by_url[ep.url] = Endpoint(
+                        url=ep.url,
+                        method=ep.method or prev.method,
+                        params=merged_params,
+                        auth_required=ep.auth_required or prev.auth_required,
+                        source=ep.source or prev.source,
+                        notes=ep.notes or prev.notes,
+                    )
+                else:
+                    by_url[ep.url] = ep
+            data["endpoints"] = [asdict(e) for e in by_url.values()]
+            return self._save_surface_unlocked(data)
 
     def add_tech_hints(self, hints: list[str]) -> Path:
-        data = self.load_surface()
-        existing = list(data.get("tech_hints") or [])
-        for h in hints:
-            if h and h not in existing:
-                existing.append(h)
-        data["tech_hints"] = existing
-        return self.save_surface(data)
+        with self._lock():
+            data = self._load_surface_unlocked()
+            existing = list(data.get("tech_hints") or [])
+            for h in hints:
+                if h and h not in existing:
+                    existing.append(h)
+            data["tech_hints"] = existing
+            return self._save_surface_unlocked(data)
 
     # --- attempts ---
 
@@ -156,8 +178,11 @@ class HuntMemory:
         path = self.root / ATTEMPTS_FILE
         row = dict(record)
         row.setdefault("ts", datetime.now(timezone.utc).isoformat())
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        line = json.dumps(row, ensure_ascii=False) + "\n"
+        with self._lock():
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+                handle.flush()
         return path
 
     def recent_attempts(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -179,10 +204,16 @@ class HuntMemory:
     # --- candidates ---
 
     def load_candidates(self) -> list[Candidate]:
+        with self._lock():
+            return self._load_candidates_unlocked()
+
+    def _load_candidates_unlocked(self) -> list[Candidate]:
         path = self.root / CANDIDATES_FILE
         if not path.exists():
             return []
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(data, dict):
+            return []
         items = data.get("candidates") or []
         out: list[Candidate] = []
         for item in items:
@@ -203,23 +234,32 @@ class HuntMemory:
         return out
 
     def save_candidates(self, candidates: list[Candidate]) -> Path:
+        with self._lock():
+            return self._save_candidates_unlocked(candidates)
+
+    def _save_candidates_unlocked(self, candidates: list[Candidate]) -> Path:
         path = self.root / CANDIDATES_FILE
         payload = {"candidates": [asdict(c) for c in candidates]}
-        path.write_text(
+        atomic_write_text(
+            path,
             yaml.safe_dump(payload, default_flow_style=False, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
         )
         return path
 
     def upsert_candidate(self, candidate: Candidate) -> Path:
-        items = self.load_candidates()
-        by_id = {c.id: c for c in items}
-        by_id[candidate.id] = candidate
-        return self.save_candidates(list(by_id.values()))
+        with self._lock():
+            items = self._load_candidates_unlocked()
+            by_id = {c.id: c for c in items}
+            by_id[candidate.id] = candidate
+            return self._save_candidates_unlocked(list(by_id.values()))
 
     def next_candidate_id(self, prefix: str = "H") -> str:
-        ids = []
-        for c in self.load_candidates():
+        with self._lock():
+            return self._next_candidate_id_unlocked(prefix, self._load_candidates_unlocked())
+
+    def _next_candidate_id_unlocked(self, prefix: str, items: list[Candidate]) -> str:
+        ids: list[int] = []
+        for c in items:
             if c.id.startswith(f"{prefix}-"):
                 try:
                     ids.append(int(c.id.split("-", 1)[1]))
@@ -228,13 +268,50 @@ class HuntMemory:
         n = max(ids) + 1 if ids else 1
         return f"{prefix}-{n:03d}"
 
+    def new_candidate(
+        self,
+        *,
+        module: str,
+        title: str,
+        url: str,
+        status: str = "pending",
+        evidence: str = "",
+        detail: str = "",
+        params: dict[str, str] | None = None,
+        prefix: str = "H",
+    ) -> Candidate:
+        """Allocate a unique id and persist the candidate under one lock."""
+        with self._lock():
+            items = self._load_candidates_unlocked()
+            cid = self._next_candidate_id_unlocked(prefix, items)
+            candidate = Candidate(
+                id=cid,
+                module=module,
+                title=title,
+                url=url,
+                status=status,
+                evidence=evidence,
+                detail=detail,
+                params=dict(params or {}),
+            )
+            by_id = {c.id: c for c in items}
+            by_id[candidate.id] = candidate
+            self._save_candidates_unlocked(list(by_id.values()))
+            return candidate
+
     # --- state ---
 
     def load_state(self) -> HuntState:
+        with self._lock():
+            return self._load_state_unlocked()
+
+    def _load_state_unlocked(self) -> HuntState:
         path = self.root / STATE_FILE
         if not path.exists():
             return HuntState()
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(data, dict):
+            return HuntState()
         return HuntState(
             phase=str(data.get("phase") or "idle"),
             prompt=str(data.get("prompt") or ""),
@@ -253,17 +330,21 @@ class HuntMemory:
         )
 
     def save_state(self, state: HuntState) -> Path:
-        path = self.root / STATE_FILE
-        path.write_text(
-            yaml.safe_dump(asdict(state), default_flow_style=False, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
-        )
-        return path
+        with self._lock():
+            path = self.root / STATE_FILE
+            atomic_write_text(
+                path,
+                yaml.safe_dump(
+                    asdict(state), default_flow_style=False, allow_unicode=True, sort_keys=False
+                ),
+            )
+            return path
 
     def status_summary(self) -> dict[str, Any]:
-        state = self.load_state()
-        surface = self.load_surface()
-        candidates = self.load_candidates()
+        with self._lock():
+            state = self._load_state_unlocked()
+            surface = self._load_surface_unlocked()
+            candidates = self._load_candidates_unlocked()
         pending = [c for c in candidates if c.status == "pending"]
         validated = [c for c in candidates if c.status == "validated"]
         return {

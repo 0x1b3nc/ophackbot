@@ -1,3 +1,7 @@
+# Copy to configs/hackbot.yaml to customize. Loaded by hackbot.config.
+# Precedence: env (HACKBOT_MAX_RPS, HACKBOT_SUBPROCESS_TIMEOUT) > this file > defaults.
+# OOS hard-block, SCOPE.md requirement, and approve for destructive actions cannot be disabled.
+
 workspace: .
 
 safety:
@@ -7,6 +11,7 @@ safety:
   destructive_actions_require_approval: true
   redact_secrets: true
   default_max_rps: 3
+  subprocess_timeout_sec: 300
 
 integrations:
   hexstrike_server: http://127.0.0.1:8888

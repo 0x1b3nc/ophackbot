@@ -68,21 +68,66 @@ def observe_v2(
     script_urls = list(dict.fromkeys(script_urls))[:5]
 
     js_seeded = 0
+    js_errors = 0
     if execute_tool and script_urls and approve:
         for js_url in script_urls:
             try:
                 raw = execute_tool(
                     "analyze_js",
-                    {"target_dir": str(target_dir), "url": js_url, "approve": approve, "force": force},
+                    {
+                        "target_dir": str(target_dir),
+                        "source": js_url,
+                        "approve": approve,
+                        "force": force,
+                    },
                 )
-                data = json.loads(raw) if isinstance(raw, str) else raw
-                js_seeded += int(data.get("endpoints_seeded") or data.get("detail", {}).get("endpoints_seeded") or 0)
+                data = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                if not isinstance(data, dict) or data.get("ok") is False:
+                    js_errors += 1
+                    steps.append(
+                        {
+                            "step": "analyze_js",
+                            "source": js_url,
+                            "error": str(
+                                (data or {}).get("error")
+                                if isinstance(data, dict)
+                                else "analyze_js failed"
+                            ),
+                        }
+                    )
+                    continue
+                seeded = int(
+                    data.get("endpoints_seeded")
+                    or len(data.get("endpoints") or [])
+                    or 0
+                )
+                js_seeded += seeded
                 tags.add("js")
+                steps.append(
+                    {"step": "analyze_js", "source": js_url, "ok": True, "seeded": seeded}
+                )
             except Exception as exc:  # noqa: BLE001
-                steps.append({"step": "analyze_js", "url": js_url, "error": type(exc).__name__})
-        steps.append({"step": "analyze_js", "bundles": len(script_urls), "seeded": js_seeded})
+                js_errors += 1
+                steps.append(
+                    {"step": "analyze_js", "source": js_url, "error": type(exc).__name__}
+                )
+        steps.append(
+            {
+                "step": "analyze_js_summary",
+                "bundles": len(script_urls),
+                "seeded": js_seeded,
+                "errors": js_errors,
+            }
+        )
     elif script_urls:
-        steps.append({"step": "analyze_js", "skipped": True, "bundles": len(script_urls), "reason": "no_approve_or_tool"})
+        steps.append(
+            {
+                "step": "analyze_js",
+                "skipped": True,
+                "bundles": len(script_urls),
+                "reason": "no_approve_or_tool",
+            }
+        )
 
     # SPA heuristic → browser_network
     ep_count = len(memory.endpoints())

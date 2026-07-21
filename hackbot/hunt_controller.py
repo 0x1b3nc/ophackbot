@@ -178,6 +178,10 @@ def request_stop() -> None:
     _STOP_REQUESTED = True
 
 
+def stop_requested() -> bool:
+    return bool(_STOP_REQUESTED)
+
+
 def clear_stop() -> None:
     global _STOP_REQUESTED
     _STOP_REQUESTED = False
@@ -548,8 +552,7 @@ def run_hunt(
             state.phase = "validate"
             memory.save_state(state)
             win_params = _winning_params(hyp, act_result)
-            cand = Candidate(
-                id=memory.next_candidate_id(),
+            cand = memory.new_candidate(
                 module=hyp.module,
                 title=hyp.title,
                 url=hyp.url,
@@ -557,7 +560,6 @@ def run_hunt(
                 params=win_params,
                 status="pending",
             )
-            memory.upsert_candidate(cand)
             # Soft browser hints stay likely until ownership swap
             verdict = "likely" if hyp.module in {"browser_diff"} else "confirmed"
             detail_obj = act_result.get("detail") if isinstance(act_result.get("detail"), dict) else {}

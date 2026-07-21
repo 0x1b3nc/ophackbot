@@ -158,6 +158,17 @@ prefix (e.g. `https://api.example.com:8443/v1/*`). Bare hostnames still mean
 any scheme/port/path on that host. `prohibited` is enforced (force can soft-
 override; explicit OOS stays hard). Aggression prefers tool id over free text.
 
+### Config (`configs/hackbot.yaml`)
+
+Copy [configs/hackbot.example.yaml](../configs/hackbot.example.yaml) to
+`configs/hackbot.yaml`. Effective knobs today:
+
+- `safety.default_max_rps` (or `HACKBOT_MAX_RPS`) — caps `rate_probe` concurrency
+- `safety.subprocess_timeout_sec` (or `HACKBOT_SUBPROCESS_TIMEOUT`) — external tool timeout
+
+OOS hard-block, required `SCOPE.md`, and approve for active/destructive work stay
+on even if the YAML tries to turn them off.
+
 Import a program policy dump into YAML:
 
 ```powershell

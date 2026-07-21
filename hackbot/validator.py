@@ -408,16 +408,15 @@ def promote_browser_diff(
         f"status_equal={diff.get('status_equal')} body_hash_equal={diff.get('body_hash_equal')}. "
         "Not a full IDOR proof — operator should confirm ownership swap / assert_diff."
     )
-    candidate = Candidate(
-        id=memory.next_candidate_id("BR"),
+    candidate = memory.new_candidate(
         module="idor",
         title=f"Possible IDOR/BOLA via A/B browser diff on {url}",
         url=url,
         detail=observed[:500],
         params={"session_a": session_a, "session_b": session_b, "source": "browser_diff"},
         status="pending",
+        prefix="BR",
     )
-    memory.upsert_candidate(candidate)
     from .severity import severity_for_class
 
     sev = severity_for_class("idor")
@@ -445,16 +444,14 @@ def promote_campaign_row(
     if (row.get("status") or "").upper() != "FOUND":
         return None
     memory = HuntMemory(target_dir)
-    cid = memory.next_candidate_id("CAMP")
-    candidate = Candidate(
-        id=cid,
+    candidate = memory.new_candidate(
         module=str(row.get("id") or "campaign"),
         title=str(row.get("label") or row.get("id") or "campaign hit"),
         url=host,
         detail=str(row.get("summary") or ""),
         status="pending",
+        prefix="CAMP",
     )
-    memory.upsert_candidate(candidate)
     return validate_and_log(
         target_dir,
         candidate,
