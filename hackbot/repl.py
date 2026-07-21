@@ -313,6 +313,23 @@ def start_repl(*, one_shot: str | None = None) -> int:
                     )
             continue
 
+        if text in {"/config", "/cfg"}:
+            from .config import get_config
+
+            cfg = get_config(reload=True)
+            ui.rule("effective config")
+            ui.kv("source", cfg.source_path or "(defaults)")
+            ui.kv("max_rps", str(cfg.safety.default_max_rps))
+            ui.kv("subprocess_timeout_sec", str(cfg.safety.subprocess_timeout_sec))
+            ui.kv("require_scope_file", str(cfg.safety.require_scope_file))
+            ui.kv("block_out_of_scope", str(cfg.safety.block_out_of_scope))
+            ui.kv("redact_secrets", str(cfg.safety.redact_secrets))
+            ui.kv("hexstrike", cfg.integrations.hexstrike_server)
+            for note in cfg.notes:
+                ui.info(note)
+            ui.info("edit configs/hackbot.yaml or set HACKBOT_MAX_RPS / HACKBOT_SUBPROCESS_TIMEOUT")
+            continue
+
         if text.startswith("/force"):
             arg = text[len("/force") :].strip().lower()
             if arg in {"", "on", "1", "true", "yes"}:
@@ -700,7 +717,7 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.info("          after each turn: 'used model …' proves SDK selection")
             ui.info("          HACKBOT_CURSOR_TOOLS=1  CustomTool loop (SCOPE/approve)")
             ui.info("          HACKBOT_CURSOR_MODE=plan|agent  (default agent if tools on)")
-            ui.info("shortcuts:/target  /hunt  /session  /force  /status")
+            ui.info("shortcuts:/target  /hunt  /session  /force  /status  /config")
             ui.info("session:  /clear  /exit   (Ctrl+C cancels a running turn)")
             continue
 

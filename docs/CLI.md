@@ -185,6 +185,7 @@ Import a program policy dump into YAML:
 /force on             soft SCOPE override (level-3 / NOT_CONFIRMED); OOS still blocked
 /force off
 /status               shows brain + active target + force + next step
+/config               effective safety knobs (max RPS, subprocess timeout, …)
 /hunt <prompt> [--approve] [--budget N]   autonomous OODA hunter
 /hunt status
 /hunt stop

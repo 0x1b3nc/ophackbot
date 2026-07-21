@@ -145,6 +145,106 @@ def scoped_urlopen(
         )
 
 
+class _NoFollowRedirectHandler(HTTPRedirectHandler):
+    """Record redirect targets (and SCOPE-check them) but do not follow."""
+
+    def __init__(
+        self,
+        target_dir: Path,
+        *,
+        action: str = "",
+        force: bool = False,
+        hops: list[dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__()
+        self.target_dir = Path(target_dir)
+        self.action = action
+        self.force = force
+        self.hops = hops if hops is not None else []
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        absolute = urljoin(req.full_url, newurl)
+        try:
+            _gate(
+                self.target_dir,
+                absolute,
+                action=self.action or "http redirect hop",
+                force=self.force,
+            )
+            decision = "allowed"
+        except PermissionError as exc:
+            decision = f"blocked:{exc}"
+        self.hops.append(
+            {
+                "from": req.full_url,
+                "to": absolute,
+                "code": int(code),
+                "host": (urlparse(absolute).hostname or "").lower(),
+                "followed": False,
+                "decision": decision,
+            }
+        )
+        return None
+
+
+def scoped_fetch_no_redirect(
+    url: str,
+    *,
+    target_dir: Path,
+    action: str = "",
+    force: bool = False,
+    timeout: float = 20.0,
+    headers: dict[str, str] | None = None,
+    method: str = "GET",
+    data: bytes | None = None,
+    max_bytes: int | None = None,
+    gate_initial: bool = True,
+) -> ScopedResponse:
+    """GET/POST that does not follow redirects (for Location / OAuth checks).
+
+    Still SCOPE-checks the initial URL and each discovered Location hop
+    (recorded in ``hops`` with ``followed=False``).
+    """
+    full = url if "://" in url else f"https://{url}"
+    if gate_initial:
+        _gate(target_dir, full, action=action, force=force)
+    hops: list[dict[str, Any]] = []
+    req = Request(full, data=data, method=method.upper(), headers=headers or {})
+    opener = build_opener(
+        _NoFollowRedirectHandler(
+            target_dir, action=action, force=force, hops=hops
+        )
+    )
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            status = int(getattr(resp, "status", None) or resp.getcode())
+            raw = resp.read()
+            final = getattr(resp, "geturl", lambda: full)()
+            body = raw[:max_bytes] if max_bytes is not None else raw
+            return ScopedResponse(
+                status=status,
+                headers=resp.headers,
+                body=body,
+                url=str(final or full),
+                hops=list(hops),
+            )
+    except HTTPError as exc:
+        raw = b""
+        try:
+            raw = exc.read()
+        except Exception:  # noqa: BLE001
+            raw = b""
+        if max_bytes is not None:
+            raw = raw[:max_bytes]
+        return ScopedResponse(
+            status=int(exc.code),
+            headers=exc.headers,
+            body=raw,
+            url=full,
+            hops=list(hops),
+        )
+
+
 def scoped_fetch_bytes(
     url: str,
     *,

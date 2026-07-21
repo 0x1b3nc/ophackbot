@@ -83,26 +83,30 @@ def brute_login(
 
     attempts: list[dict[str, Any]] = []
     success: dict[str, Any] | None = None
+    from ..scoped_http import scoped_fetch_bytes
+
     for pwd in wordlist:
         body = urllib.parse.urlencode({user_field: username, pass_field: pwd}).encode()
-        req = urllib.request.Request(url, data=body, method="POST", headers=base_headers)
         status = 0
         length = 0
         err = ""
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                status = int(getattr(resp, "status", None) or resp.getcode())
-                raw = resp.read(8000)
-                length = len(raw)
-                text = raw.decode("utf-8", errors="replace").lower()
-        except urllib.error.HTTPError as exc:
-            status = int(exc.code)
-            try:
-                raw = exc.read(4000)
-                length = len(raw)
-                text = raw.decode("utf-8", errors="replace").lower()
-            except Exception:  # noqa: BLE001
-                text = ""
+            resp = scoped_fetch_bytes(
+                url,
+                target_dir=target_dir,
+                action="brute force password spray",
+                force=force,
+                timeout=timeout,
+                method="POST",
+                data=body,
+                headers=base_headers,
+                max_bytes=8000,
+                gate_initial=False,
+            )
+            status = resp.status
+            raw = resp.body
+            length = len(raw)
+            text = raw.decode("utf-8", errors="replace").lower()
         except Exception as exc:  # noqa: BLE001
             err = f"{type(exc).__name__}: {exc}"
             text = ""

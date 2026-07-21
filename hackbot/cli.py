@@ -24,6 +24,7 @@ SUBCOMMANDS = frozenset(
     {
         "target-init",
         "scope-check",
+        "show-config",
         "context",
         "knowledge",
         "playbook",
@@ -285,6 +286,11 @@ def build_parser() -> argparse.ArgumentParser:
     scope_p.add_argument("--host")
     scope_p.add_argument("--action")
 
+    sub.add_parser(
+        "show-config",
+        help="Print effective safety/config knobs (configs/hackbot.yaml + env)",
+    )
+
     context_p = sub.add_parser("context", help="Print operating rules + target files")
     context_p.add_argument("target_dir")
 
@@ -392,6 +398,16 @@ def _dispatch(args: argparse.Namespace) -> int:
         return target_init(args.name)
     if args.subcommand == "scope-check":
         return scope_check(args.target_dir, args.host, args.action)
+    if args.subcommand == "show-config":
+        from .config import get_config
+
+        cfg = get_config(reload=True)
+        ui.code_panel(
+            json.dumps(cfg.to_public_dict(), indent=2),
+            title="effective config",
+            lexer="json",
+        )
+        return 0
     if args.subcommand == "context":
         return context(args.target_dir)
     if args.subcommand == "knowledge":

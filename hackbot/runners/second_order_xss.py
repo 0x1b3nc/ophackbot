@@ -61,18 +61,14 @@ def second_order_xss(
         except Exception:  # noqa: BLE001
             pass
 
+    from ..scoped_http import scoped_fetch_bytes
+
     # Store
     store_status = 0
     try:
-        body = urllib.parse.urlencode({param: STORE_PROBE}).encode("utf-8")
-        req = urllib.request.Request(
-            store_url if "://" in store_url else f"https://{store_url}",
-            data=body if method.upper() != "GET" else None,
-            method=method.upper() if method.upper() != "GET" else "GET",
-            headers=headers,
-        )
+        store_full = store_url if "://" in store_url else f"https://{store_url}"
         if method.upper() == "GET":
-            parsed = urllib.parse.urlparse(store_url if "://" in store_url else f"https://{store_url}")
+            parsed = urllib.parse.urlparse(store_full)
             qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
             qs[param] = [STORE_PROBE]
             probe = urllib.parse.urlunparse(
@@ -85,12 +81,31 @@ def second_order_xss(
                     "",
                 )
             )
-            req = urllib.request.Request(probe, method="GET", headers={"User-Agent": headers["User-Agent"]})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            store_status = int(getattr(resp, "status", None) or resp.getcode())
-            resp.read(50_000)
-    except urllib.error.HTTPError as exc:
-        store_status = int(exc.code)
+            resp = scoped_fetch_bytes(
+                probe,
+                target_dir=target_dir,
+                action="second-order xss store",
+                force=force,
+                timeout=timeout,
+                headers={"User-Agent": headers.get("User-Agent", "hackbot-second-order-xss")},
+                max_bytes=50_000,
+                gate_initial=False,
+            )
+        else:
+            body = urllib.parse.urlencode({param: STORE_PROBE}).encode("utf-8")
+            resp = scoped_fetch_bytes(
+                store_full,
+                target_dir=target_dir,
+                action="second-order xss store",
+                force=force,
+                timeout=timeout,
+                method=method.upper(),
+                data=body,
+                headers=headers,
+                max_bytes=50_000,
+                gate_initial=False,
+            )
+        store_status = resp.status
     except Exception as exc:  # noqa: BLE001
         return RunnerResult(
             cmd,
@@ -106,19 +121,18 @@ def second_order_xss(
     reflected = False
     preview = ""
     try:
-        treq = urllib.request.Request(
+        resp = scoped_fetch_bytes(
             trigger if "://" in trigger else f"https://{trigger}",
-            method="GET",
+            target_dir=target_dir,
+            action="second-order xss trigger",
+            force=force,
+            timeout=timeout,
             headers={"User-Agent": "hackbot-second-order-xss"},
+            max_bytes=120_000,
+            gate_initial=False,
         )
-        with urllib.request.urlopen(treq, timeout=timeout) as resp:
-            trigger_status = int(getattr(resp, "status", None) or resp.getcode())
-            body_t = resp.read(120_000).decode("utf-8", errors="replace")
-            reflected = CANARY in body_t
-            preview = redact_text(body_t[:240])
-    except urllib.error.HTTPError as exc:
-        trigger_status = int(exc.code)
-        body_t = exc.read(60_000).decode("utf-8", errors="replace") if exc.fp else ""
+        trigger_status = resp.status
+        body_t = resp.body.decode("utf-8", errors="replace")
         reflected = CANARY in body_t
         preview = redact_text(body_t[:240])
     except Exception as exc:  # noqa: BLE001

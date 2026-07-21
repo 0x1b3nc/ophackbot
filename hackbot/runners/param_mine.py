@@ -79,18 +79,24 @@ def mine_params(
     base_qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
 
     def _fetch(qs: dict[str, list[str]]) -> tuple[int, int]:
+        from ..scoped_http import scoped_fetch_bytes
+
         query = urllib.parse.urlencode({k: v[0] if v else "" for k, v in qs.items()})
         probe = urllib.parse.urlunparse(
             (parsed.scheme, parsed.netloc, parsed.path, "", query, "")
         )
         try:
-            req = urllib.request.Request(probe, headers={"User-Agent": "hackbot-param-miner"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                body = resp.read(80_000)
-                return int(getattr(resp, "status", None) or resp.getcode()), len(body)
-        except urllib.error.HTTPError as exc:
-            body = exc.read(40_000) if exc.fp else b""
-            return int(exc.code), len(body)
+            resp = scoped_fetch_bytes(
+                probe,
+                target_dir=target_dir,
+                action="parameter mining fuzz",
+                force=force,
+                timeout=timeout,
+                headers={"User-Agent": "hackbot-param-miner"},
+                max_bytes=80_000,
+                gate_initial=False,
+            )
+            return resp.status, len(resp.body)
         except Exception:
             return 0, 0
 

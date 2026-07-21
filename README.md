@@ -116,8 +116,13 @@ confidence + `/provider` uses the JSON router (`HACKBOT_AUTO_ROUTE=1`).
 - Every target needs `SCOPE.md` (YAML front-matter preferred; Markdown fallback)
 - Explicitly OUT_OF_SCOPE hosts are hard-blocked (even with `/force`)
 - Soft gates (level-3 / NOT_CONFIRMED) yield to `/force` + approve
+- HTTP + Playwright re-check every redirect / request destination (not just the seed URL)
+- URL/CIDR SCOPE entries (`https://api:8443/v1/*`, `10.0.0.0/8`) are honored when present
+- `prohibited` in SCOPE is enforced; structured SCOPE hard-denies L2+ without active allow
 - `run_tool` / `rate_probe` default to dry-run; approve asks you first
-- Level-3 probes are capped (`rate_probe`: concurrency ≤ 20, total ≤ 100)
+- Level-3 probes are capped (`rate_probe`: concurrency ≤ 20, total ≤ 100; also capped by `default_max_rps`)
+- Copy `configs/hackbot.example.yaml` → `configs/hackbot.yaml` (or set `HACKBOT_MAX_RPS` /
+  `HACKBOT_SUBPROCESS_TIMEOUT`). Inspect with `/config` or `hackbot show-config`
 - Every file change asks approval (path + preview/diff) before it happens
 - Writable paths default to kit + home + Downloads/Desktop (see `HACKBOT_WRITE_DIRS`)
 - Sensitive paths like `~/.ssh` / `~/.aws` are hard blocked

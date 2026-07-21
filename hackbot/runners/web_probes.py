@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Any
 
 from .. import ui
 from ..redaction import redact_text
+from ..scoped_http import scoped_fetch_bytes, scoped_fetch_no_redirect
 from .base import RunnerResult, require_in_scope
 
 
@@ -23,7 +23,9 @@ def cors_probe(
     force: bool = False,
     timeout: float = 12.0,
 ) -> RunnerResult:
-    require_in_scope(target_dir, url, action="cors reflection probe", force=force)
+    require_in_scope(
+        target_dir, url, action="cors reflection probe", force=force, tool="cors_probe"
+    )
     plan = {"url": url, "origin": origin, "approve": approve}
     ui.code_panel(json.dumps(plan, indent=2), title="cors_probe", lexer="json")
     cmd = ["cors_probe", url]
@@ -31,18 +33,18 @@ def cors_probe(
         ui.dry_run_banner()
         return RunnerResult(cmd, False, None, json.dumps({"dry_run": True, **plan}), "", "dry-run")
 
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "hackbot-cors-probe", "Origin": origin},
-        method="GET",
-    )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            status = int(getattr(resp, "status", None) or resp.getcode())
-            headers = {k.lower(): v for k, v in resp.headers.items()}
-    except urllib.error.HTTPError as exc:
-        status = int(exc.code)
-        headers = {k.lower(): v for k, v in (exc.headers.items() if exc.headers else [])}
+        resp = scoped_fetch_bytes(
+            url,
+            target_dir=target_dir,
+            action="cors reflection probe",
+            force=force,
+            timeout=timeout,
+            headers={"User-Agent": "hackbot-cors-probe", "Origin": origin},
+            gate_initial=False,
+        )
+        status = resp.status
+        headers = {k.lower(): v for k, v in resp.headers.items()}
     except Exception as exc:  # noqa: BLE001
         return RunnerResult(cmd, True, 1, "", str(exc), f"error:{type(exc).__name__}")
 
@@ -60,6 +62,7 @@ def cors_probe(
         "reflected": reflected,
         "credentials": creds,
         "signal": signal,
+        "redirect_hops": resp.hops,
         "reason": (
             "Origin reflected with credentials"
             if signal and creds
@@ -78,13 +81,22 @@ def open_redirect_probe(
     force: bool = False,
     timeout: float = 12.0,
 ) -> RunnerResult:
-    require_in_scope(target_dir, url, action="open redirect probe", force=force)
+    require_in_scope(
+        target_dir, url, action="open redirect probe", force=force, tool="open_redirect_probe"
+    )
     evil = "https://evil.example/hackbot"
     parsed = urllib.parse.urlparse(url if "://" in url else f"https://{url}")
     qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
     qs[param] = [evil]
     probe = urllib.parse.urlunparse(
-        (parsed.scheme, parsed.netloc, parsed.path, "", urllib.parse.urlencode({k: v[0] for k, v in qs.items()}), "")
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            "",
+            urllib.parse.urlencode({k: v[0] for k, v in qs.items()}),
+            "",
+        )
     )
     plan = {"url": probe, "param": param, "approve": approve}
     ui.code_panel(json.dumps(plan, indent=2), title="open_redirect_probe", lexer="json")
@@ -93,30 +105,26 @@ def open_redirect_probe(
         ui.dry_run_banner()
         return RunnerResult(cmd, False, None, json.dumps({"dry_run": True, **plan}), "", "dry-run")
 
-    req = urllib.request.Request(
-        probe, headers={"User-Agent": "hackbot-redirect-probe"}, method="GET"
-    )
     try:
-        # Don't follow redirects automatically for Location check — urllib follows by default.
-        # Use a custom opener that doesn't.
-        class _NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N802
-                return None
-
-        opener = urllib.request.build_opener(_NoRedirect)
-        try:
-            with opener.open(req, timeout=timeout) as resp:
-                status = int(getattr(resp, "status", None) or resp.getcode())
-                headers = {k.lower(): v for k, v in resp.headers.items()}
-                body = resp.read(20_000).decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as exc:
-            status = int(exc.code)
-            headers = {k.lower(): v for k, v in (exc.headers.items() if exc.headers else [])}
-            body = exc.read(10_000).decode("utf-8", errors="replace") if exc.fp else ""
+        resp = scoped_fetch_no_redirect(
+            probe,
+            target_dir=target_dir,
+            action="open redirect probe",
+            force=force,
+            timeout=timeout,
+            headers={"User-Agent": "hackbot-redirect-probe"},
+            max_bytes=20_000,
+            gate_initial=False,
+        )
+        status = resp.status
+        headers = {k.lower(): v for k, v in resp.headers.items()}
+        body = resp.body.decode("utf-8", errors="replace")
     except Exception as exc:  # noqa: BLE001
         return RunnerResult(cmd, True, 1, "", str(exc), f"error:{type(exc).__name__}")
 
     location = headers.get("location", "")
+    if not location and resp.hops:
+        location = str(resp.hops[-1].get("to") or "")
     signal = "evil.example" in location or "evil.example" in body
     payload = {
         "ok": True,
@@ -124,6 +132,7 @@ def open_redirect_probe(
         "status": status,
         "location": redact_text(location)[:300],
         "signal": signal,
+        "redirect_hops": resp.hops,
         "reason": "redirect/body points to evil.example" if signal else "no open redirect signal",
     }
     return RunnerResult(cmd, True, 0, json.dumps(payload), "", "executed")
@@ -137,7 +146,13 @@ def analyze_headers(
     force: bool = False,
     timeout: float = 12.0,
 ) -> RunnerResult:
-    require_in_scope(target_dir, url, action="security headers fingerprint", force=force)
+    require_in_scope(
+        target_dir,
+        url,
+        action="security headers fingerprint",
+        force=force,
+        tool="analyze_headers",
+    )
     plan = {"url": url, "approve": approve}
     ui.code_panel(json.dumps(plan, indent=2), title="analyze_headers", lexer="json")
     cmd = ["analyze_headers", url]
@@ -145,14 +160,18 @@ def analyze_headers(
         ui.dry_run_banner()
         return RunnerResult(cmd, False, None, json.dumps({"dry_run": True, **plan}), "", "dry-run")
 
-    req = urllib.request.Request(url, headers={"User-Agent": "hackbot-headers"}, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            status = int(getattr(resp, "status", None) or resp.getcode())
-            headers = {k.lower(): v for k, v in resp.headers.items()}
-    except urllib.error.HTTPError as exc:
-        status = int(exc.code)
-        headers = {k.lower(): v for k, v in (exc.headers.items() if exc.headers else [])}
+        resp = scoped_fetch_bytes(
+            url,
+            target_dir=target_dir,
+            action="security headers fingerprint",
+            force=force,
+            timeout=timeout,
+            headers={"User-Agent": "hackbot-headers"},
+            gate_initial=False,
+        )
+        status = resp.status
+        headers = {k.lower(): v for k, v in resp.headers.items()}
     except Exception as exc:  # noqa: BLE001
         return RunnerResult(cmd, True, 1, "", str(exc), f"error:{type(exc).__name__}")
 
@@ -177,6 +196,7 @@ def analyze_headers(
         "headers": {k: redact_text(v)[:200] for k, v in present.items()},
         "missing_security": missing,
         "tech_hints": [f"{k}:{present[k][:60]}" for k in ("server", "x-powered-by") if k in present],
+        "redirect_hops": resp.hops,
     }
     return RunnerResult(cmd, True, 0, json.dumps(payload), "", "executed")
 
@@ -188,7 +208,7 @@ def crt_subdomains(domain: str, *, timeout: float = 25.0) -> dict[str, Any]:
     url = f"https://crt.sh/?q={q}&output=json"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "hackbot-crt"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             raw = resp.read(2_000_000).decode("utf-8", errors="replace")
         rows = json.loads(raw) if raw.strip() else []
     except Exception as exc:  # noqa: BLE001
@@ -219,7 +239,7 @@ def wayback_urls(domain: str, *, limit: int = 100, timeout: float = 30.0) -> dic
     )
     try:
         req = urllib.request.Request(api, headers={"User-Agent": "hackbot-wayback"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             raw = resp.read(2_000_000).decode("utf-8", errors="replace")
         rows = json.loads(raw) if raw.strip() else []
     except Exception as exc:  # noqa: BLE001

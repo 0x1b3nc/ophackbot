@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import base64
 import json
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 from .. import ui
 from ..redaction import redact_text
+from ..scoped_http import scoped_fetch_bytes, scoped_fetch_no_redirect
 from .base import RunnerResult, require_in_scope
 from .jwt_analyze import analyze_jwt, b64url_json
 
@@ -30,7 +29,9 @@ def jwt_active_probe(
     timeout: float = 12.0,
 ) -> RunnerResult:
     """Try alg=none / role flip variants against an authenticated URL (Authorization header)."""
-    require_in_scope(target_dir, url, action="jwt active auth bypass probe", force=force)
+    require_in_scope(
+        target_dir, url, action="jwt active auth bypass probe", force=force, tool="jwt_active"
+    )
     analysis = analyze_jwt(token)
     plan = {
         "url": url,
@@ -86,24 +87,39 @@ def jwt_active_probe(
     reason = "no jwt bypass signal"
 
     def _get(auth: str) -> tuple[int, int, str]:
-        req = urllib.request.Request(
+        resp = scoped_fetch_bytes(
             url,
+            target_dir=target_dir,
+            action="jwt active auth bypass probe",
+            force=force,
+            timeout=timeout,
             headers={
                 "User-Agent": "hackbot-jwt-active",
                 "Authorization": f"Bearer {auth}",
             },
+            max_bytes=60_000,
+            gate_initial=False,
         )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                body = resp.read(60_000).decode("utf-8", errors="replace")
-                return int(getattr(resp, "status", None) or resp.getcode()), len(body), body
-        except urllib.error.HTTPError as exc:
-            body = exc.read(30_000).decode("utf-8", errors="replace") if exc.fp else ""
-            return int(exc.code), len(body), body
+        body = resp.body.decode("utf-8", errors="replace")
+        return resp.status, len(body), body
 
-    base_st, base_len, _ = _get(raw)
+    try:
+        base_st, base_len, _ = _get(raw)
+    except Exception as exc:  # noqa: BLE001
+        return RunnerResult(
+            cmd,
+            True,
+            1,
+            json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}),
+            "",
+            "error",
+        )
     for label, tok in variants:
-        st, ln, body = _get(tok)
+        try:
+            st, ln, body = _get(tok)
+        except Exception as exc:  # noqa: BLE001
+            results.append({"variant": label, "error": type(exc).__name__})
+            continue
         interesting = st in {200, 201} and base_st in {401, 403}
         interesting = interesting or (
             st == 200 and base_st == 200 and abs(ln - base_len) > max(50, int(base_len * 0.1))
@@ -143,7 +159,13 @@ def oauth_probe(
     timeout: float = 12.0,
 ) -> RunnerResult:
     """Passive+light OAuth authorize URL checks: state missing, redirect_uri looseness."""
-    require_in_scope(target_dir, authorize_url, action="oauth authorize probe", force=force)
+    require_in_scope(
+        target_dir,
+        authorize_url,
+        action="oauth authorize probe",
+        force=force,
+        tool="oauth_probe",
+    )
     parsed = urllib.parse.urlparse(
         authorize_url if "://" in authorize_url else f"https://{authorize_url}"
     )
@@ -199,22 +221,25 @@ def oauth_probe(
             "",
         )
     )
-    class _NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N802
-            return None
-
     status = 0
     location = ""
+    hops: list[dict[str, Any]] = []
     try:
-        opener = urllib.request.build_opener(_NoRedirect)
-        req = urllib.request.Request(probe, headers={"User-Agent": "hackbot-oauth-probe"})
-        try:
-            with opener.open(req, timeout=timeout) as resp:
-                status = int(getattr(resp, "status", None) or resp.getcode())
-                location = resp.headers.get("Location") or ""
-        except urllib.error.HTTPError as exc:
-            status = int(exc.code)
-            location = (exc.headers.get("Location") if exc.headers else "") or ""
+        resp = scoped_fetch_no_redirect(
+            probe,
+            target_dir=target_dir,
+            action="oauth authorize probe",
+            force=force,
+            timeout=timeout,
+            headers={"User-Agent": "hackbot-oauth-probe"},
+            gate_initial=False,
+        )
+        status = resp.status
+        headers = {k.lower(): v for k, v in resp.headers.items()}
+        location = headers.get("location") or ""
+        if not location and resp.hops:
+            location = str(resp.hops[-1].get("to") or "")
+        hops = list(resp.hops)
     except Exception as exc:  # noqa: BLE001
         return RunnerResult(
             cmd,
@@ -236,6 +261,7 @@ def oauth_probe(
         "location": redact_text(location)[:300],
         "static_issues": issues,
         "signal": signal or bool(issues),
+        "redirect_hops": hops,
         "reason": (
             "evil redirect_uri accepted"
             if signal

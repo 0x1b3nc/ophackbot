@@ -52,9 +52,19 @@ def analyze_js(
             ui.dry_run_banner()
             return RunnerResult(cmd, False, None, json.dumps({"dry_run": True, **plan}), "", "dry-run")
         try:
-            req = urllib.request.Request(source, headers={"User-Agent": "hackbot-js-analyzer"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                body = resp.read(2_000_000).decode("utf-8", errors="replace")
+            from ..scoped_http import scoped_fetch_bytes
+
+            resp = scoped_fetch_bytes(
+                source,
+                target_dir=target_dir,
+                action="js bundle analysis",
+                force=force,
+                timeout=timeout,
+                headers={"User-Agent": "hackbot-js-analyzer"},
+                max_bytes=2_000_000,
+                gate_initial=False,
+            )
+            body = resp.body.decode("utf-8", errors="replace")
         except Exception as exc:  # noqa: BLE001
             return RunnerResult(cmd, True, 1, "", str(exc), f"fetch_error:{type(exc).__name__}")
         base = source

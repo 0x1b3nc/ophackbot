@@ -42,9 +42,14 @@ HTTP redirects and derived fetches (HAR/OpenAPI/surface) re-gate each
 hard-blocked without force; intentional `/force` for soft-gated destinations
 stays operator responsibility.
 
-Structured SCOPE may list URL rules (scheme/port/path prefix). `prohibited`
-blocks matching tools/actions unless `/force`. On structured SCOPE, level-2+
-without active/automated allow is a hard deny (not a silent warn).
+Structured SCOPE may list URL rules (scheme/port/path prefix) and CIDR/IP
+ranges. `prohibited` blocks matching tools/actions unless `/force`. On
+structured SCOPE, level-2+ without active/automated allow is a hard deny (not a
+silent warn). Playwright uses the same destination gate via a route handler.
+
+Effective knobs live in `configs/hackbot.yaml` (copy from the example). `/config`
+or `hackbot show-config` prints what is actually loaded — OOS/SCOPE/approve
+cannot be turned off by that file.
 
 ### Session approve (`/hunt --approve`)
 

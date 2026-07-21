@@ -1555,6 +1555,24 @@ TOOL_SPECS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "show_config",
+        "description": (
+            "Show effective Hackbot config (safety knobs from configs/hackbot.yaml / "
+            "example + env overrides). No secrets."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reload": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Re-read YAML/env instead of using the process cache",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "open_knowledge",
         "description": "Open mandatory study notes for a bug class / task description.",
         "parameters": {
@@ -2597,6 +2615,12 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
             out["aggression"] = level
             out["policy_quote"] = policy_quote_for(policy, level)
         return json.dumps(out)
+
+    if name == "show_config":
+        from .config import get_config
+
+        cfg = get_config(reload=parse_bool(args.get("reload")))
+        return json.dumps({"ok": True, **cfg.to_public_dict()})
 
     if name == "open_knowledge":
         task = args["task"]
