@@ -914,8 +914,14 @@ def run_codex_turn(
 
 
 def _fmt_command(cmd: Any) -> str:
-    """Human one-liner for stream UI (not the raw zsh -lc dump)."""
-    return ui.summarize_command(cmd)
+    """Command text for the live stream.
+
+    Default = raw Codex look (``/usr/bin/zsh -lc 'for … curl …'``).
+    Compact one-liners only when ``HACKBOT_STREAM_COMPACT=1``.
+    """
+    if ui.stream_command_compact():
+        return ui.summarize_command(cmd)
+    return ui.format_stream_command(cmd)
 
 
 def _clip(text: str, n: int = 160) -> str:
@@ -1043,14 +1049,22 @@ def _handle_event(
             if etype == "item.completed" or status in {"completed", "failed", "declined"}:
                 exit_code = item.get("exit_code")
                 out = str(item.get("aggregated_output") or "").strip()
-                out_flat = _clip(out, 180) if out else ""
                 mark = "ok" if status != "failed" and exit_code in {0, None, "0"} else "fail"
-                detail = pretty
-                if exit_code is not None:
-                    detail += f"  exit={exit_code}"
-                if out_flat:
-                    detail += f"  │ {out_flat}"
-                line(f"out/{mark}", detail, "hb.ok" if mark == "ok" else "hb.warn")
+                # Raw stream: show real command output (truncated only if huge).
+                if out:
+                    max_out = 1200 if not ui.stream_command_compact() else 180
+                    shown_out = out if len(out) <= max_out else out[: max_out - 1] + "…"
+                    line(
+                        f"out/{mark}",
+                        shown_out if exit_code is None else f"exit={exit_code}\n{shown_out}",
+                        "hb.ok" if mark == "ok" else "hb.warn",
+                    )
+                elif exit_code is not None:
+                    line(
+                        f"out/{mark}",
+                        f"exit={exit_code}",
+                        "hb.ok" if mark == "ok" else "hb.warn",
+                    )
 
         elif "message" in ilow or ilow in {"agent_message", "assistant_message"}:
             text = _item_text(item)

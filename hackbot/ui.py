@@ -243,8 +243,25 @@ def normalize_agent_text(text: str) -> str:
     return text
 
 
+def format_stream_command(cmd: object) -> str:
+    """Full command for live stream — Codex-style ``/usr/bin/zsh -lc '…'``."""
+    if isinstance(cmd, list) and cmd:
+        if len(cmd) >= 3 and str(cmd[-2]) in {"-lc", "-c"}:
+            shell = str(cmd[0])
+            flag = str(cmd[-2])
+            body = str(cmd[-1])
+            if "'" in body and '"' not in body:
+                return f'{shell} {flag} "{body}"'
+            # Match the raw Codex transcript look.
+            esc = body.replace("'", "'\\''")
+            return f"{shell} {flag} '{esc}'"
+        return " ".join(str(p) for p in cmd)
+    text = str(cmd or "").strip()
+    return text or "(empty)"
+
+
 def summarize_command(cmd: object, *, max_len: int = 96) -> str:
-    """Collapse ``zsh -lc 'huge script'`` into a Claude/Codex-style one-liner."""
+    """Optional compact one-liner (``HACKBOT_STREAM_COMPACT=1``)."""
     body = ""
     if isinstance(cmd, list) and len(cmd) >= 3:
         # ["zsh", "-lc", "script…"] / ["/usr/bin/zsh", "-c", …]
@@ -291,14 +308,32 @@ def summarize_command(cmd: object, *, max_len: int = 96) -> str:
     return body
 
 
+def stream_command_compact() -> bool:
+    """Default OFF — show raw zsh -lc dumps. Set HACKBOT_STREAM_COMPACT=1 to shorten."""
+    import os
+
+    return os.environ.get("HACKBOT_STREAM_COMPACT", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def activity(kind: str, detail: str, *, style: str = "hb.muted") -> None:
-    """Compact progress line: ``run  curl GET https://…`` (no full shell dump)."""
+    """Progress line. Shell dumps print raw (no markup) so ``[`` in scripts is safe."""
     kind = (kind or "·").strip()
-    detail = (detail or "").strip()
-    if not detail:
+    detail = detail or ""
+    if not detail.strip():
         return
+    # Codex-style: "run: /usr/bin/zsh -lc '…'" — plain text, wrap freely.
+    if kind.startswith("run") or kind.startswith("out") or kind in {"log", "dbg"}:
+        console.print(Text(f"{kind}: ", style="hb.label") + Text(detail, style=style))
+        return
+    # Safe for short labels; escape brackets that break Rich markup.
+    safe = detail.replace("[", "\\[").replace("]", "\\]")
     console.print(
-        Text.from_markup(f"[hb.label]{kind}[/] [{style}]{detail}[/]")
+        Text.from_markup(f"[hb.label]{kind}[/] [{style}]{safe}[/]")
     )
 
 
