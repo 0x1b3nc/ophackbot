@@ -978,6 +978,32 @@ def interpret(text: str) -> Interpretation:
             intents.append("import_burp")
     if _wants(text, "burp rest", "burp mcp", "burp api", "burp running"):
         intents.append("burp_rest")
+    if _wants(
+        text,
+        "sobe o burp",
+        "sobe burp",
+        "start burp",
+        "burp_ensure",
+        "ensure burp",
+        "liga o burp",
+        "open burp",
+        "abre o burp",
+    ):
+        intents.append("burp_ensure")
+    if _wants(
+        text,
+        "stack_prepare",
+        "arruma gau",
+        "fix gau",
+        "arruma go",
+        "fix go path",
+        "conserta gau",
+        "prepare stack",
+        "arruma o path",
+    ):
+        intents.append("stack_prepare")
+    if _wants(text, "lab_exec", "roda sudo", "com sudo", "apt install"):
+        intents.append("lab_exec")
     if _wants(text, "o que funcionou", "what worked", "learn suggest", "tecnicas", "técnicas anteriores"):
         intents.append("learn_suggest")
     if is_campaign_prompt(text) or has_attack_intent(text):
@@ -2016,6 +2042,36 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
             )
     if "burp_rest" in intents:
         plan.append(Action("Check local Burp REST listener.", "burp_rest_health", {}))
+    if "burp_ensure" in intents:
+        plan.append(
+            Action(
+                "Start/configure Burp Community + wait for local REST.",
+                "burp_ensure",
+                {"base_url": "http://127.0.0.1:1337", "wait_sec": 45},
+            )
+        )
+    if "stack_prepare" in intents:
+        plan.append(
+            Action(
+                "Fix Go/gau/subfinder PATH and smoke-check recon CLIs.",
+                "stack_prepare",
+                {"persist_shell_rc": False},
+            )
+        )
+    if "lab_exec" in intents:
+        plan.append(
+            Action(
+                "Lab shell needs an explicit command in the prompt.",
+                "_note",
+                {
+                    "message": (
+                        "ex: lab_exec: which gau\n"
+                        "ou: com sudo apt install -y golang-go\n"
+                        "(senha: HACKBOT_SUDO_PASS ou .hackbot/sudo_pass)"
+                    )
+                },
+            )
+        )
     if _wants(text, "burp replay", "replay burp", "burp send", "repeater", "replay history"):
         replay_url = ""
         if target and "://" in target:

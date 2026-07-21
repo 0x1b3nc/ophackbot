@@ -201,9 +201,9 @@ Bigger table + env knobs (OOB, Burp, Interactsh): [docs/CLI.md](docs/CLI.md).
 ## Safety (the short version)
 
 - Every program needs `targets/<name>/SCOPE.md`
-- Explicit OUT_OF_SCOPE is hard-blocked (even with `/force`)
+- Explicit OUT_OF_SCOPE is hard-blocked (even with `/force` / `/yolo`)
 - Exact hosts in `in_scope` beat wildcards like `*.example.com` in OOS
-- Soft gates need `/force` **and** approve
+- Soft gates need `/force` **and** approve (unless `/yolo on`)
 - Redirects get re-checked (HTTP and Playwright)
 - `prohibited` in SCOPE is real (e.g. heavy automated scanning)
 - Secrets get redacted; crank it with `HACKBOT_STRICT_REDACT=1` if you want
@@ -212,6 +212,29 @@ Bigger table + env knobs (OOB, Burp, Interactsh): [docs/CLI.md](docs/CLI.md).
 Read [docs/SAFETY_MODEL.md](docs/SAFETY_MODEL.md) before you point this at a real
 program. Copy `configs/hackbot.example.yaml` → `configs/hackbot.yaml` if you care
 about RPS / timeouts (`/config` to peek).
+
+## YOLO + lab (AI runs the box)
+
+Want the brain to keep hunting without `y/n`, and to fix PATH / start Burp itself?
+
+```bash
+mkdir -p .hackbot
+echo 'your-sudo-password' > .hackbot/sudo_pass
+chmod 600 .hackbot/sudo_pass
+# or: export HACKBOT_SUDO_PASS='...'
+```
+
+In the REPL:
+
+```text
+/yolo on
+/tools
+# AI can call: stack_prepare, burp_ensure, lab_exec
+inicie o hunting
+```
+
+`/yolo on` skips approve prompts and turns force on. OOS stays blocked. Password
+never goes in git (`.hackbot/` is ignored).
 
 ## HexStrike and friends
 

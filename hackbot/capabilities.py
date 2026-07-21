@@ -36,6 +36,10 @@ def _binaries() -> list[dict[str, Any]]:
         "katana",
         "nuclei",
         "ffuf",
+        "gau",
+        "subfinder",
+        "go",
+        "burpsuite",
         "curl",
         "docker",
         "adb",
@@ -131,18 +135,23 @@ def collect_capabilities(*, prompt: str = "", probe_network: bool = True) -> dic
     packs = _packs_snapshot(prompt)
     ready_bins = [b["name"] for b in bins if b.get("ok")]
     missing_bins = [b["name"] for b in bins if not b.get("ok")]
+    from .yolo import is_yolo
+
     return {
         "ok": True,
+        "yolo": is_yolo(),
         "binaries": bins,
         "ready_binaries": ready_bins,
         "missing_binaries": missing_bins,
         "integrations": integ,
         "packs": packs,
         "how": {
-            "recon_cli": "run_tool tool=httpx|katana|nuclei|ffuf (needs approve)",
+            "recon_cli": "run_tool tool=httpx|katana|nuclei|ffuf (needs approve; auto under /yolo)",
             "hexstrike": "run_tool tool=hexstrike --approve  then health on :8888",
             "surface": "map_surface / extract_page / analyze_js (pack recon)",
             "browser": "HACKBOT_TOOL_PACK include browser, or say 'browser' in prompt",
+            "lab": "stack_prepare / burp_ensure / lab_exec (sudo via .hackbot/sudo_pass)",
+            "yolo": "/yolo on  → skip y/n, keep hunting (OOS still blocked)",
             "all_tools": "HACKBOT_TOOL_PACK=all",
         },
     }
@@ -154,6 +163,7 @@ def print_capabilities(caps: dict[str, Any] | None = None, *, compact: bool = Fa
     ui.rule("stack / capabilities")
 
     packs = data.get("packs") or {}
+    ui.kv("yolo", "ON" if data.get("yolo") else "off")
     ui.kv("tool_pack", f"{packs.get('env')} → {','.join(packs.get('packs') or [])}")
     ui.kv("hackbot tools", str(packs.get("tool_count") or 0))
     ui.kv(

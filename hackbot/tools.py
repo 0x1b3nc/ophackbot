@@ -25,6 +25,7 @@ from .findings import (
 from .boolparse import parse_bool
 from .force import is_forced
 from .identity import ensure_example, load_identity, save_session
+from .yolo import is_yolo
 from .knowledge import open_notes, required_bundle
 from .planner import plan_step
 from .playbooks import (
@@ -40,6 +41,7 @@ from .reporting import normalize_platform, render_report
 from .runners import browser as browser_runner
 from .runners import brute_login as brute_login_runner
 from .runners import burp, hexstrike, projectdiscovery, rate_probe, reconftw
+from .runners import lab_stack as lab_stack_runner
 from .runners import graphql_probe as graphql_probe_runner
 from .runners import har_import as har_import_runner
 from .runners import http_request as http_request_runner
@@ -116,6 +118,63 @@ TOOL_SPECS: list[dict[str, Any]] = [
                     "default": True,
                     "description": "Ping HexStrike/Burp health endpoints",
                 }
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "lab_exec",
+        "description": (
+            "Run a local lab command on this machine (PATH, apt, docker, kill hung tools). "
+            "Optional sudo via HACKBOT_SUDO_PASS or .hackbot/sudo_pass. "
+            "Does not send traffic to bounty targets. Requires operator approve (auto under /yolo)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Shell command (bash -lc) or single binary invocation",
+                },
+                "cwd": {"type": "string"},
+                "timeout_sec": {"type": "number", "default": 120},
+                "sudo": {"type": "boolean", "default": False},
+            },
+            "required": ["command"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "stack_prepare",
+        "description": (
+            "Fix Go/tool PATH for this process (~/go/bin etc.), smoke-check gau/subfinder/httpx. "
+            "Call when recon CLIs are missing or hang. Prefers wayback_urls if gau is flaky."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "persist_shell_rc": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Also append PATH export to ~/.zshrc",
+                }
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "burp_ensure",
+        "description": (
+            "Start Burp Community locally (no manual GUI clicks when possible), cache REST "
+            "extension under .hackbot/burp/, wait for HACKBOT_BURP_BASE health. "
+            "Call when burp_rest is down before burp_* tools."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "base_url": {"type": "string", "default": "http://127.0.0.1:1337"},
+                "wait_sec": {"type": "number", "default": 45},
+                "download_ext": {"type": "boolean", "default": True},
             },
             "additionalProperties": False,
         },
@@ -1213,7 +1272,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "burp_rest_health",
         "description": (
-            "Probe local Burp HTTP/REST listener (127.0.0.1). Does not talk to the target."
+            "Probe local Burp HTTP/REST listener (127.0.0.1). Does not talk to the target. "
+            "If down, call burp_ensure first."
         ),
         "parameters": {
             "type": "object",
@@ -2155,6 +2215,18 @@ def _require_approval(
         extra["force_override"] = True
     if aggression is not None:
         extra["aggression"] = aggression
+    if is_yolo():
+        extra["yolo"] = True
+        log_decision(
+            "ALLOW",
+            description,
+            kind="yolo_approve",
+            target=target,
+            tool=tool,
+            host=host,
+            extra=extra or None,
+        )
+        return None
     if approve_fn is None:
         log_decision(
             "DENY",
@@ -2297,6 +2369,63 @@ def _normalize_tool_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
             if guessed:
                 out["target"] = guessed
 
+    # YOLO: coerce active-traffic / force flags so models need not remember them.
+    if is_yolo():
+        if "approve" in out or name in {
+            "run_tool",
+            "run_hunt",
+            "run_campaign",
+            "run_playbook",
+            "http_request",
+            "map_surface",
+            "idor_probe",
+            "session_bootstrap",
+            "burp_replay",
+            "burp_replay_history",
+            "discover_paths",
+            "browser_navigate",
+            "browser_network",
+            "browser_with_session",
+            "browser_diff_sessions",
+            "browser_capture_session",
+        }:
+            out["approve"] = True
+        if name.startswith(
+            (
+                "sqli_",
+                "xss_",
+                "lfi_",
+                "ssti_",
+                "xxe_",
+                "ssrf_",
+                "cors_",
+                "open_redirect",
+                "graphql_",
+                "jwt_active",
+                "oauth_",
+                "race_",
+                "websocket_",
+                "brute_",
+                "mass_assignment",
+                "method_override",
+                "hpp_",
+                "second_order",
+                "mine_params",
+                "analyze_headers",
+                "analyze_js",
+            )
+        ) or name in {
+            "http_request",
+            "idor_probe",
+            "detect_login",
+            "session_smoke",
+            "crt_subdomains",
+            "wayback_urls",
+        }:
+            out["approve"] = True
+        if "force" in out or is_forced():
+            out["force"] = True
+
     return out
 
 
@@ -2360,6 +2489,46 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
                 "context": active.context_block()[:4000],
             }
         )
+
+    if name == "lab_exec":
+        cmd = str(args.get("command") or "").strip()
+        desc = (
+            f"LAB EXEC{' (sudo)' if parse_bool(args.get('sudo')) else ''}\n"
+            f"  cwd={args.get('cwd') or '.'}\n"
+            f"  cmd={cmd[:500]}"
+        )
+        refusal = _require_approval(approve_fn, desc, kind="lab_exec", tool="lab_exec")
+        if refusal:
+            return refusal
+        result = lab_stack_runner.lab_exec(
+            cmd,
+            cwd=args.get("cwd"),
+            timeout_sec=float(args.get("timeout_sec") or 120),
+            sudo=parse_bool(args.get("sudo")),
+        )
+        return json.dumps(result)
+
+    if name == "stack_prepare":
+        result = lab_stack_runner.stack_prepare(
+            persist_shell_rc=parse_bool(args.get("persist_shell_rc"))
+        )
+        return json.dumps(result)
+
+    if name == "burp_ensure":
+        desc = (
+            "BURP ENSURE\n"
+            f"  base={args.get('base_url') or 'http://127.0.0.1:1337'}\n"
+            "  start Burp Community + wait for local REST (no target traffic)"
+        )
+        refusal = _require_approval(approve_fn, desc, kind="lab_exec", tool="burp_ensure")
+        if refusal:
+            return refusal
+        result = lab_stack_runner.burp_ensure(
+            base_url=args.get("base_url"),
+            wait_sec=float(args.get("wait_sec") or 45),
+            download_ext=parse_bool(args.get("download_ext"), default=True),
+        )
+        return json.dumps(result)
 
     if name == "capabilities":
         from .capabilities import collect_capabilities, print_capabilities

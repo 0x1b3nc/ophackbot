@@ -36,9 +36,12 @@ from .providers import (
 )
 from .session import clear_active, get_active, set_active, status_line
 from .tools import execute_tool
+from .yolo import boot_yolo_from_env, disable_yolo, enable_yolo, is_yolo, yolo_auto_approve
 
 
 def _approve(prompt: str) -> bool:
+    if is_yolo():
+        return yolo_auto_approve(prompt)
     with operator_prompt_active():
         # Fresh line so stream/tool status cannot stick to the Confirm prompt.
         ui.console.print()
@@ -253,6 +256,7 @@ def _current_label() -> str:
 def start_repl(*, one_shot: str | None = None) -> int:
     ui.splash_agent()
     mode, label = _resolve_mode()
+    boot_yolo_from_env()
 
     ui.success(f"ready  {label}")
     if mode == "offline":
@@ -261,6 +265,8 @@ def start_repl(*, one_shot: str | None = None) -> int:
     else:
         ui.info("model brain active (from HACKBOT_PROVIDER or /provider). back home: /provider offline")
         ui.info("switch anytime:  /provider  /model  /effort  /status  /help")
+    if is_yolo():
+        ui.warn("YOLO on — approve skipped; OOS still blocked. /yolo off to restore prompts.")
 
     session = _Session()
 
@@ -303,6 +309,7 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.kv("brain", mode)
             ui.kv("config", label)
             ui.kv("hunt", status_line())
+            ui.kv("yolo", "ON" if is_yolo() else "off")
             ui.kv("force", "ON" if is_forced() else "off")
             if mode == "cursor":
                 ui.kv("model", os.environ.get("HACKBOT_MODEL") or "composer-2.5")
@@ -372,6 +379,18 @@ def start_repl(*, one_shot: str | None = None) -> int:
                 ui.info("set: /force on | off")
             continue
 
+        if text.startswith("/yolo"):
+            arg = text[len("/yolo") :].strip().lower()
+            if arg in {"", "on", "1", "true", "yes"}:
+                enable_yolo()
+            elif arg in {"off", "0", "false", "no"}:
+                disable_yolo()
+            else:
+                ui.kv("yolo", "ON" if is_yolo() else "off")
+                ui.info("set: /yolo on | off")
+                ui.info("also: HACKBOT_YOLO=1  and  .hackbot/sudo_pass for lab sudo")
+            continue
+
         if text.startswith("/hunt"):
             active = get_active()
             rest = text[len("/hunt") :].strip()
@@ -399,7 +418,7 @@ def start_repl(*, one_shot: str | None = None) -> int:
             if active is None:
                 ui.error("no active target — /target <name> first")
                 continue
-            approve_session = False
+            approve_session = bool(is_yolo())
             budget = None
             tokens = rest.split()
             prompt_parts: list[str] = []
@@ -748,7 +767,10 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.info("          after each turn: 'used model …' proves SDK selection")
             ui.info("          HACKBOT_CURSOR_TOOLS=1  CustomTool loop (SCOPE/approve)")
             ui.info("          HACKBOT_CURSOR_MODE=plan|agent  (default agent if tools on)")
-            ui.info("shortcuts:/target  /hunt  /session  /force  /status  /tools  /config")
+            ui.info(
+                "shortcuts:/target  /hunt  /session  /yolo  /force  /status  /tools  /config"
+            )
+            ui.info("lab:     stack_prepare / burp_ensure / lab_exec  (sudo: .hackbot/sudo_pass)")
             ui.info("stack:    /tools  (httpx/katana/nuclei/ffuf + HexStrike/Burp health)")
             ui.info("session:  /clear  /exit   (Ctrl+C cancels a running turn)")
             continue

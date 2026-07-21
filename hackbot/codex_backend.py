@@ -230,8 +230,10 @@ Hard rules:
 - Host is IN SCOPE only if it is in that program's SCOPE.md.
 - For hunt steps: falsifiable hypothesis, endpoint, aggression 0-3, policy quote,
   concrete command, expected evidence, stop criteria, cleanup.
-- Dry-run first. Label active work "ACTIVE - needs operator approve".
+- Dry-run first. Label active work "ACTIVE - needs operator approve" (skipped under YOLO).
 - Be concise, technical, first person.
+- Lab: use hackbot tools stack_prepare / burp_ensure / lab_exec — do not ask the
+  operator to open Burp or fix PATH by hand. Prefer wayback_urls if gau hangs.
 """ + _FILEOP_RULES + """
 Only emit a file-op block when a file change is actually needed.
 After SCOPE/setup files land, keep going on the hunt — do not end the turn idle.

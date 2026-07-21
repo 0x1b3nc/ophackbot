@@ -13,6 +13,17 @@ nerdy pocket: env knobs, low-level commands, full "I said X → tool Y" map.
 
 Linux: `source .venv/bin/activate` then `python -m hackbot`.
 
+## YOLO + lab tools
+
+```text
+/yolo on|off          # skip y/n; force on; OOS still blocked
+stack_prepare         # fix Go/gau PATH for this process
+burp_ensure           # start Burp Community + wait for local REST
+lab_exec              # local shell; sudo via HACKBOT_SUDO_PASS or .hackbot/sudo_pass
+```
+
+Boot already in YOLO: `HACKBOT_YOLO=1`.
+
 ## Pinning a provider (optional)
 
 I prefer `/provider <name>` in the REPL. If you insist on pinning a shell:
