@@ -8,7 +8,7 @@
 
 > Paste into Bugcrowd, HackerOne, Intigriti, YesWeHack, Synack, Immunefi, or any
 > program portal. Rename sections to match that platform's submission form.
-> Severity/CVSS are **triage hints** from bug class — confirm against program policy.
+> Severity/CVSS are **triage hints** from bug class. Confirm against program policy.
 
 ## Summary
 {{TITLE}}

@@ -8,7 +8,7 @@
 
 > Paste into Bugcrowd, HackerOne, Intigriti, YesWeHack, Synack, Immunefi, or any
 > program portal. Rename sections to match that platform's submission form.
-> Severity/CVSS are **triage hints** from bug class — confirm against program policy.
+> Severity/CVSS are **triage hints** from bug class. Confirm against program policy.
 
 ## Summary
 C-001 Title
@@ -23,7 +23,7 @@ Authorized program; in-scope host; two test accounts A/B when authz
 3. Send the proving request (see evidence JSON winning_replay).
 4. Compare against negative control (unauthenticated / benign input).
 5. Capture response diff that demonstrates impact.
-6. Finding id `C-001` verdict=`draft` — attach redacted evidence.
+6. Finding id `C-001` verdict=`draft`. Attach redacted evidence.
 
 ## Observed behavior
 (see steps / evidence)

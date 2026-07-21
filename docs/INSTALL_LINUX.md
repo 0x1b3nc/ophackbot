@@ -15,24 +15,28 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
-## API key (required for agent mode)
+## API keys (optional)
+
+Offline works with zero keys. Only set one if you want `/provider openai` etc.
 
 ```bash
 export ANTHROPIC_API_KEY="your-key"
 # or: export OPENAI_API_KEY="your-key"
+# Cursor: export CURSOR_API_KEY="cursor_..."
+# Codex: codex login (no API key)
 ```
 
 ## Smoke test
 
 ```bash
-# agent REPL (needs API key)
-python -m hackbot
-
-# low-level (no API key)
+python -m hackbot                 # REPL (offline by default)
+python -m hackbot demo
 python -m hackbot target-init demo
 python -m hackbot scope-check targets/demo --host example.com
-python -m unittest discover -s tests -v
+python -m pytest -q
 ```
+
+Also: `playwright install chromium` if you want browser tools.
 
 ## Optional: HexStrike
 

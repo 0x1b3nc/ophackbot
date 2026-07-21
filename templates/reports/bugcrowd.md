@@ -36,6 +36,6 @@ Short description of the issue and why it matters. Prefer the minimal PoC below 
 
 ## Notes
 
-- HUMAN SUBMIT GATE — review and paste into Bugcrowd; do not auto-submit
+- HUMAN SUBMIT GATE: review and paste into Bugcrowd; do not auto-submit
 - Cookies, tokens, and session headers are redacted before share
 - Severity follows program VRT; CVSS is a triage hint only

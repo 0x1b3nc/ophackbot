@@ -9,7 +9,7 @@ pentests, and learning. I don't point it at systems without permission.
 - Explicitly **OUT_OF_SCOPE** hosts stay hard-blocked (even with `/force`)
 - Active testing should map to policy text by default
 - Destructive / level-3 work needs explicit SCOPE wording **or** a conscious
-  `/force` override — then **approve** — then execute
+  `/force` override, then **approve**, then execute
 - Secrets, cookies, tokens, and PII get redacted before reports or commits
 - Regex redact is best effort. For a harder gate set `HACKBOT_STRICT_REDACT=1`
   so evidence/reports refuse to save if unknown headers still have values after
@@ -25,7 +25,7 @@ pentests, and learning. I don't point it at systems without permission.
 - UI and audit logs show **masked** values only
 - Required program headers: SCOPE YAML `headers:` and/or `sessions.yaml` `headers:`
 - MFA/2FA → `needs_setup` with operator next-steps; Hackbot never bypasses MFA
-- SSO/IdP surfaces → `needs_setup`; use headed `browser_capture_session` (operator finishes IdP) or `set_session` — never automate/bypass IdP/MFA
+- SSO/IdP surfaces → `needs_setup`; use headed `browser_capture_session` (operator finishes IdP) or `set_session`. Never automate/bypass IdP/MFA.
 - Hunt stops on `needs_setup` (after optional capture queue); resume via `run_hunt resume=true` / `HACKBOT_HUNT_RESUME=1`
 - Mid-hunt 401 may re-login from `accounts.yaml` (approve already granted), whoami-smoke, and retry once
 
@@ -52,7 +52,7 @@ structured SCOPE, level-2+ without active/automated allow is a hard deny (not a
 silent warn). Playwright uses the same destination gate via a route handler.
 
 Effective knobs live in `configs/hackbot.yaml` (copy from the example). `/config`
-or `hackbot show-config` prints what is actually loaded — OOS/SCOPE/approve
+or `hackbot show-config` prints what is actually loaded. OOS/SCOPE/approve
 cannot be turned off by that file.
 
 ### Session approve (`/hunt --approve`)
@@ -71,4 +71,4 @@ bounded, sqli/xss tiny probe sets). Validator must reproduce proof before
 - Level 3: high-impact (bounded rate-limit / concurrency probes, brute, stress).
   Default: only when SCOPE Explicitly Allowed mentions it. Override: `/force`
   (audited). The kit's `rate_probe` tool is **capped** (concurrency ≤ 20,
-  total ≤ 100) — not an unbounded flood.
+  total ≤ 100). Not an unbounded flood.

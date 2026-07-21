@@ -21,7 +21,7 @@ prohibited:
 Demo program for smoke-testing the kit. Not a real bounty.
 
 Use `example.com` / `demo.hackbot.local` for dry-runs. Fake sessions live in
-`secrets/sessions.yaml` (gitignored) — copy from `sessions.example.yaml`.
+`secrets/sessions.yaml` (gitignored). Copy from `sessions.example.yaml`.
 
 ## Required Headers / Identity
 

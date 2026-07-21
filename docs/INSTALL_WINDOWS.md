@@ -16,26 +16,30 @@ python -m venv .venv
 python -m pip install -e .
 ```
 
-## API key (required for agent mode)
+## API keys (optional)
+
+Offline works with zero keys. Only set one if you want `/provider openai` etc.
 
 ```powershell
 setx ANTHROPIC_API_KEY "your-key"
 # or: setx OPENAI_API_KEY "your-key"
+# Cursor: setx CURSOR_API_KEY "cursor_..."
+# Codex: codex login (no API key)
 ```
 
-Close and reopen the terminal so the env var sticks.
+Close and reopen the terminal so `setx` sticks.
 
 ## Smoke test
 
 ```powershell
-# agent REPL (needs API key)
-.\.venv\Scripts\python.exe -m hackbot
-
-# low-level (no API key)
+.\.venv\Scripts\python.exe -m hackbot                 # REPL (offline by default)
+.\.venv\Scripts\python.exe -m hackbot demo
 .\.venv\Scripts\python.exe -m hackbot target-init demo
 .\.venv\Scripts\python.exe -m hackbot scope-check targets/demo --host example.com
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m pytest -q
 ```
+
+Also: `playwright install chromium` if you want browser tools.
 
 ## Optional: HexStrike
 
