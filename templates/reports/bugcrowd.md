@@ -35,5 +35,5 @@ Short description of the issue and why it matters.
 
 ## Notes
 
-- Cookies, tokens and session headers are redacted
-- Severity should follow program VRT, not generic CVSS alone
+- I redact cookies, tokens, and session headers before submit
+- Severity follows program VRT, not generic CVSS alone

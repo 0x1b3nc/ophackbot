@@ -1,24 +1,25 @@
-# Mandatory Study Material Routing
+# How I Route Study Material
 
-Status: **mandatory workspace rule 2026-07-20**.
+Status: **mandatory for me 2026-07-20**.
 
-This file exists because the study corpus is part of the operating system for bounty work, not passive notes.
+My study corpus is part of how I operate, not a pile of passive notes.
 
-## Non-negotiable rule
+## Non-negotiable
 
-Before giving conclusions, plans, scripts, report wording, severity guidance, or next-step hunting advice for a bounty task:
+Before I give conclusions, plans, scripts, report wording, severity guidance, or
+next-step hunting advice on a bounty task:
 
 1. classify the task by surface and bug class
 2. open `bounty_knowledge/study_notes/INDEX.md`
-3. open every matching study note from the routing table below
-4. apply the note checklist to the specific target/request/evidence
-5. say when a conclusion is an inference instead of locally confirmed
+3. open every matching study note from the table below
+4. apply the note checklist to the actual target/request/evidence
+5. say when something is inference instead of locally confirmed
 
-Do not answer from memory when the class has a local study note.
+I don't answer from memory when the class has a local study note.
 
 ## Primary routing table
 
-| Trigger in task | Required study material |
+| Trigger in task | Notes I open |
 |---|---|
 | BOLA, IDOR, BAC, BFLA, access control, tenant/object boundary, role bypass, read-only bypass | `web-vulns/idor-bac.md` |
 | GraphQL, resolver, mutation, batch, aliases, introspection, query complexity | `api-security/graphql-smuggling-cache.md` plus `web-vulns/idor-bac.md` for authz |
@@ -40,9 +41,9 @@ Do not answer from memory when the class has a local study note.
 | MITRE/Atomic technique mapping, enterprise/lab chaining | `red-team/mitre-attack-atomic-red-team.md` and `red-team/mitre-atomic-technique-families.md` |
 | Report writing, severity reasoning, prior lessons | target reports, `FINDINGS.md`, `RESUME.md`, VRT/platform policy, and local lessons |
 
-## Target-level routing
+## Target-level first
 
-Always read target-local material before broad study material:
+I always read target-local material before broad study notes:
 
 1. `targets/<program>/SCOPE.md`
 2. `targets/<program>/PLAN.md`
@@ -51,20 +52,20 @@ Always read target-local material before broad study material:
 5. target `report/` drafts and attachments
 6. target recon/raw summaries
 
-Then read the matching study notes.
+Then I open the matching study notes.
 
-## Response discipline
+## How I know I used a note
 
-When a study note has been used, the response or internal work should reflect it through concrete choices:
+After opening a note, my work should show it:
 
-- endpoint classes selected from the checklist
-- A/B authz matrix when relevant
-- negative control planned or executed
-- impact mapped to actual product behavior
+- endpoint classes from the checklist
+- A/B authz matrix when it matters
+- negative control planned or done
+- impact tied to real product behavior
 - severity/weakness tied to evidence, not vibes
-- no claim of "DEEP" for a paper/project unless the paper/project was opened and summarized
+- no "DEEP" claim unless I opened and summarized that paper/project
 
-## Failure mode to avoid
+## Failure mode I avoid
 
 Bad:
 

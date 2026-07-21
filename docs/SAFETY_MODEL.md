@@ -1,20 +1,21 @@
-# Safety Model
+# How I Keep This Safe
 
-This bot is designed for authorized security work: bug bounty programs, owned
-labs, CTFs, contracted pentests and education.
+I built this for authorized work only: bug bounty, my own labs, CTFs, contracted
+pentests, and learning. I don't point it at systems without permission.
 
-## Non-negotiable controls
+## Non-negotiable for me
 
-- A target must have `SCOPE.md`.
-- Out-of-scope hosts are blocked.
-- Active testing must map to policy text.
-- Destructive actions require explicit approval and explicit authorization.
-- Secrets, cookies, tokens and PII must be redacted before reports or commits.
-- Private program data belongs in `targets/<program>/`, not in the public repo.
+- Every target needs a `SCOPE.md`
+- Out-of-scope hosts get blocked
+- Active testing has to map to policy text
+- Destructive stuff needs explicit approval and explicit authorization
+- Secrets, cookies, tokens, and PII get redacted before reports or commits
+- Private program junk stays under `targets/<program>/`, not in the public repo
 
-## Aggression levels
+## Aggression levels I use
 
-- Level 0: passive OSINT and local analysis.
-- Level 1: light active fingerprinting against confirmed in-scope assets.
-- Level 2: moderate active testing such as controlled fuzzing, nuclei and A/B authz validation.
-- Level 3: high-impact tests such as brute force, stress, race floods or DoS. Only allowed when the policy explicitly permits it.
+- Level 0: passive OSINT and local analysis
+- Level 1: light active fingerprinting on confirmed in-scope assets
+- Level 2: moderate active work (controlled fuzz, nuclei, A/B authz)
+- Level 3: high-impact (brute, stress, race floods, DoS). Only when the policy
+  explicitly says I can

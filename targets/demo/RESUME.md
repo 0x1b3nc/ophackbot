@@ -2,7 +2,7 @@
 
 ## Last State
 
-- No work started.
+- Demo target initialized for kit smoke tests.
 
 ## Accounts
 
@@ -10,4 +10,4 @@
 
 ## Safe Next Step
 
-- Read scope, classify surface, then choose passive recon or controlled validation.
+- `python -m hackbot scope-check targets/demo --host example.com`

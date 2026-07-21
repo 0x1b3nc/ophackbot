@@ -1,420 +1,381 @@
-# Regra Operacional de Bug Bounty
+# How I Run Bug Bounty
 
-## Plataforma preferida: Bugcrowd
+## Default platform: Bugcrowd
 
-Programas e reports via **Bugcrowd** por padrão. Referencia: `bounty_knowledge/BUGCROWD.md`.
+I hunt and report on **Bugcrowd** by default. Notes: `bounty_knowledge/BUGCROWD.md`.
 
-- Iniciar programa: URL `bugcrowd.com/engagements/<slug>` ou domínio + brief
-- Escopo: salvar em `targets/<slug>/SCOPE.md`
-- Severidade em reports: **VRT** (Bugcrowd), nao CVSS generico
-- Headers obrigatorios do programa: documentar e usar em todo teste
-- HackerOne continua valido se o usuario/link apontar para la
+- Start a program from `bugcrowd.com/engagements/<slug>` or domain + brief
+- Scope goes in `targets/<slug>/SCOPE.md`
+- Severity = **VRT**, not generic CVSS
+- Required researcher headers: write them down and send them on every test request
+- HackerOne is fine if I (or the link) point there
 
-## Objetivo
+## What I'm trying to do
 
-Manter um fluxo padrao para qualquer programa de bug bounty:
+Same loop for every program:
 
-1. Usar reconFTW como orquestrador primario de reconhecimento, aproveitando ferramentas locais ja instaladas.
-2. Selecionar alvos/promessas com base nos resultados.
-3. Pular para HexStrike + Burp para validacao focada, replay, PoC e report.
+1. reconFTW as the wide recon orchestrator, using tools I already have installed
+2. pick real targets / promising flows from that output
+3. drop into HexStrike + Burp for focused validation, replay, PoC, report
 
-## Filosofia
+## How I like to work
 
-O estilo preferido e agressivo em cobertura e profundidade, sempre calibrado pelas regras do programa.
-Nao operar em modo neutro/auditoria passiva: apos negativos no mesmo vetor, pivotar; usar `bounty_knowledge/` e a toolchain (reconFTW, PD stack, nuclei, ffuf, HexStrike/Burp) em vez de so replay manual repetitivo.
+I go hard on coverage and depth, but only inside what the program allows.
+I don't sit in "passive audit forever" mode. After negatives on the same vector I pivot.
+I use `bounty_knowledge/` and the toolchain (reconFTW, PD stack, nuclei, ffuf, HexStrike/Burp) instead of replaying the same curl forever.
 
-Feedback 2026-07-10 (obrigatorio): nao ser abstrato. Cada ciclo = hipotese falsificavel + ataque concreto com tool do stack + evidencia. Matrizes/inventarios sem impacto nao contam como caca. Subuso de repos/personas/toolchain e falha operacional — consultar e executar, nao so citar.
+Feedback I keep (2026-07-10): don't be abstract. Every cycle = falsifiable hypothesis + concrete stack tool + evidence. Inventories with no impact don't count as hunting. Citing tools without using them is a fail. Open the note, run the thing.
 
-### Regra obrigatoria: evidencia local antes de conclusao
+### Local evidence before I claim anything
 
-Codex, Cursor e qualquer outra IA/CLI neste workspace compartilham o mesmo disco,
-mas nao a mesma memoria. Por isso, antes de afirmar qualquer conclusao sobre
-escopo, categoria, severidade, exploitabilidade, estrategia de report ou proximo
-plano de ataque, a IA deve checar o material local primeiro.
+Cursor, Codex, and any other agent in this workspace share disk, not memory.
+Before I assert scope, category, severity, exploitability, report strategy, or next attack plan, I check local material first.
 
-Ordem obrigatoria:
+Order:
 
-1. `WORKSPACE_STATE.md` ou estado privado equivalente.
-2. Arquivos do alvo em `targets/<program>/`: `PLAN.md`, `SCOPE.md`,
-   `FINDINGS.md`, `RESUME.md`, reports, anexos e recon.
-3. `bounty_knowledge/study_notes/INDEX.md` e a nota tecnica relevante.
-4. Reports anteriores, respostas de triage e licoes locais para padroes similares.
+1. `WORKSPACE_STATE.md` or my private equivalent
+2. Target files under `targets/<program>/`: `PLAN.md`, `SCOPE.md`, `FINDINGS.md`, `RESUME.md`, reports, attachments, recon
+3. `bounty_knowledge/study_notes/INDEX.md` and the matching tech note
+4. Prior reports, triage replies, local lessons for similar patterns
 
-Se o material local nao confirmar a afirmacao, declarar como inferencia:
-`isso e inferencia, nao confirmado ainda`.
+If local files don't back the claim, I say:
+`this is inference, not confirmed yet`.
 
-Evitar recomendacao abstrata. Toda recomendacao importante deve apontar para
-escopo/regra, endpoint/request, evidencia de conta, tecnica estudada ou impacto
-provado/faltante.
+No vibes-only advice. Important recommendations point at scope text, endpoint/request, account evidence, a studied technique, or proven/missing impact.
 
-### Regra obrigatoria: authz nao para em GET/read
+### Authz does not stop at GET/read
 
-Para Codex, Cursor e qualquer outra IA/CLI neste workspace:
+I don't limit IDOR/BOLA to `GET` or read paths. I also hit state-changing ops:
 
-- nao limitar IDOR/BOLA a `GET` ou leitura;
-- priorizar tambem endpoints e operacoes de mudanca de estado:
-  - `PATCH`
-  - `PUT`
-  - `POST` sensivel
-  - `DELETE`
-  - GraphQL `mutation`
+- `PATCH`
+- `PUT`
+- sensitive `POST`
+- `DELETE`
+- GraphQL `mutation`
 
-Heuristica obrigatoria:
-- devs costumam proteger melhor `read` do que `write`;
-- procurar cadeia `BOLA` (objeto alheio) + `BFLA` (acao/role indevida) na mesma operacao;
-- isso vale especialmente para GraphQL mutations e admin/account-management flows.
+Heuristic I trust: devs usually protect read better than write. I look for `BOLA` (wrong object) + `BFLA` (wrong action/role) on the same op, especially GraphQL mutations and admin/account flows.
 
-Matriz minima para toda mutation/write operation:
-1. trocar o object ID (`BOLA`)
-2. trocar a sessao/role (`BFLA`)
-3. trocar ambos ao mesmo tempo
+Minimum matrix for every write/mutation:
 
-Prioridades:
-- nao testar so `A le B`;
-- testar se `A altera B`, `A apaga B`, `A desativa B`, `A trava B`, `A muda role de B`, `A mexe no lifecycle de B`.
+1. swap object ID (`BOLA`)
+2. swap session/role (`BFLA`)
+3. swap both
 
-Em GraphQL:
-- olhar primeiro mutations com IDs e transicoes de estado;
-- triagers frequentemente esperam introspection, nao cadeia authz em mutation;
-- nossa vantagem e fechar o efeito real na escrita.
+I don't stop at "A can read B". I check whether A can change / delete / disable / lock / change role / touch lifecycle of B.
 
-### Regra obrigatoria: estudo completo antes de marcar DEEP
+In GraphQL I start with mutations that take IDs and change state. Triagers often expect introspection noise; I want real write impact.
 
-Em sessoes de estudo, nao marcar fonte como **DEEP** sem ler a pagina principal,
-subpastas, arquivos e artigos relevantes. Para repos, clonar ou inventariar a
-arvore antes da sintese. Para blogs/sites grandes, criar backlog por artigo ou
-categoria e manter como pendente ate a leitura real.
+### Don't mark DEEP until I actually studied it
 
-Se a fonte for grande demais para uma sessao, registrar progresso e dizer
-claramente o que foi lido e o que falta. Nao fingir que "estudou tudo" so por
-ter lido a home, README ou indice.
+In study sessions I don't stamp a source **DEEP** after skimming the home page.
+I read the main page, relevant subpaths, files, and articles. For repos I clone or inventory the tree before synthesizing. For big blogs I keep a backlog and leave items pending until I really read them.
 
-Nao mitigar aprendizado por suposta necessidade futura. Em estudo, a IA deve
-aprender e registrar o conteudo integralmente quando o operador pedir. A
-restricao de escopo entra apenas na fase de aplicacao operacional contra alvo
-real, nao na fase de leitura, sintese e organizacao do conhecimento.
+If it's too big for one session I log progress: what I read, what's left. I don't fake "studied everything" from a README.
 
-Isso significa:
+Study phase = learn and write notes. Scope restriction applies when I'm attacking a real target, not when I'm reading and organizing knowledge.
 
-- mapear bastante superficie;
-- procurar rotas esquecidas, APIs, parametros, JS, fluxos autenticados e estados incompletos;
-- priorizar endpoints com auth, conta, pagamento, organizacao, certificacao, arquivos, admin, integracoes e IDs;
-- testar hipoteses rapidamente;
-- documentar evidencia assim que houver sinal real;
-- consultar TOOLCHAIN + personas Bug-Bounty-Agents + awesome-bugbounty-tools antes de alongar probes ad hoc.
+On programs that means:
 
-O nivel permitido de agressividade nao e fixo. Cada bounty tem sua propria regra. Antes de rodar qualquer teste de alto impacto, ler o escopo e seguir exatamente o que o programa permite.
+- map a lot of surface
+- chase forgotten routes, APIs, params, JS, auth flows, half-finished states
+- prioritize auth, account, payment, org, certs, files, admin, integrations, IDs
+- test hypotheses fast
+- document evidence when something real shows up
+- check TOOLCHAIN + Bug-Bounty-Agents personas + awesome-bugbounty-tools before inventing ad-hoc probes
 
-### Niveis de agressividade (0-3) — obrigatorio antes de comando ativo
+Aggression isn't a fixed personality. Each bounty has its own rules. Before high-impact tests I re-read scope and do exactly what it allows.
 
-Framework do estudo (`bounty_knowledge/study_notes/` + guia `bugbounty-study.md`). **Agressividade sobe com a policy, nunca por default.**
+### Aggression levels (0-3) before any active command
 
-Antes de qualquer comando que envie trafego a um alvo de programa, declarar:
-1. **Nivel 0-3** da acao
-2. **Trecho** de `targets/<slug>/SCOPE.md` (ou policy) que autoriza
-Sem trecho claro → usar o nivel mais conservador. Fora de SCOPE = nenhum nivel.
+From my study notes + guide. **Aggression only goes up with policy, never by default.**
 
-| Nivel | Nome | Exemplos | Quando |
-|-------|------|----------|--------|
-| **0** | Passivo | OSINT, crt.sh, Wayback, GitHub dork, ler JS ja publico, Shodan indexado | Sempre; achado so vira ativo apos asset em SCOPE |
-| **1** | Ativo leve | `subfinder`, `dnsx`, `httpx`, `katana` raso, fingerprint | Default apos asset confirmado; rate baixo (~10-20 rps, c 5-10) |
-| **2** | Ativo moderado | `ffuf` controlado, nuclei templates padrao (sem `dos`/`fuzz`), injecao manual 1 param, IDOR A/B | Asset in-scope + policy nao proibe scanning automatizado |
-| **3** | Agressivo | Alta concorrencia, brute, race multi-req, `nuclei -itags dos` | So com autorizacao **explicita** na policy; releia antes |
+Before any command that hits a program target I state:
 
-Teto de hardware (VM) e independente: `nuclei -c 5-10 -rl 10-30` mesmo se policy permitir 3. Vale o menor entre teto de escopo e teto de hardware.
+1. **Level 0-3** for that action
+2. **Quote** from `targets/<slug>/SCOPE.md` (or policy) that allows it
 
-Notas de estudo (sintese, nao so links): `bounty_knowledge/study_notes/INDEX.md`.
+No clear quote → most conservative level. Outside SCOPE → no level at all.
 
-Se o programa permitir explicitamente, podem entrar testes mais fortes como:
+| Level | Name | Examples | When |
+|-------|------|----------|------|
+| **0** | Passive | OSINT, crt.sh, Wayback, GitHub dork, public JS, indexed Shodan | Always; findings only go active after the asset is in SCOPE |
+| **1** | Light active | `subfinder`, `dnsx`, `httpx`, shallow `katana`, fingerprint | Default after asset confirmed; low rate (~10-20 rps, c 5-10) |
+| **2** | Moderate active | controlled `ffuf`, normal nuclei (no `dos`/`fuzz`), one-param injection, IDOR A/B | In-scope asset + policy doesn't ban automated scanning |
+| **3** | Aggressive | high concurrency, brute, multi-req race, `nuclei -itags dos` | Only with **explicit** policy text; re-read before running |
 
-- brute force controlado;
-- rate-limit stress;
-- DoS;
-- fuzzing de maior volume;
-- scanners ativos em cadencia alta.
+Hardware ceiling is separate: I still run `nuclei -c 5-10 -rl 10-30` even if policy allows 3. Take the lower of scope ceiling and hardware ceiling.
 
-Se o programa nao permitir explicitamente, tratar como proibido.
+Study notes live in `bounty_knowledge/study_notes/INDEX.md`.
 
-Por padrao, sem autorizacao clara, nao fazer:
+Only if the program explicitly allows it do I touch:
 
-- DoS;
-- brute force;
-- credential stuffing;
-- bypass de anti-abuse fora do permitido;
-- spam de formularios;
-- dados falsos de empresa/KYC/pagamento;
-- tocar fora do escopo;
-- explorar destrutivamente;
-- submeter provas, compras, pagamentos ou acoes irreversiveis.
+- controlled brute force
+- rate-limit stress
+- DoS
+- high-volume fuzz
+- high-cadence active scanners
 
-## Stack Padrao
+No clear allow → treat as banned.
 
-### Regra obrigatoria para JADX / APKs grandes
+By default, without clear auth, I don't do:
 
-Para Codex, Cursor e qualquer outra IA/CLI neste workspace:
+- DoS
+- brute force
+- credential stuffing
+- anti-abuse bypass outside what's allowed
+- form spam
+- fake company/KYC/payment data
+- out-of-scope assets
+- destructive exploitation
+- real purchases, submissions, or irreversible actions
 
-- Nao abrir JADX GUI completo como fluxo padrao em APK grande ou obfuscado. Nesta VM isso ja congelou a sessao inteira.
-- Primeiro usar busca em artefatos ja extraidos e caminhos escopados.
-- Para classe especifica, usar `recon_tools/jadx_single_class.sh <Classe> <apk> <out>`.
-- Para cobertura ampla pesquisavel, usar `recon_tools/jadx_full_safe.sh <apk> <out>`, que roda CLI com heap/thread limitados e modo `fallback` por padrao.
-- Usar `jadx-gui` apenas como excecao, com `recon_tools/jadx_gui_light.sh <apk> --select-class <Classe>`.
-- Se o modo readable/simple falhar ou ficar parcial, manter `fallback` como indice completo para `rg` e extrair classes pontuais depois.
-- Nunca fazer busca repo-wide em dumps JADX grandes; sempre escopar para o diretorio do alvo/export.
+## My default stack
 
-### 1. reconFTW: superficie ampla
+### JADX / big APKs
 
-Usar reconFTW como radar inicial ate aparecer alvo/candidato real. O reconFTW deve ser tratado como orquestrador, nao como motivo para reinstalar a toolchain inteira.
+I don't open full JADX GUI as the default on a big/obfuscated APK. That already froze my whole session once.
 
-Regra de instalacao:
+- Search already-extracted artifacts and scoped paths first
+- Single class: `recon_tools/jadx_single_class.sh <Class> <apk> <out>`
+- Broad searchable dump: `recon_tools/jadx_full_safe.sh <apk> <out>` (CLI, limited heap/threads, `fallback` by default)
+- `jadx-gui` only as exception via `recon_tools/jadx_gui_light.sh <apk> --select-class <Class>`
+- If readable/simple dies, keep `fallback` as the full index for `rg`, then pull classes as needed
+- Never repo-wide search across huge JADX dumps; stay inside the target/export dir
 
-- nao rodar instalador amplo sem necessidade;
-- nao reinstalar Go, Python, nuclei, subfinder, httpx, katana, ffuf, arjun ou ferramentas ja funcionais;
-- antes de instalar algo, checar `which`/`--version`;
-- instalar somente dependencia ausente que bloqueia um modo especifico do reconFTW;
-- nao usar Docker.
+### 1. reconFTW for wide surface
 
-Ferramentas base que o reconFTW deve aproveitar:
+I use reconFTW as the early radar until I have a real candidate. It's an orchestrator, not an excuse to reinstall my whole toolchain.
 
-- ProjectDiscovery:
-  - `subfinder` para subdomains;
-  - `httpx` para hosts vivos, titles, tech, status e fingerprints;
-  - `katana` para crawling;
-  - `nuclei` para templates apropriados ao escopo;
-  - `naabu` apenas quando port scan estiver permitido.
-- OWASP Amass:
-  - usar quando o programa tiver dominio/empresa grande e asset discovery for relevante.
-- Ferramentas complementares:
-  - `ffuf` para discovery/fuzzing de rotas e parametros;
-  - `arjun` para parametros;
-  - `waybackurls`/gau equivalente para historico de URLs;
-  - analise manual de JS quando houver SPA/API rica.
+Install rules:
 
-Saida esperada:
+- no broad installer "just because"
+- don't reinstall Go, Python, nuclei, subfinder, httpx, katana, ffuf, arjun if they already work
+- check `which` / `--version` before installing
+- only install the missing dep that blocks a specific reconFTW mode
+- no Docker
 
-- lista de hosts vivos;
-- endpoints interessantes;
-- JS importantes;
-- rotas autenticadas;
-- APIs com parametros;
-- candidatos para teste manual.
+Tools I expect reconFTW to reuse:
 
-### 2. Selecao de alvo
+- ProjectDiscovery: `subfinder`, `httpx`, `katana`, `nuclei` (scope-appropriate), `naabu` only when port scan is allowed
+- Amass when the program is a big domain/company and asset discovery matters
+- Also: `ffuf`, `arjun`, wayback/gau-style history, manual JS when it's a rich SPA/API
 
-Priorizar alvos com:
+What I want out:
 
-- login ou estado autenticado;
-- workflows de conta/organizacao;
-- IDs previsiveis;
-- funcoes sensiveis;
-- upload/download;
-- convites, certificacoes, pagamentos, relatorios ou dados privados;
-- APIs que retornam `code: 00`, `success: true`, dados ricos ou erros diferenciais.
+- live hosts
+- interesting endpoints
+- important JS
+- auth routes
+- APIs with params
+- candidates for manual work
 
-Evitar perder tempo com:
+### 2. Target selection
 
-- landing pages estaticas;
-- docs publicas;
-- marketing puro;
-- endpoints que so retornam SPA shell;
-- scanners gerando ruido sem hipotese.
+I prioritize:
 
-### 3. HexStrike + Burp: Validacao focada
+- login / authenticated state
+- account/org workflows
+- predictable IDs
+- sensitive functions
+- upload/download
+- invites, certs, payments, reports, private data
+- APIs returning `code: 00`, `success: true`, rich data, or differential errors
 
-Quando houver um candidato:
+I don't waste time on:
 
-- capturar fluxo no Burp;
-- exportar XML se necessario;
-- parsear requests/responses;
-- redigir tokens/cookies antes de compartilhar;
-- reproduzir com scripts controlados;
-- comparar estados: sem login, login incompleto, conta A, conta B, roles diferentes;
-- montar PoC minima;
-- separar evidencia de controle e evidencia vulneravel.
+- static landing pages
+- public docs
+- pure marketing
+- SPA shell-only endpoints
+- scanners making noise with no hypothesis
+
+### 3. HexStrike + Burp for focused validation
+
+When I have a candidate:
+
+- capture the flow in Burp
+- export XML if needed
+- parse request/response
+- redact tokens/cookies before sharing
+- reproduce with controlled scripts
+- compare states: no login, incomplete login, account A, account B, different roles
+- build a minimal PoC
+- keep negative control evidence separate from vulnerable evidence
 
 ### 4. Report
 
-So reportar quando houver:
+I only report when I have:
 
-- precondicao clara;
-- comportamento esperado;
-- comportamento observado;
-- impacto plausivel;
-- reproducao em passos curtos;
-- evidencia sem segredo de sessao;
-- severidade defensavel.
+- clear preconditions
+- expected behavior
+- observed behavior
+- plausible impact
+- short repro steps
+- evidence without live session secrets
+- a severity I can defend
 
-## Padrao de Agressividade
+## Aggression per program
 
-O padrao de agressividade deve ser definido por programa:
+I set intensity per program:
 
-- ler policy/scope antes;
-- registrar o que e permitido;
-- registrar o que e proibido;
-- adaptar recon modular/HexStrike/Burp ao limite daquele programa;
-- se DoS/bruteforce/rate-limit forem permitidos, documentar essa permissao antes de testar;
-- se houver duvida, usar intensidade moderada ate confirmar.
+- read policy/scope first
+- note what's allowed
+- note what's banned
+- fit recon / HexStrike / Burp to that program's limit
+- if DoS/brute/rate-limit are allowed, document that permission before testing
+- if unsure, stay moderate until confirmed
 
-Normalmente permitido em bounties comuns:
+Usually fine on common bounties:
 
-- crawling moderado;
-- enum de parametros em endpoints proprios do app;
-- nuclei em baixa/media taxa quando permitido pelo programa;
-- testes A/B com contas proprias;
-- replay de requests capturadas;
-- variacao controlada de IDs nao destrutiva;
-- validacao de leitura e autorizacao;
-- testes A/B com contas proprias.
+- moderate crawling
+- param enum on the app's own endpoints
+- nuclei at low/medium rate when allowed
+- A/B with my own test accounts
+- replay of captured requests
+- non-destructive ID variation
+- read/authz validation
 
-Testes de alto impacto, somente quando explicitamente autorizados:
+High-impact only when explicitly authorized:
 
-- brute force;
-- DoS;
-- stress test;
-- alto volume;
-- criacao massiva de contas;
-- exploracao agressiva de rate-limit;
-- fuzzing pesado.
+- brute force
+- DoS
+- stress
+- high volume
+- mass account creation
+- aggressive rate-limit probing
+- heavy fuzz
 
-Mesmo quando autorizado, preservar evidencia, escopo e controle operacional. Nao usar credenciais de terceiros, nao alterar/deletar dados de terceiros sem permissao explicita e nao ultrapassar o escopo.
+Even when authorized I keep evidence, scope, and control. No third-party creds, no changing/deleting other people's data without explicit permission, no scope creep.
 
-## Regra de Decisao
+## Decision shortcuts
 
-Se o alvo ainda e amplo:
+- Still wide → reconFTW first with local tools
+- Already have a suspicious endpoint/flow → HexStrike + Burp
+- Need impact proof → controlled script + redacted evidence
+- Needs real company, KYC, payment, or irreversible action → stop and switch targets unless the program explicitly allows it
 
-- reconFTW primeiro, usando ferramentas locais ja existentes.
+## Evidence I keep
 
-Se ja existe endpoint/fluxo suspeito:
+Keep:
 
-- HexStrike + Burp.
+- redacted request
+- redacted response
+- screenshot
+- negative control
+- account/role state
+- simple PoC
+- short technical summary
 
-Se precisa provar impacto:
+Don't put in a public report:
 
-- script controlado + evidencia redigida.
+- cookies
+- bearer tokens
+- session IDs
+- live CSRF tokens
+- raw Burp XML with session
+- more PII than needed
 
-Se o teste exige empresa real, KYC, pagamento ou acao irreversivel:
+## Knowledge base and AI agents
 
-- parar e trocar de alvo, salvo se o programa autorizar explicitamente.
+Stuff I keep under `bounty_knowledge/` and `.cursor/rules/`:
 
-## Padrao de Evidencia
+- **Bug-Bounty-Agents**: personas in `.cursor/rules/`. Reinstall with `./bounty_knowledge/Bug-Bounty-Agents/install.sh --target cursor` after updating
+- **awesome-bugbounty-tools**: check before installing new toys
+- **awesome-ai-security** (+ variants): when LLM/chatbot is in scope
+- **awesome-agent-skills-security**: agent/skill security (not an offensive playbook)
 
-Guardar:
-
-- request redigida;
-- response redigida;
-- screenshot;
-- controle negativo;
-- estado da conta/role;
-- PoC simples;
-- resumo tecnico.
-
-Nao guardar em report publico:
-
-- cookies;
-- bearer tokens;
-- session IDs;
-- CSRF tokens vivos;
-- XML bruto do Burp com sessao;
-- dados pessoais alem do minimo necessario.
-
-## Base de Conhecimento e Agentes IA
-
-Repositorios e personas instalados em `bounty_knowledge/` e `.cursor/rules/`:
-
-- **Bug-Bounty-Agents** (`bounty_knowledge/Bug-Bounty-Agents/`): 43 personas (recon, web, API, report, etc.) instaladas em `.cursor/rules/`. Reinstalar com `./bounty_knowledge/Bug-Bounty-Agents/install.sh --target cursor` apos atualizar o repo.
-- **awesome-bugbounty-tools**: catalogo de ferramentas por categoria; consultar antes de instalar algo novo.
-- **awesome-ai-security** (+ variantes): referencia para alvos com LLM/chatbot no escopo.
-- **awesome-agent-skills-security**: seguranca de agentes/skills (nao e playbook ofensivo).
-
-Indice e toolchain local:
+Local index:
 
 - `bounty_knowledge/README.md`
 - `bounty_knowledge/TOOLCHAIN.md`
-- `.cursor/skills/bug-bounty-workflow/SKILL.md`
+- `.cursor/skills/bug-bounty-workflow/SKILL.md` (if present)
 
-Roteamento rapido de personas:
+Quick persona routing:
 
-| Fase | Persona em `.cursor/rules/` |
+| Phase | Persona in `.cursor/rules/` |
 |------|----------------------------|
-| Escopo/plano | `engagement-planner`, `bug-bounty` |
+| Scope/plan | `engagement-planner`, `bug-bounty` |
 | Recon | `recon-advisor` |
 | Web/API | `web-hunter`, `api-security` |
-| IDOR/logica | `bizlogic-hunter` |
+| IDOR/logic | `bizlogic-hunter` |
 | PoC | `poc-validator` |
 | Report | `report-generator` |
 
-As personas complementam este fluxo; `regra.md` continua mandatorio (reconFTW, HexStrike, Burp, portugues, limites do programa).
+Personas help; these operating rules stay mandatory (reconFTW, HexStrike, Burp, program limits).
 
-O agente deve seguir `.cursor/rules/01-bounty-autopilot.mdc`: rotear personas e executar sem o usuario nomear `engagement-planner`, `bizlogic-hunter`, etc.
+If `.cursor/rules/01-bounty-autopilot.mdc` is present, agents should route personas without me naming them every time.
 
-## Licoes obrigatorias de comportamento (reutilizar)
+## Lessons I reuse (mobile / API / auth)
 
-Arquivo completo (detalhe + checklist): `bounty_knowledge/LESSONS_MOBILE_API_AUTH.md`.
+Full file: `bounty_knowledge/LESSONS_MOBILE_API_AUTH.md`.
 
-**Ler esse arquivo** em qualquer programa com APK, Azure APIM, CIAM/identity, ForgeRock/Ping, ADFS/employee portal, Adobe Pass/TVE, ou WP legacy atras de Akamai. Resumo mandatorio:
+I re-read it on programs with APK, Azure APIM, CIAM/identity, ForgeRock/Ping, ADFS/employee portal, Adobe Pass/TVE, or legacy WP behind Akamai.
 
-### Cadeia mobile → gateway → config → terceiro
-- Keys de APIM/`Subscription-Key` no APK (e as vezes no JS web) bypassam 403 de edge e abrem `clientconfig`.
-- Impacto reportavel = cadeia ate secret de terceiro com write authz (provar 400/404 de schema, nao so 401/403).
-- Separar secrets High (PAT employee) de N/A (player license, Storyteller id, analytics).
-- Programas populares: esperar **duplicate** no jackpot obvio do APK; nao reabrir a mesma cadeia apos duplicate.
+### Mobile → gateway → config → third party
+- APIM / `Subscription-Key` in the APK (sometimes web JS too) bypasses edge 403 and opens `clientconfig`
+- Reportable impact = chain into a third-party secret with write authz (prove 400/404 schema, not just 401/403)
+- Split High secrets (employee PAT) from N/A (player license, Storyteller id, analytics)
+- Popular programs: expect **duplicate** on the obvious APK jackpot; don't reopen the same chain after duplicate
 
 ### CIAM / identity
-- Envelope `status/data/errorCodes`; prefixes `/api/v1` vs `/dev` vs `/qa` por host.
-- JSON 404 "Route GET:/x not found" + `/health` 200 = app vivo, path errado (outro produto pode ser `identity-server-*`).
-- Enum: `registrationStatus` / `auth` / `otp` diferenciais; `password/forgot` generico = controle.
-- Device pairing codes unauth = Low sem ATO/binding.
+- Envelope `status/data/errorCodes`; prefixes `/api/v1` vs `/dev` vs `/qa` per host
+- JSON 404 "Route GET:/x not found" + `/health` 200 = alive app, wrong path (other product may be `identity-server-*`)
+- Enum via differential `registrationStatus` / `auth` / `otp`; generic `password/forgot` = control
+- Unauth device pairing codes = Low without ATO/binding
 
 ### ForgeRock / AM
-- Metadata/JWKS/serverinfo publicos sozinhos = nao bounty.
-- Grants/scopes "perigosos" no discovery **sem client_id** = sem impacto.
-- Dynreg pode exigir access token (`access_denied`); password/CC grant falha com `invalid_client`.
-- Nao gastar rate em authorize/token/PAR ate minerar `client_id` (JS/Burp/runtime).
-- Consumer login pode ser CIAM; ForgeRock pode ser so employee/dev.
+- Public metadata/JWKS/serverinfo alone ≠ bounty
+- "Dangerous" grants/scopes in discovery **without client_id** = no impact
+- Dynreg may need access token (`access_denied`); password/CC grant fails with `invalid_client`
+- Don't burn rate on authorize/token/PAR until I mine `client_id` (JS/Burp/runtime)
+- Consumer login may be CIAM; ForgeRock may be employee/dev only
 
 ### ADFS / team portal
-- "Authorization has been denied" + 302 discovery = **controller real** (diferente de 404 ASP.NET generico).
-- `appid` (td/gn) + ReturnUrl: validar se wreply ADFS aceita externo; no caso estudado wreply ficou fixo no portal.
-- Unauth = lead; bounty precisa sessao employee + authz/IDOR.
+- "Authorization has been denied" + 302 discovery = **real controller** (not generic ASP.NET 404)
+- `appid` + ReturnUrl: check if ADFS wreply accepts external; in the case I studied, wreply stayed fixed on the portal
+- Unauth = lead; bounty needs employee session + authz/IDOR
 
-### Gates de cliente fracos
-- Header diario `base64(uuid + "_" + data)` derivado de endpoint publico = bypass cosmetico se dados ja sao publicos (Low/Info).
+### Weak client gates
+- Daily header `base64(uuid + "_" + date)` from a public endpoint = cosmetic bypass if data is already public (Low/Info)
 
 ### WP / Akamai / content edge
-- users/draft locked; media `inherit` publico = nao reportar; XML-RPC 403/410; 418 content-unavailable = parar de repetir.
+- users/draft locked; public `inherit` media = don't report; XML-RPC 403/410; 418 content-unavailable = stop repeating
 
-### Adobe Pass / ContentProvider exported
-- Static (exported + openFile sem caller check) **nao basta**; PoC com adb pre/post login + impacto em authn/authz/entitlement.
+### Adobe Pass / exported ContentProvider
+- Static (exported + openFile without caller check) is **not enough**; need adb PoC pre/post login and impact on authn/authz/entitlement
 
-### SSRF — DNS rebinding (feedback operador 2026-07-12)
-Referencia: H1 [#1369312](https://hackerone.com/reports/1369312) + nota `bounty_knowledge/study_notes/web-vulns/ssrf.md`.
+### SSRF: DNS rebinding (my note 2026-07-12)
+Ref: H1 [#1369312](https://hackerone.com/reports/1369312) + `bounty_knowledge/study_notes/web-vulns/ssrf.md`.
 
-Quando existir sink de URL (fetch/import/webhook/preview/og/avatar/callback) **nao** parar em:
-- so OAST “bateu DNS”;
-- so `127.0.0.1` / metadata direto bloqueados.
+When there's a URL sink (fetch/import/webhook/preview/og/avatar/callback) I don't stop at:
 
-**Obrigatorio tentar DNS rebinding TOCTOU** se o app valida host/IP e depois faz o request (segunda resolucao):
-1. Dominio sob nosso controle com TTL baixo / rebind A: 1ª resposta = IP publico “safe”, 2ª = `127.0.0.1` / RFC1918 / `169.254.169.254`.
-2. Ferramentas: `rbndr.us`, `1u.ms`, Singularity, ou DNS proprio (dois A com TTL 0–1s).
-3. Hipotese falsificavel: filtro passa no check, fetch interno muda — evidencia = OAST interno, body, timing ou erro diferencial.
-4. Paralelizar com: open redirect na allowlist, redirect 302 pos-check, bypass de IP (`127.1`, IPv6, dword, `@`, etc.).
+- OAST that only hit DNS
+- direct `127.0.0.1` / metadata blocked
 
-Sem sink de URL mapeado → primeiro achar o sink (JS/`url=`/webhook); sem sink, rebind nao inventa SSRF.
+I try **DNS rebinding TOCTOU** if the app checks host/IP then fetches later (second resolve):
+
+1. Domain I control, low TTL / rebind A: 1st answer = "safe" public IP, 2nd = `127.0.0.1` / RFC1918 / `169.254.169.254`
+2. Tools: `rbndr.us`, `1u.ms`, Singularity, or my own DNS (two A with TTL 0–1s)
+3. Falsifiable hypothesis: filter passes check, internal fetch changes. Evidence = internal OAST, body, timing, or differential error
+4. Parallel: open redirect on allowlist, 302 after check, IP bypass (`127.1`, IPv6, dword, `@`, etc.)
+
+No mapped URL sink → find the sink first (JS / `url=` / webhook). Rebind doesn't invent SSRF from nothing.
 
 ### ROI / pivot
-- Rate limit duro (ex. ≤3 rps) + escopo enorme + High gated (device/ADFS/KYC) → estacionar apos 2–3 rounds unauth sem Medium+.
-- Preferir programa com 2 contas sem KYC, ou fechar draft ja existente, em vez de mais fuzz unauth.
+- Hard rate limit (e.g. ≤3 rps) + huge scope + High gated behind device/ADFS/KYC → park after 2–3 unauth rounds with no Medium+
+- Prefer a program with 2 accounts and no KYC, or finish an existing draft, over more unauth fuzz
 
-Handshake dual-agente (quando usado): Codex offline zero HTTP no alvo; ao terminar: `CODEX_DONE::<task>::<file>` + `STATUS.md` DONE + `LANE_A_WAKE.md` + `NOTIFY_CURSOR.txt` com primeira linha `READY`. Cursor nao depende do usuario para acordar se o watcher estiver ativo.
+Dual-agent handshake (when I use it): Codex offline, zero HTTP to the target; when done: `CODEX_DONE::<task>::<file>` + `STATUS.md` DONE + `LANE_A_WAKE.md` + `NOTIFY_CURSOR.txt` first line `READY`. Cursor can wake from the watcher without me babysitting.
 
-## Regra obrigatoria: mini relatorio por etapa
+## Mini report after every stage
 
-Ao finalizar qualquer etapa de um programa de bounty, o agente deve enviar ao usuario um mini relatorio curto contendo:
+When I (or an agent) finish a stage on a program, I send a short mini report:
 
-- etapa concluida;
-- ferramentas usadas;
-- materiais/arquivos de estudo consultados;
-- linha de raciocinio escolhida;
-- resultados objetivos;
-- decisao de continuar, pivotar ou pedir acao do usuario.
+- stage done
+- tools used
+- study materials opened
+- why I chose that line of attack
+- objective results
+- continue, pivot, or need my input
 
-Tambem deve registrar o mesmo resumo em arquivo do alvo quando a etapa gerar contexto reutilizavel. O objetivo e manter o operador ciente de como o trabalho esta sendo conduzido, sem depender de memoria da conversa.
+I also drop the same summary into the target folder when it creates reusable context. I don't want to depend on chat memory.

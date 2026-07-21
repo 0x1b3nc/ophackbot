@@ -10,4 +10,4 @@
 
 ## Safe Next Step
 
-- Read scope, classify surface, then choose passive recon or controlled validation.
+- Read scope, classify the surface, then pick passive recon or controlled validation.

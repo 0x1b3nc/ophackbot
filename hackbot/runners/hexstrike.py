@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .. import ui
 from .base import RunnerResult, run_command
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -13,7 +14,7 @@ HEXSTRIKE_DIR = ROOT / "integrations" / "hexstrike"
 def start_server(*, port: int = 8888, approve: bool = False) -> RunnerResult:
     script = HEXSTRIKE_DIR / "hexstrike_server.py"
     if not script.exists():
-        print(f"missing: {script}")
+        ui.error(f"missing: {script}")
         return RunnerResult(
             command=[],
             executed=False,

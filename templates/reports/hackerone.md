@@ -23,7 +23,7 @@
 
 ## Suggested fix
 
-## Checklist before submit
+## Checklist before I submit
 
 - [ ] In-scope asset
 - [ ] Negative control captured

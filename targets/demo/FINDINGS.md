@@ -1,8 +1,6 @@
 # Findings
 
-No confirmed findings yet.
-
-Use this format:
+No confirmed findings yet. This is a demo target.
 
 ## C-001 Title
 

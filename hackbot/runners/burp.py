@@ -5,6 +5,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from .. import ui
 from ..evidence import EvidenceStore
 from ..redaction import redact_text
 from .base import RunnerResult
@@ -25,7 +26,7 @@ def summarize_xml(
     del approve  # local-only; no remote execution path
     if not xml_path.exists():
         msg = f"missing burp export: {xml_path}"
-        print(msg)
+        ui.error(msg)
         return RunnerResult([], False, None, "", "", msg)
 
     tree = ET.parse(xml_path)
@@ -46,8 +47,8 @@ def summarize_xml(
     body = "\n".join(lines) + "\n"
     store = EvidenceStore(target_dir)
     saved = store.save("burp_summary.md", body, keep_raw=False)
-    print(f"wrote redacted summary: {saved}")
-    print(f"items={count}")
+    ui.success(f"wrote redacted summary ({count} items)")
+    ui.path_line("path", str(saved))
     return RunnerResult(
         command=["burp-summarize", str(xml_path)],
         executed=True,

@@ -1,21 +1,20 @@
-# Base de Conhecimento do Hackbot
+# My Knowledge Base
 
-Este pacote inclui apenas notas e sínteses próprias reutilizáveis. Os corpora
-terceiros grandes devem ser instalados como dependências de conhecimento, não
-versionados diretamente neste repositório.
+I only ship my own reusable notes and write-ups in this kit. Big third-party
+corpora stay as local knowledge deps. I don't version them in the public repo.
 
-## Incluído no kit
+## What's in here
 
-- `study_notes/`: sínteses por classe de bug e roteamento obrigatório.
-- `BUGBOUNTY_STUDY_GUIDE.md`: currículo e metodologia de estudo.
-- `BUGCROWD.md`: fluxo operacional para programas Bugcrowd.
-- `TOOLCHAIN.md`: mapeamento de ferramentas por fase.
-- `LESSONS_MOBILE_API_AUTH.md`: padrões reutilizáveis para mobile/API/auth.
-- `techniques/`: técnicas próprias e checklists curtos.
+- `study_notes/`: per-bug-class notes + mandatory routing
+- `BUGBOUNTY_STUDY_GUIDE.md`: how I study web/bounty
+- `BUGCROWD.md`: how I run Bugcrowd programs
+- `TOOLCHAIN.md`: tools I use per phase
+- `LESSONS_MOBILE_API_AUTH.md`: patterns I reuse on mobile/API/auth
+- `techniques/`: short personal techniques and checklists
 
-## Fontes recomendadas para importar fora do Git
+## Sources I import outside Git
 
-Use `scripts/import_knowledge_sources.sh` para clonar localmente, quando quiser:
+When I want the big corpora locally I run `scripts/import_knowledge_sources.sh`:
 
 - OWASP WSTG
 - OWASP API Security
@@ -31,20 +30,19 @@ Use `scripts/import_knowledge_sources.sh` para clonar localmente, quando quiser:
 - CloudGoat
 - ClaudeBrain
 
-Essas fontes têm licenças e tamanhos próprios. Mantenha-as em
-`external_knowledge/`, fora do pacote público, ou documente as licenças se
-decidir versionar alguma delas.
+Those have their own licenses and sizes. I keep them in `external_knowledge/`,
+outside the public package, or I document licenses if I ever vendor one.
 
-## Regra de uso
+## How I use this
 
-Antes de plano, script, report, severidade ou próximo passo de hunting, leia:
+Before plan, script, report, severity, or next hunting step I read:
 
 1. `docs/OPERATING_RULES.md`
 2. `bounty_knowledge/study_notes/INDEX.md`
 3. `bounty_knowledge/study_notes/STUDY_MATERIAL_ROUTING.md`
-4. As notas específicas da classe de bug
-5. O `SCOPE.md` do alvo autorizado
+4. The notes for that bug class
+5. The target's `SCOPE.md`
 
-O bot deve ser agressivo em raciocínio e cobertura, mas conservador em execução
-ativa quando a policy não autorizar explicitamente tráfego pesado, brute force,
-DoS, stress test, spam ou ações destrutivas.
+I think aggressively about coverage. I stay conservative on active traffic when
+the policy doesn't clearly allow heavy scanning, brute, DoS, stress, spam, or
+destructive actions.

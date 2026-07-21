@@ -1,6 +1,6 @@
 # Scope
 
-Paste the official program scope and policy here.
+Demo program for smoke-testing the kit. Not a real bounty.
 
 ## In Scope
 
@@ -16,7 +16,7 @@ Paste the official program scope and policy here.
 
 ## Rate Limits / Automation
 
-- Not confirmed yet. Treat active scanning as prohibited until the policy says otherwise.
+- Not confirmed yet. I treat active scanning as off-limits until the policy says otherwise.
 
 ## Explicitly Allowed
 

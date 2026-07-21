@@ -6,6 +6,7 @@ import os
 import shutil
 from pathlib import Path
 
+from .. import ui
 from .base import RunnerResult, require_in_scope, run_command
 
 
@@ -33,8 +34,8 @@ def run_recon(
             domain,
             "-r" if mode == "recon" else f"-{mode}",
         ]
-        print("reconftw binary not found on PATH; showing expected command")
-        print("set RECONFTW_PATH to reconftw.sh if installed elsewhere")
+        ui.warn("reconftw not on PATH; showing expected command")
+        ui.info("set RECONFTW_PATH to reconftw.sh if installed elsewhere")
         return run_command(cmd, approve=False)
 
     cmd = [binary, "-d", domain]

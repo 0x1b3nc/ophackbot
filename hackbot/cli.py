@@ -5,11 +5,13 @@ import shutil
 import sys
 from pathlib import Path
 
+from . import ui
 from .evidence import EvidenceStore
 from .knowledge import list_routes, open_notes, required_bundle
 from .planner import plan_step
 from .policy_guard import ScopePolicy, host_from_target, policy_quote_for
 from .redaction import redact_text
+from .repl import start_repl
 from .reporting import render_bugcrowd, render_hackerone, render_intigriti
 from .runners import burp, hexstrike, projectdiscovery, reconftw
 
@@ -17,6 +19,22 @@ from .runners import burp, hexstrike, projectdiscovery, reconftw
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = ROOT / "targets"
 TEMPLATE = ROOT / "templates" / "target"
+
+SUBCOMMANDS = frozenset(
+    {
+        "target-init",
+        "scope-check",
+        "context",
+        "knowledge",
+        "plan",
+        "evidence",
+        "redact",
+        "report",
+        "run",
+        "cmd",
+        "ask",
+    }
+)
 
 
 def target_init(name: str) -> int:
@@ -30,7 +48,8 @@ def target_init(name: str) -> int:
                 shutil.copyfile(path, dest)
     for subdir in ("evidence", "evidence/raw", "evidence/safe", "recon", "reports", "secrets"):
         (target_dir / subdir).mkdir(parents=True, exist_ok=True)
-    print(f"target ready: {target_dir}")
+    ui.success("target ready")
+    ui.path_line("path", str(target_dir))
     return 0
 
 
@@ -47,16 +66,16 @@ def scope_check(target_dir: str, host: str | None, action: str | None) -> int:
         else:
             status = "NOT_CONFIRMED"
             rc = 1
-        print(f"host={parsed_host} status={status}")
+        ui.scope_result(parsed_host, status)
     if action:
         level = policy.classify_aggression(action)
-        print(f"action_level={level}")
-        print(f"policy_quote={policy_quote_for(policy, level)}")
+        warnings: list[str] = []
         if level >= 2 and not policy.mentions_active_testing():
-            print("warning=active/moderate action requested; confirm policy text before running")
+            warnings.append("active/moderate action: confirm policy text before running")
         if level >= 3 and not policy.allows_level3():
-            print("warning=level3 not explicitly allowed in SCOPE.md")
+            warnings.append("level 3 not explicitly allowed in SCOPE.md")
             rc = 1
+        ui.aggression_result(level, policy_quote_for(policy, level), warnings)
     return rc
 
 
@@ -71,23 +90,23 @@ def context(target_dir: str) -> int:
         target / "FINDINGS.md",
         target / "RESUME.md",
     ]
+    ui.rule("context")
     for file in files:
-        print(f"\n--- {file} ---")
         if file.exists():
             text = file.read_text(encoding="utf-8", errors="replace")
-            print(text[:8000])
+            ui.file_panel(str(file), text[:6000], title=file.name)
         else:
-            print("missing")
+            ui.warn(f"missing  {file}")
     return 0
 
 
 def knowledge_cmd(task: str, routes_only: bool) -> int:
     if routes_only:
-        print(list_routes())
+        ui.routes_table(list_routes())
         return 0
     bundle = required_bundle(task)
-    print(f"class={bundle.class_name}")
-    print(open_notes(task))
+    ui.kv("class", bundle.class_name)
+    ui.markdown_panel(open_notes(task, max_chars=3500), title="knowledge")
     return 0
 
 
@@ -103,11 +122,15 @@ def plan_cmd(args: argparse.Namespace) -> int:
         cleanup=args.cleanup,
     )
     md = step.to_markdown()
-    print(md)
+    ui.markdown_panel(md, title="hunt step")
+    if step.notes:
+        for line in step.notes.splitlines():
+            if line.strip():
+                ui.warn(line.strip())
     if args.write:
         out = Path(args.target_dir) / "PLAN.md"
         out.write_text(md, encoding="utf-8")
-        print(f"wrote {out}")
+        ui.success(f"wrote {out}")
     if not step.in_scope:
         return 1
     return 0
@@ -116,24 +139,29 @@ def plan_cmd(args: argparse.Namespace) -> int:
 def evidence_cmd(args: argparse.Namespace) -> int:
     store = EvidenceStore(Path(args.target_dir))
     if args.list:
-        for path in store.list_safe():
-            print(path)
+        paths = store.list_safe()
+        if not paths:
+            ui.info("no safe evidence yet")
+            return 0
+        for path in paths:
+            ui.path_line("safe", str(path))
         return 0
     if args.file:
         content = Path(args.file).read_text(encoding="utf-8", errors="replace")
     else:
         content = args.text or ""
     if not content:
-        print("provide --text or --file")
+        ui.error("provide --text or --file")
         return 2
     saved = store.save(args.name or "note.txt", content, keep_raw=args.keep_raw)
-    print(f"saved={saved}")
+    ui.success("evidence saved (redacted)")
+    ui.path_line("path", str(saved))
     return 0
 
 
 def redact_cmd(path: str) -> int:
     text = Path(path).read_text(encoding="utf-8", errors="replace")
-    print(redact_text(text))
+    ui.code_panel(redact_text(text), title="redacted", lexer="text")
     return 0
 
 
@@ -162,7 +190,8 @@ def report_cmd(args: argparse.Namespace) -> int:
     out = Path(args.target_dir) / "reports" / f"{args.platform}_draft.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(body, encoding="utf-8")
-    print(f"wrote {out}")
+    ui.markdown_panel(body, title=f"{args.platform} draft")
+    ui.success(f"wrote {out}")
     return 0
 
 
@@ -189,7 +218,7 @@ def run_cmd(args: argparse.Namespace) -> int:
             )
         elif tool == "ffuf":
             if not args.wordlist:
-                print("--wordlist required for ffuf")
+                ui.error("--wordlist required for ffuf")
                 return 2
             result = projectdiscovery.ffuf_dir(
                 target, host, args.wordlist, approve=approve
@@ -200,16 +229,16 @@ def run_cmd(args: argparse.Namespace) -> int:
             result = hexstrike.start_server(port=args.port, approve=approve)
         elif tool == "burp":
             if not args.burp_xml:
-                print("--burp-xml required for burp")
+                ui.error("--burp-xml required for burp")
                 return 2
             result = burp.summarize_xml(
                 target, Path(args.burp_xml), approve=approve, limit=args.limit
             )
         else:
-            print(f"unknown tool: {tool}")
+            ui.error(f"unknown tool: {tool}")
             return 2
     except (FileNotFoundError, PermissionError) as exc:
-        print(f"blocked: {exc}")
+        ui.blocked(str(exc))
         return 1
     return 0 if (result.returncode in (None, 0) or not result.executed) else result.returncode
 
@@ -217,9 +246,10 @@ def run_cmd(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hackbot",
-        description="Authorized bug bounty / lab automation CLI",
+        description="Authorized bug bounty agent CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="subcommand", required=False)
 
     init_p = sub.add_parser("target-init", help="Create targets/<name> from templates")
     init_p.add_argument("name")
@@ -229,10 +259,10 @@ def build_parser() -> argparse.ArgumentParser:
     scope_p.add_argument("--host")
     scope_p.add_argument("--action")
 
-    context_p = sub.add_parser("context", help="Print mandatory operating context")
+    context_p = sub.add_parser("context", help="Print operating rules + target files")
     context_p.add_argument("target_dir")
 
-    know_p = sub.add_parser("knowledge", help="Open study notes for a task class")
+    know_p = sub.add_parser("knowledge", help="Open study notes for a bug class")
     know_p.add_argument("task", nargs="?", default="recon")
     know_p.add_argument("--routes", action="store_true")
 
@@ -289,11 +319,46 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--burp-xml")
     run_p.add_argument("--limit", type=int, default=20)
 
+    sub.add_parser("cmd", help="Show low-level command menu")
+    ask_p = sub.add_parser("ask", help="One-shot agent prompt")
+    ask_p.add_argument("prompt", nargs=argparse.REMAINDER)
+
     return parser
 
 
+def _dispatch(args: argparse.Namespace) -> int:
+    if args.subcommand == "cmd" or args.subcommand is None:
+        ui.splash()
+        return 0
+    ui.rule(f"hackbot {args.subcommand}")
+    if args.subcommand == "target-init":
+        return target_init(args.name)
+    if args.subcommand == "scope-check":
+        return scope_check(args.target_dir, args.host, args.action)
+    if args.subcommand == "context":
+        return context(args.target_dir)
+    if args.subcommand == "knowledge":
+        return knowledge_cmd(args.task, args.routes)
+    if args.subcommand == "plan":
+        return plan_cmd(args)
+    if args.subcommand == "evidence":
+        return evidence_cmd(args)
+    if args.subcommand == "redact":
+        return redact_cmd(args.path)
+    if args.subcommand == "report":
+        return report_cmd(args)
+    if args.subcommand == "run":
+        return run_cmd(args)
+    if args.subcommand == "ask":
+        prompt = " ".join(args.prompt).strip()
+        if not prompt:
+            ui.error("usage: hackbot ask <prompt>")
+            return 2
+        return start_repl(one_shot=prompt)
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
-    # Windows consoles often use cp1252; study notes contain unicode arrows etc.
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if callable(reconfigure):
@@ -302,27 +367,20 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 pass
 
+    raw = list(sys.argv[1:] if argv is None else argv)
+
+    # Default: interactive agent REPL
+    if not raw:
+        return start_repl()
+
+    # Natural language one-shot if first token isn't a known subcommand/flag
+    head = raw[0]
+    if head not in SUBCOMMANDS and not head.startswith("-"):
+        return start_repl(one_shot=" ".join(raw))
+
     parser = build_parser()
-    args = parser.parse_args(argv)
-    if args.command == "target-init":
-        return target_init(args.name)
-    if args.command == "scope-check":
-        return scope_check(args.target_dir, args.host, args.action)
-    if args.command == "context":
-        return context(args.target_dir)
-    if args.command == "knowledge":
-        return knowledge_cmd(args.task, args.routes)
-    if args.command == "plan":
-        return plan_cmd(args)
-    if args.command == "evidence":
-        return evidence_cmd(args)
-    if args.command == "redact":
-        return redact_cmd(args.path)
-    if args.command == "report":
-        return report_cmd(args)
-    if args.command == "run":
-        return run_cmd(args)
-    return 2
+    args = parser.parse_args(raw)
+    return _dispatch(args)
 
 
 if __name__ == "__main__":

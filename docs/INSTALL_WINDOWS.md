@@ -1,10 +1,11 @@
 # Install on Windows
 
-## Requirements
+## What I need
 
 - Python 3.10+
 - Git
-- Optional tools on PATH: `httpx`, `katana`, `nuclei`, `ffuf`, `curl`
+- A terminal that likes color (Windows Terminal is fine)
+- Optional on PATH: `httpx`, `katana`, `nuclei`, `ffuf`, `curl`
 
 ## Setup
 
@@ -15,12 +16,25 @@ python -m venv .venv
 python -m pip install -e .
 ```
 
+## API key (required for agent mode)
+
+```powershell
+setx ANTHROPIC_API_KEY "your-key"
+# or: setx OPENAI_API_KEY "your-key"
+```
+
+Close and reopen the terminal so the env var sticks.
+
 ## Smoke test
 
 ```powershell
-python -m hackbot target-init demo
-python -m hackbot scope-check targets/demo --host example.com
-python -m unittest discover -s tests -v
+# agent REPL (needs API key)
+.\.venv\Scripts\python.exe -m hackbot
+
+# low-level (no API key)
+.\.venv\Scripts\python.exe -m hackbot target-init demo
+.\.venv\Scripts\python.exe -m hackbot scope-check targets/demo --host example.com
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
 ## Optional: HexStrike
@@ -33,8 +47,8 @@ pip install -r requirements.txt
 python hexstrike_server.py --port 8888
 ```
 
-## Notes
+## Notes from me
 
-- Active tools only run with `hackbot run ... --approve`.
-- Keep real program data under `targets/<program>/` and out of public git.
-- Set `RECONFTW_PATH` if reconFTW is not on PATH.
+- Active tools only run with `hackbot run ... --approve`
+- Real program data stays under `targets/<program>/` and out of public git
+- Set `RECONFTW_PATH` if reconFTW isn't on PATH

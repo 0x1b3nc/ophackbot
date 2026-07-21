@@ -1,73 +1,73 @@
-# Toolchain — VM + Agentes
+# Toolchain I Use
 
-Ferramentas **já presentes** nesta VM (não reinstalar sem bloqueio real):
+Tools I already have on the VM. I don't reinstall them unless something's actually broken.
 
-| Ferramenta | Fase | Agente sugerido |
-|------------|------|-----------------|
+| Tool | Phase | Persona I lean on |
+|------|-------|-------------------|
 | `subfinder`, `amass`, `dnsx` | Subdomains | `recon-advisor` |
-| `httpx` | Hosts vivos | `recon-advisor` |
-| `katana`, `waybackurls`, `gau` | Crawl / histórico | `recon-advisor`, `web-hunter` |
+| `httpx` | Live hosts | `recon-advisor` |
+| `katana`, `waybackurls`, `gau` | Crawl / history | `recon-advisor`, `web-hunter` |
 | `ffuf` | Dir/param fuzz | `web-hunter`, `vuln-scanner` |
-| `arjun` | Parâmetros | `web-hunter`, `api-security` |
-| `nuclei` | Templates oficiais + community | `vuln-scanner` |
-| `cent` (`~/go/bin/cent`) | Agrega templates community | `vuln-scanner` |
-| HexStrike + Burp | Validação | `poc-validator`, `bizlogic-hunter` |
+| `arjun` | Params | `web-hunter`, `api-security` |
+| `nuclei` | Official + community templates | `vuln-scanner` |
+| `cent` (`~/go/bin/cent`) | Aggregate community templates | `vuln-scanner` |
+| HexStrike + Burp | Validation | `poc-validator`, `bizlogic-hunter` |
 
-## Paths locais (não reinventar)
+## Local paths (don't reinvent)
 
-| Recurso | Path |
-|---------|------|
-| Nuclei oficiais (PD) | `~/.local/nuclei-templates` (~13k YAML, incl. `dast/`) |
-| Nuclei community (`cent`) | `bounty_knowledge/nuclei-community/cent-templates` |
+| Resource | Path |
+|----------|------|
+| Official nuclei (PD) | `~/.local/nuclei-templates` (~13k YAML, incl. `dast/`) |
+| Community nuclei (`cent`) | `bounty_knowledge/nuclei-community/cent-templates` |
 | PayloadsAllTheThings | `bounty_knowledge/PayloadsAllTheThings/` |
-| HexStrike | chama `nuclei` do PATH (não traz templates próprios) |
+| HexStrike | calls `nuclei` from PATH (doesn't ship its own templates) |
 
-Uso típico:
+How I usually run nuclei:
 
 ```bash
-# oficiais, seletivo
+# official, selective
 nuclei -u URL -tags kev,exposure,misconfig -severity critical,high,medium
 
-# DAST/fuzz (ex-fuzzing-templates, agora em dast/)
+# DAST/fuzz (old fuzzing-templates, now under dast/)
 nuclei -u URL -dast -severity medium,high,critical
 
-# community (barulhento — filtrar tags/severity; validar FP)
+# community (noisy — filter tags/severity; validate FPs)
 nuclei -u URL -t bounty_knowledge/nuclei-community/cent-templates -severity critical,high
 ```
 
-## Roteamento de agentes (Bug-Bounty-Agents)
+## Persona routing (Bug-Bounty-Agents)
 
-| Situação | Agente (`.cursor/rules/`) |
-|----------|---------------------------|
-| Novo programa / escopo | `engagement-planner` + `bug-bounty` |
-| Recon amplo | `recon-advisor` → `osint-collector` |
-| SPA / APIs REST | `web-hunter` + `api-security` |
+| Situation | Agent (`.cursor/rules/`) |
+|-----------|---------------------------|
+| New program / scope | `engagement-planner` + `bug-bounty` |
+| Wide recon | `recon-advisor` → `osint-collector` |
+| SPA / REST APIs | `web-hunter` + `api-security` |
 | GraphQL | `graphql-hunter` |
 | JWT / OAuth | `jwt-cracker` |
 | SSRF | `ssrf-hunter` |
-| Lógica de negócio / pagamento | `bizlogic-hunter` |
+| Biz logic / payment | `bizlogic-hunter` |
 | IDOR / cross-account | `bizlogic-hunter` + `poc-validator` |
 | Cloud (AWS/GCP/Azure) | `cloud-security` |
 | Subdomain takeover | `subdomain-takeover` |
-| LLM / chatbot no escopo | `llm-redteam` |
-| Coordenar tudo | `swarm-orchestrator` |
-| Report Bugcrowd (VRT) | `report-generator` |
+| LLM / chatbot in scope | `llm-redteam` |
+| Coordinate everything | `swarm-orchestrator` |
+| Bugcrowd report (VRT) | `report-generator` |
 
-Índice completo: `Bug-Bounty-Agents/AGENTS.md`
+Full index: `Bug-Bounty-Agents/AGENTS.md`
 
-## Ferramentas do awesome-bugbounty-tools (instalar sob demanda)
+## Stuff from awesome-bugbounty-tools (install on demand)
 
-Consultar `awesome-bugbounty-tools/README.md` antes de instalar. Prioridade quando faltar:
+I check `awesome-bugbounty-tools/README.md` before installing. Priority when I'm missing something:
 
 - **Secrets/JS:** `nuclei` (`~/.local/nuclei-templates`) + `katana` + grep
-- **GraphQL:** `clairvoyance`, `graphql-cop` (se no escopo API GraphQL)
-- **JWT:** `jwt_tool` (agente `jwt-cracker`)
-- **SSRF / payloads:** `bounty_knowledge/PayloadsAllTheThings/` (clonado; não só link do awesome)
-- **Templates community:** `cent` → `bounty_knowledge/nuclei-community/`; preferir oficiais+tags antes de varrer community inteiro
-- **Scopes H1/BC:** `bounty-targets-data` (dados públicos de programas)
+- **GraphQL:** `clairvoyance`, `graphql-cop` (if GraphQL is in scope)
+- **JWT:** `jwt_tool` (`jwt-cracker` persona)
+- **SSRF / payloads:** `bounty_knowledge/PayloadsAllTheThings/` (cloned; not just an awesome link)
+- **Community templates:** `cent` → `bounty_knowledge/nuclei-community/`; prefer official+tags before blasting the whole community set
+- **H1/BC scopes:** `bounty-targets-data`
 
-Não instalar Docker-heavy stacks (Ars0n, Darkmoon full) nesta VM.
+I don't install Docker-heavy stacks (Ars0n, full Darkmoon) on this VM.
 
-## Segurança do agente (referência)
+## Agent security (reference)
 
-`awesome-agent-skills-security/` — ao adicionar skills/MCP externos, validar supply chain e não executar output de alvo com `| bash`.
+`awesome-agent-skills-security/` — when I add external skills/MCP, I check supply chain and I don't pipe target output into `| bash`.

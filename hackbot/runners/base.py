@@ -6,6 +6,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import ui
 from ..policy_guard import ScopePolicy, host_from_target
 
 
@@ -33,9 +34,9 @@ def run_command(
     cwd: Path | None = None,
 ) -> RunnerResult:
     printable = " ".join(command)
-    print(f"command: {printable}")
+    ui.code_panel(printable, title="command", lexer="bash")
     if not approve:
-        print("dry-run: pass --approve to execute")
+        ui.dry_run_banner()
         return RunnerResult(
             command=command,
             executed=False,
@@ -44,17 +45,22 @@ def run_command(
             stderr="",
             message="dry-run",
         )
-    completed = subprocess.run(
-        command,
-        cwd=str(cwd) if cwd else None,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    with ui.console.status("[cyan]running...[/]", spinner="dots"):
+        completed = subprocess.run(
+            command,
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     if completed.stdout:
-        print(completed.stdout)
+        ui.code_panel(completed.stdout.rstrip(), title="stdout", lexer="text")
     if completed.stderr:
-        print(completed.stderr, end="")
+        ui.code_panel(completed.stderr.rstrip(), title="stderr", lexer="text")
+    if completed.returncode == 0:
+        ui.success(f"exit {completed.returncode}")
+    else:
+        ui.error(f"exit {completed.returncode}")
     return RunnerResult(
         command=command,
         executed=True,

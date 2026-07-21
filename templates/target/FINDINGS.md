@@ -2,7 +2,7 @@
 
 No confirmed findings yet.
 
-Use this format:
+I use this format:
 
 ## C-001 Title
 
