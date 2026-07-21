@@ -20,6 +20,9 @@ class IntentTests(unittest.TestCase):
             "open IDOR notes",
             "dry-run httpx on example.com",
             "create a file teste.md in Downloads",
+            "Pronto inicie o hunting",
+            "pode iniciar a caça",
+            "start the hunt please",
         ):
             self.assertTrue(is_hunt_prompt(text), text)
             self.assertFalse(is_chat_prompt(text), text)

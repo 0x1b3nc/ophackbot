@@ -222,6 +222,7 @@ class CursorTurnTests(unittest.TestCase):
                     "CURSOR_API_KEY": "cursor_test",
                     "HACKBOT_STREAM": "0",
                     "HACKBOT_CURSOR_TOOLS": "0",
+                    "HACKBOT_FILEOP_CONTINUE": "0",
                 },
                 clear=False,
             ):
@@ -251,6 +252,7 @@ class CursorTurnTests(unittest.TestCase):
                     "CURSOR_API_KEY": "cursor_test",
                     "HACKBOT_STREAM": "0",
                     "HACKBOT_CURSOR_TOOLS": "0",
+                    "HACKBOT_FILEOP_CONTINUE": "0",
                 },
                 clear=False,
             ):
@@ -261,6 +263,45 @@ class CursorTurnTests(unittest.TestCase):
                 )
             self.assertTrue(target.exists())
             self.assertIn("# ok", target.read_text(encoding="utf-8"))
+
+    def test_fileop_auto_continues_after_approve(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "scope.md"
+            first = (
+                "creating scope\n\n```hackbot-fileop\n"
+                + json.dumps(
+                    {"op": "write_file", "path": str(target), "content": "# scope\n"},
+                    ensure_ascii=False,
+                )
+                + "\n```\n"
+            )
+            responses = [first, "SCOPE landed. Next: dry-run httpx."]
+
+            def _send(prompt: str, **_kwargs):
+                self.agent.prompts.append(prompt)
+                text = responses.pop(0) if responses else "done"
+                return _FakeRun(text)
+
+            self.agent.send = _send  # type: ignore[method-assign]
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "CURSOR_API_KEY": "cursor_test",
+                    "HACKBOT_STREAM": "0",
+                    "HACKBOT_CURSOR_TOOLS": "0",
+                    "HACKBOT_FILEOP_CONTINUE": "1",
+                },
+                clear=False,
+            ):
+                answer = run_cursor_turn(
+                    "inicie o hunting",
+                    approve_fn=lambda _d: True,
+                    allow_file_ops=True,
+                )
+            self.assertTrue(target.exists())
+            self.assertEqual(len(self.agent.prompts), 2)
+            self.assertIn("file-op", self.agent.prompts[1].lower())
+            self.assertIn("dry-run httpx", answer)
 
     def test_direct_create_skips_sdk(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

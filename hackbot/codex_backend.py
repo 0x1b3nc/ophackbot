@@ -105,16 +105,21 @@ def _apply_fileops(
     approve_fn: ApproveFn | None,
     *,
     source: str = "codex",
-) -> None:
-    """Execute proposed file ops through hackbot's approve-gated tools."""
+) -> list[dict[str, Any]]:
+    """Execute proposed file ops through hackbot's approve-gated tools.
+
+    Returns one result dict per op: tool, path, ok, error (optional).
+    """
     from . import tools  # local import avoids any import cycle
 
+    applied: list[dict[str, Any]] = []
     ui.console.print(ui_text(f"{source} proposes {len(ops)} file change(s):", "hb.label"))
     for item in ops:
         op = str(item.get("op", "")).strip().lower()
         tool = _FILEOP_ALIASES.get(op)
         if tool is None:
             ui.error(f"unknown file op {op!r} - skipped")
+            applied.append({"tool": op or "?", "path": "", "ok": False, "error": "unknown op"})
             continue
         args = _normalize_op_args(tool, item)
         result = tools.execute_tool(tool, args, approve_fn=approve_fn)
@@ -122,11 +127,42 @@ def _apply_fileops(
             parsed = json.loads(result)
         except json.JSONDecodeError:
             parsed = {"ok": False, "error": result}
+        where = parsed.get("path") or parsed.get("to") or parsed.get("deleted") or args.get("path") or ""
         if parsed.get("ok"):
-            where = parsed.get("path") or parsed.get("to") or parsed.get("deleted") or ""
             ui.success(f"{tool}  {where}")
+            applied.append({"tool": tool, "path": where, "ok": True})
         else:
-            ui.error(f"{tool}: {parsed.get('error', 'failed')}")
+            err = parsed.get("error", "failed")
+            ui.error(f"{tool}: {err}")
+            applied.append({"tool": tool, "path": where, "ok": False, "error": err})
+    return applied
+
+
+def _fileop_continue_prompt(
+    user_prompt: str, applied: list[dict[str, Any]]
+) -> str:
+    """Tell the brain file ops landed so it can keep working (don't stop after write)."""
+    lines = []
+    for row in applied:
+        mark = "ok" if row.get("ok") else f"FAILED ({row.get('error') or 'denied'})"
+        lines.append(f"- {row.get('tool')} {row.get('path') or ''} → {mark}")
+    body = "\n".join(lines) if lines else "- (none)"
+    return (
+        "Hackbot applied your file-op proposal(s) (operator approve gate):\n"
+        f"{body}\n\n"
+        "Continue the user's ORIGINAL task now. Do NOT re-emit the same file-op.\n"
+        "If they asked to hunt / start recon, proceed with the next concrete steps "
+        "(dry-run first, then ask for approve when you need live traffic).\n"
+        f"Original task: {user_prompt.strip()}"
+    )
+
+
+def _should_continue_after_fileops(applied: list[dict[str, Any]]) -> bool:
+    """Resume the brain after at least one successful write/edit."""
+    if not applied or not any(row.get("ok") for row in applied):
+        return False
+    flag = os.environ.get("HACKBOT_FILEOP_CONTINUE", "1").strip().lower()
+    return flag not in {"0", "false", "off", "no"}
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -142,6 +178,8 @@ NEVER say you can only write inside the repo/kit. Downloads/Desktop ARE allowed.
 ```
 
 Ops: write_file, append_file, edit_file, delete_path, make_dir, move_path.
+After you emit a file-op, hackbot applies it (with approve) and automatically
+continues you — do not stop the job waiting for the user to re-ask.
 """
 
 PREAMBLE_CHAT = """You are Hackbot, a short friendly authorized bounty/lab CLI agent.
@@ -163,6 +201,7 @@ Hard rules:
 - Be concise, technical, first person.
 """ + _FILEOP_RULES + """
 Only emit a file-op block when a file change is actually needed.
+After SCOPE/setup files land, keep going on the hunt — do not end the turn idle.
 
 Task:
 """
@@ -312,6 +351,9 @@ _CODEX_EFFORT = {
 }
 
 
+_MAX_FILEOP_CONTINUES = 2
+
+
 def run_codex_turn(
     user_prompt: str,
     *,
@@ -321,15 +363,21 @@ def run_codex_turn(
     timeout: int | None = None,
     approve_fn: ApproveFn | None = None,
     allow_file_ops: bool = True,
+    _fileop_depth: int = 0,
+    _orig_user_prompt: str | None = None,
 ) -> str:
     """Run one turn through `codex exec` (read-only) and display the answer.
 
     Chat prompts use a light preamble (no file reads). Hunt prompts use the full
     preamble. After the first successful turn in-process, later turns use
     `codex exec resume --last` when enabled (default on).
+
+    After approved file-ops, automatically continues Codex so setup writes
+    (SCOPE.md etc.) do not strand the hunt waiting for the user to re-ask.
     """
     global _CODEX_SESSION_READY, _CODEX_AVAIL
-    if allow_file_ops:
+    orig = _orig_user_prompt if _orig_user_prompt is not None else user_prompt
+    if allow_file_ops and _fileop_depth == 0:
         direct = _try_direct_file_create(user_prompt, approve_fn)
         if direct is not None:
             ui.turn_timing(0.0, 1)
@@ -346,8 +394,12 @@ def run_codex_turn(
             ui.error(str(exc))
             ui.info("fix with: /models  then  /model <id>")
             return str(exc)
-    chat_mode = is_chat_prompt(user_prompt)
-    effort = effort if effort is not None else resolve_effort_for_prompt(user_prompt)
+    # Continuations after file-ops are always hunt work, even if the injector text
+    # is short ("Continue…").
+    chat_mode = False if _fileop_depth > 0 else is_chat_prompt(user_prompt)
+    effort = effort if effort is not None else resolve_effort_for_prompt(
+        orig if _fileop_depth > 0 else user_prompt
+    )
     timeout = timeout if timeout is not None else (90 if chat_mode else 300)
     resume = (
         _CODEX_SESSION_READY
@@ -359,6 +411,7 @@ def run_codex_turn(
     ui.info(
         f"codex  effort={effort or '-'}  mode={'chat' if chat_mode else 'hunt'}"
         + ("  resume" if resume else "")
+        + (f"  after-fileop-{_fileop_depth}" if _fileop_depth else "")
     )
     started = time.perf_counter()
 
@@ -432,9 +485,10 @@ def run_codex_turn(
             ui.markdown_panel(answer, title="hackbot (codex)")
             ui.turn_timing(time.perf_counter() - started, 0)
             return answer
-        # Resume can fail if no prior session; fall back once to a fresh exec.
-        if resume and ("resume" in low or "session" in low or "not found" in low):
+        # Empty / broken resume (common after a long approve wait) → fresh exec once.
+        if resume:
             _CODEX_SESSION_READY = False
+            ui.warn("codex resume empty/broken; retrying fresh exec")
             return run_codex_turn(
                 user_prompt,
                 history=history,
@@ -443,20 +497,45 @@ def run_codex_turn(
                 timeout=timeout,
                 approve_fn=approve_fn,
                 allow_file_ops=allow_file_ops,
+                _fileop_depth=_fileop_depth,
+                _orig_user_prompt=orig,
             )
         answer = (error or "").strip() or "(codex produced no output)"
 
     ops: list[dict[str, Any]] = []
-    if allow_file_ops and not chat_mode:
-        answer, ops = _extract_fileops(answer)
-    elif allow_file_ops and chat_mode:
-        # Still honor an explicit file-op if the model emitted one.
+    if allow_file_ops:
         answer, ops = _extract_fileops(answer)
 
     ui.markdown_panel(answer, title="hackbot (codex)")
+    applied: list[dict[str, Any]] = []
     if ops:
-        _apply_fileops(ops, approve_fn)
+        applied = _apply_fileops(ops, approve_fn)
     _CODEX_SESSION_READY = True
+
+    if (
+        allow_file_ops
+        and _should_continue_after_fileops(applied)
+        and _fileop_depth < _MAX_FILEOP_CONTINUES
+    ):
+        ui.info("file ops applied; continuing codex (don't re-ask me)")
+        hist = list(history or [])
+        hist.append(("user", orig))
+        hist.append(("hackbot", answer or "(file ops applied)"))
+        cont = run_codex_turn(
+            _fileop_continue_prompt(orig, applied),
+            history=hist,
+            model=model,
+            effort=effort,
+            timeout=timeout,
+            approve_fn=approve_fn,
+            allow_file_ops=allow_file_ops,
+            _fileop_depth=_fileop_depth + 1,
+            _orig_user_prompt=orig,
+        )
+        combined = "\n\n".join(p for p in (answer, cont) if (p or "").strip()).strip()
+        ui.turn_timing(time.perf_counter() - started, len(ops))
+        return combined or answer
+
     ui.turn_timing(time.perf_counter() - started, len(ops))
     return answer
 

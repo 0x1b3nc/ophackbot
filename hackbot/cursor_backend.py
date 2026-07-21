@@ -22,9 +22,12 @@ from rich.text import Text as _Text
 from . import ui
 from .codex_backend import (
     _FILEOP_RULES,
+    _MAX_FILEOP_CONTINUES,
     _apply_fileops,
     _extract_fileops,
     _file_create_hint,
+    _fileop_continue_prompt,
+    _should_continue_after_fileops,
     _try_direct_file_create,
 )
 from .cursor_models import (
@@ -356,11 +359,14 @@ def run_cursor_turn(
     model: str | None = None,
     approve_fn: ApproveFn | None = None,
     allow_file_ops: bool = True,
+    _fileop_depth: int = 0,
+    _orig_user_prompt: str | None = None,
 ) -> str:
     """Run one turn through the Cursor SDK local agent and display the answer."""
     del history  # durable Agent holds conversation; REPL still stores for /clear UX
+    orig = _orig_user_prompt if _orig_user_prompt is not None else user_prompt
 
-    if allow_file_ops:
+    if allow_file_ops and _fileop_depth == 0:
         direct = _try_direct_file_create(user_prompt, approve_fn)
         if direct is not None:
             ui.turn_timing(0.0, 1)
@@ -375,13 +381,13 @@ def run_cursor_turn(
         ui.error(msg)
         return msg
 
-    chat_mode = is_chat_prompt(user_prompt)
+    chat_mode = False if _fileop_depth > 0 else is_chat_prompt(user_prompt)
     # Effort for ModelSelection: auto → skip on chat, medium on hunt; explicit levels always apply.
     raw_eff = (os.environ.get("HACKBOT_EFFORT") or "auto").strip().lower()
     if raw_eff in {"", "auto"} and chat_mode:
         effort: str | None = None
     else:
-        effort = resolve_effort_for_prompt(user_prompt)
+        effort = resolve_effort_for_prompt(orig if _fileop_depth > 0 else user_prompt)
     try:
         resolved = resolve_cursor_model(
             model or os.environ.get("HACKBOT_MODEL"),
@@ -466,8 +472,27 @@ def run_cursor_turn(
         answer, ops = _extract_fileops(answer)
 
     ui.markdown_panel(answer, title=f"hackbot (cursor · {used_label})")
+    applied: list[dict[str, Any]] = []
     if ops:
-        _apply_fileops(ops, approve_fn, source="cursor")
+        applied = _apply_fileops(ops, approve_fn, source="cursor")
+
+    if (
+        allow_file_ops
+        and _should_continue_after_fileops(applied)
+        and _fileop_depth < _MAX_FILEOP_CONTINUES
+    ):
+        ui.info("file ops applied; continuing cursor (don't re-ask me)")
+        cont = run_cursor_turn(
+            _fileop_continue_prompt(orig, applied),
+            model=model,
+            approve_fn=approve_fn,
+            allow_file_ops=allow_file_ops,
+            _fileop_depth=_fileop_depth + 1,
+            _orig_user_prompt=orig,
+        )
+        combined = "\n\n".join(p for p in (answer, cont) if (p or "").strip()).strip()
+        ui.turn_timing(time.perf_counter() - started, len(ops))
+        return combined or answer
 
     ui.turn_timing(time.perf_counter() - started, len(ops))
     return answer

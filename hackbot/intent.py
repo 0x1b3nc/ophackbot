@@ -62,6 +62,7 @@ _HUNT_RE = re.compile(
     r"idor|bola|bac|ssrf|xss|sqli|rce|lfi|graphql|race|"
     r"ddos|dos|brute|bypass|token|credencial|credential|secret|"
     r"ataque|attack|exploit|pentest|hacke|vulnerab|"
+    r"hunt|hunting|ca[cç]a|ca[cç]ar|"
     r"nuclei|httpx|katana|ffuf|recon|burp|hexstrike|"
     r"plan|hypothesis|evidence|report|bugcrowd|hackerone|intigriti|"
     r"target|endpoint|fuzz|scan|crawl|probe|"

@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from hackbot.codex_backend import _build_prompt, _try_direct_file_create, run_codex_turn
+from hackbot.codex_backend import (
+    _build_prompt,
+    _fileop_continue_prompt,
+    _try_direct_file_create,
+    run_codex_turn,
+)
 
 
 class CodexFileCreateTests(unittest.TestCase):
@@ -59,6 +65,64 @@ class CodexFileCreateTests(unittest.TestCase):
             self.assertIsNotNone(msg)
             self.assertFalse(target.exists())
             self.assertIn("approve", msg.lower())
+
+    def test_fileop_continue_prompt_keeps_original_task(self) -> None:
+        text = _fileop_continue_prompt(
+            "inicie o hunting no aylo",
+            [{"tool": "write_file", "path": "targets/aylo/SCOPE.md", "ok": True}],
+        )
+        self.assertIn("write_file", text)
+        self.assertIn("SCOPE.md", text)
+        self.assertIn("inicie o hunting no aylo", text)
+        self.assertIn("Do NOT re-emit", text)
+
+    def test_fileop_auto_continues_after_approve(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "SCOPE.md"
+            first = (
+                "Vou criar o SCOPE.\n\n```hackbot-fileop\n"
+                + json.dumps(
+                    {
+                        "op": "write_file",
+                        "path": str(target),
+                        "content": "---\nin_scope: []\n",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n```\n"
+            )
+            second = "SCOPE ok. Proximo passo: dry-run httpx."
+            answers = [first, second]
+            calls: list[str] = []
+
+            def _fake_run(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str]:
+                del timeout
+                calls.append(prompt)
+                out = Path(cmd[cmd.index("-o") + 1])
+                out.write_text(answers.pop(0) if answers else second, encoding="utf-8")
+                return ("", "")
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "HACKBOT_STREAM": "0",
+                    "HACKBOT_FILEOP_CONTINUE": "1",
+                    "HACKBOT_CODEX_RESUME": "0",
+                    "HACKBOT_MODEL": "",
+                },
+                clear=False,
+            ):
+                with mock.patch("hackbot.codex_backend._run_quiet", side_effect=_fake_run):
+                    msg = run_codex_turn(
+                        "inicie o hunting",
+                        history=[("user", "oi"), ("hackbot", "fala")],
+                        approve_fn=lambda _d: True,
+                        allow_file_ops=True,
+                    )
+            self.assertTrue(target.exists())
+            self.assertGreaterEqual(len(calls), 2)
+            self.assertIn("file-op", calls[1].lower())
+            self.assertIn("dry-run httpx", msg)
 
 
 if __name__ == "__main__":
