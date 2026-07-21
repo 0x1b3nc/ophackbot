@@ -11,6 +11,7 @@ PACKS: dict[str, tuple[str, ...]] = {
         "list_targets",
         "set_target",
         "session_status",
+        "capabilities",
         "show_identity",
         "set_session",
         "set_account",
@@ -61,6 +62,8 @@ PACKS: dict[str, tuple[str, ...]] = {
         "secrets_scan",
         "analyze_jwt",
         "discover_paths",
+        # External recon CLIs + HexStrike (operator sees via /tools + capabilities)
+        "run_tool",
     ),
     "inject": (
         "http_request",

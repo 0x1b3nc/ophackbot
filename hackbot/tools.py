@@ -103,6 +103,24 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
+        "name": "capabilities",
+        "description": (
+            "Show what is actually available: PATH binaries (httpx/katana/nuclei/ffuf), "
+            "HexStrike/Burp health, tool packs, and how to call recon via run_tool."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "probe_network": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Ping HexStrike/Burp health endpoints",
+                }
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "show_identity",
         "description": (
             "Show masked program headers + A/B sessions for a target "
@@ -2297,6 +2315,15 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
                 "context": active.context_block()[:4000],
             }
         )
+
+    if name == "capabilities":
+        from .capabilities import collect_capabilities, print_capabilities
+
+        caps = collect_capabilities(
+            probe_network=parse_bool(args.get("probe_network"), default=True)
+        )
+        print_capabilities(caps, compact=False)
+        return json.dumps(caps)
 
     if name == "show_identity":
         target = _target_path(args["target_dir"])

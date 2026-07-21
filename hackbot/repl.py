@@ -298,6 +298,8 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.success("context cleared")
             continue
         if text in {"/mode", "/status"}:
+            from .capabilities import collect_capabilities, print_capabilities
+
             ui.kv("brain", mode)
             ui.kv("config", label)
             ui.kv("hunt", status_line())
@@ -332,6 +334,14 @@ def start_repl(*, one_shot: str | None = None) -> int:
                         f"phase={st.get('phase')} budget={st.get('budget_remaining')}/{st.get('budget_total')} "
                         f"endpoints={st.get('endpoints')}",
                     )
+            print_capabilities(collect_capabilities(), compact=True)
+            ui.info("full stack: /tools")
+            continue
+
+        if text in {"/tools", "/caps", "/capabilities", "/stack"}:
+            from .capabilities import collect_capabilities, print_capabilities
+
+            print_capabilities(collect_capabilities(), compact=False)
             continue
 
         if text in {"/config", "/cfg"}:
@@ -738,7 +748,8 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.info("          after each turn: 'used model …' proves SDK selection")
             ui.info("          HACKBOT_CURSOR_TOOLS=1  CustomTool loop (SCOPE/approve)")
             ui.info("          HACKBOT_CURSOR_MODE=plan|agent  (default agent if tools on)")
-            ui.info("shortcuts:/target  /hunt  /session  /force  /status  /config")
+            ui.info("shortcuts:/target  /hunt  /session  /force  /status  /tools  /config")
+            ui.info("stack:    /tools  (httpx/katana/nuclei/ffuf + HexStrike/Burp health)")
             ui.info("session:  /clear  /exit   (Ctrl+C cancels a running turn)")
             continue
 

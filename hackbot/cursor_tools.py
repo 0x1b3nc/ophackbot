@@ -100,7 +100,10 @@ def tools_preamble_block(*, enabled: bool, pack_label: str, tool_count: int) -> 
         )
     return f"""
 Hackbot custom tools are registered on this agent ({tool_count} tools, packs={pack_label}).
-CALL them by name (http_request, map_surface, nuclei wrappers, write_file, run_hunt, …).
+CALL them by name (http_request, map_surface, write_file, run_hunt, capabilities, …).
+External recon CLIs: run_tool with tool=httpx|katana|nuclei|ffuf|reconftw|hexstrike
+(after dry-run; approve=true only when IN_SCOPE). Call capabilities first to see
+what binaries/HexStrike/Burp are actually up.
 Do NOT use raw shell/curl for in-scope bounty traffic — use the hackbot tools so
 SCOPE checks, redaction, caps, and operator approve apply.
 Dry-run first (approve=false / omit approve). Only request approve=true after

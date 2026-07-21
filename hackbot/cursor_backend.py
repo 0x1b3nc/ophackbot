@@ -389,6 +389,12 @@ def run_cursor_turn(
         f"cursor  requested={resolved.display()}  mode={mode}  "
         f"catalog={resolved.source}  tools={len(custom_tools)} ({pack_label})"
     )
+    try:
+        from .capabilities import collect_capabilities, compact_line
+
+        ui.info(compact_line(collect_capabilities(prompt=user_prompt)))
+    except Exception:  # noqa: BLE001
+        pass
 
     prompt = _build_prompt(
         user_prompt,
