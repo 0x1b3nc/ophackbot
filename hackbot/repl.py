@@ -451,14 +451,14 @@ def start_repl(*, one_shot: str | None = None) -> int:
                     ui.info("set: /target <name>   clear: /target clear")
                 continue
             try:
-                session = set_active(arg)
+                target_session = set_active(arg)
             except FileNotFoundError as exc:
                 ui.error(str(exc))
                 continue
-            ui.success(f"active target -> {session.name}")
+            ui.success(f"active target -> {target_session.name}")
             ui.info(status_line())
-            if session.next_step:
-                ui.info(f"next: {session.next_step}")
+            if target_session.next_step:
+                ui.info(f"next: {target_session.next_step}")
             continue
 
         if text in {"/sessions", "/identity"}:
