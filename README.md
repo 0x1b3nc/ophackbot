@@ -1,162 +1,250 @@
 # Hackbot Kit
 
-My authorized bounty / lab agent. You type a prompt. I think out loud (live
-streaming), use tools, edit files, and answer. Scope first. Evidence redacted.
-Active traffic and every file change need your approve.
+Authorized bounty / lab agent. You type a task; hackbot plans, uses tools, edits
+files, and answers. **SCOPE first.** Evidence is redacted. Active traffic and
+every file change need your **approve**.
 
-It's model-agnostic: the default brain is always **offline** (hackbot's own
-rule-based planner + tools — no key, no model). Plug in a model only when you
-want one: OpenAI, Claude, DeepSeek, GLM, OpenRouter, Ollama/LM Studio, Codex
-(ChatGPT plan), or Cursor SDK. It never auto-switches; you pick with `/provider`
-(or `HACKBOT_PROVIDER` for that shell).
+hackbot is the knowledge + safety layer. Models are optional. The default brain
+is always **offline** (rule-based planner + tools — no API key). Plug in a model
+only when you want one. It never auto-switches; you pick with `/provider`.
+
+## What you get
+
+| Layer | Role |
+| --- | --- |
+| Offline brain | Default. Plans tools from natural language, no model bill |
+| Model / Codex / Cursor | Optional “brain” that can drive the same tools |
+| SCOPE + approve | Hard rails: in/out of scope, dry-run vs live traffic |
+| Hunt loop | Autonomous OODA (`/hunt` / `run_hunt`) with resume after SSO |
+| Integrations | httpx/katana/nuclei/ffuf, Playwright, Burp, HexStrike, OOB |
+
+Private program data stays under `targets/<program>/` (not for public commits).
 
 ## Install
+
+**Windows**
 
 ```powershell
 cd C:\hackbot\hackbot-kit
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
+playwright install chromium
 ```
 
-hackbot is the knowledge + safety layer; models are optional. Offline works with
-zero config. To use a model: set a key (reopen the terminal after `setx`), then
-in the REPL run `/provider <name>` (do **not** need a persistent
-`HACKBOT_PROVIDER` unless you want that shell pinned):
+**Linux**
+
+```bash
+cd /path/to/ophackbot   # or hackbot-kit
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+playwright install chromium
+# if Chromium deps fail: playwright install-deps chromium
+```
+
+More detail: [docs/INSTALL_WINDOWS.md](docs/INSTALL_WINDOWS.md) ·
+[docs/INSTALL_LINUX.md](docs/INSTALL_LINUX.md).
+
+Smoke:
+
+```bash
+python -m hackbot demo
+python -m hackbot   # interactive REPL
+```
+
+## Brains (providers)
+
+Always starts **offline** unless you set `/provider` or `HACKBOT_PROVIDER` for
+that shell. Having an API key installed does **not** auto-switch the brain.
+
+| Brain | How to enable |
+| --- | --- |
+| **offline** | Default — no key |
+| **openai / anthropic / deepseek / glm / openrouter** | Set key → `/provider <name>` |
+| **ollama / lmstudio** | Local OpenAI-compatible URL → `/provider ollama` |
+| **cursor** | `pip install 'hackbot-kit[cursor]'` + `CURSOR_API_KEY` → `/provider cursor` |
+| **codex** | Install Codex CLI → `codex login` (ChatGPT plan) → `/provider codex` |
+
+**Windows keys**
 
 ```powershell
-setx OPENAI_API_KEY "sk-..."        # then: /provider openai
-setx ANTHROPIC_API_KEY "sk-..."     # then: /provider anthropic
-setx DEEPSEEK_API_KEY "sk-..."      # then: /provider deepseek
-setx OPENROUTER_API_KEY "sk-or-..." # then: /provider openrouter
-setx HACKBOT_BASE_URL "http://localhost:11434/v1"  # then: /provider ollama
-
-# Cursor plan via Python SDK (optional tool-loop):
-#   pip install 'hackbot-kit[cursor]'   # or: pip install cursor-sdk
-#   setx CURSOR_API_KEY "cursor_..."    # Dashboard → Integrations / API Keys
-#   /provider cursor   # CustomTools → hackbot httpx/probes under approve
-#   /model composer-2.5
-
-# ChatGPT plan via Codex CLI (optional, same weight as the others):
-#   codex login
-#   /provider codex
+setx OPENAI_API_KEY "sk-..."          # then new terminal: /provider openai
+setx ANTHROPIC_API_KEY "sk-..."
+setx CURSOR_API_KEY "cursor_..."      # Dashboard → Integrations / API Keys
+# Codex: no API key — run `codex login`
 ```
 
-Pick model + reasoning effort anytime:
+**Linux keys**
 
-```powershell
-setx HACKBOT_MODEL "o4-mini"
-setx HACKBOT_EFFORT "auto"   # auto | minimal | low | medium | high | xhigh
+```bash
+export OPENAI_API_KEY="sk-..."
+export CURSOR_API_KEY="cursor_..."
+# persist in ~/.zshrc or ~/.bashrc if you want
 ```
 
-`auto` keeps chat (hi/hello) on minimal effort with no tools, and hunt tasks on
-medium with the full tool pack. In the REPL: `/providers`, `/provider`,
-`/model`, `/effort`, `/verbose`, `/status`. See [docs/CLI.md](docs/CLI.md).
+Model + effort (optional):
 
-Windows notes: [docs/INSTALL_WINDOWS.md](docs/INSTALL_WINDOWS.md)  
-Linux notes: [docs/INSTALL_LINUX.md](docs/INSTALL_LINUX.md)
-
-## Use it
-
-```powershell
-# interactive agent (default)
-.\.venv\Scripts\python.exe -m hackbot
-
-# demo pitch smoke (SCOPE + fake A/B sessions, dry-run)
-.\.venv\Scripts\python.exe -m hackbot demo
-
-# one-shot
-.\.venv\Scripts\python.exe -m hackbot check if example.com is in scope for targets/demo
+```bash
+export HACKBOT_MODEL="o4-mini"          # or composer-2.5 / grok-4.5 for cursor
+export HACKBOT_EFFORT="auto"            # auto | minimal | low | medium | high | xhigh
 ```
 
-Inside the REPL, talk normally:
+`auto` = light for chat, medium for hunt tasks. In the REPL: `/providers`,
+`/models`, `/model`, `/effort`, `/status`, `/tools`.
+
+### Cursor vs Codex vs offline
+
+- **Cursor** registers phase-filtered hackbot tools as CustomTools
+  (`HACKBOT_CURSOR_TOOLS=1`). Packs default to `auto` (core+recon+inject+report
+  on hunt prompts). Not every binary runs unless the model calls `run_tool` /
+  probes — check `/tools`.
+- **Codex** uses your ChatGPT plan via `codex exec`. File edits still go through
+  hackbot’s approve gate (`/codex-write` toggles proposals).
+- **Offline** is enough for many hunt steps without a paid model.
+
+## First session
 
 ```text
-hackbot: open IDOR notes and draft a plan for https://example.com/api/orders/1 on targets/demo
-hackbot: dry-run httpx against example.com for the demo target
-hackbot: create a scratch.md in my Downloads with today's plan
+python -m hackbot
+/tools                          # what binaries + HexStrike/Burp are actually up
+/target demo                    # or your program folder under targets/
+check if example.com is in scope
+dry-run httpx on example.com for the demo target
 ```
 
-I can create, edit, append, move, and delete files anywhere, not just this repo.
-Every change pops an approval panel with the path and a preview first. Deny it
-and I back off. Reasoning streams live as I think (toggle with `/stream`).
+Talk normally — slash commands are shortcuts, not required:
+
+```text
+credentials are in Downloads/tokens.yaml
+hunt whatever you can on example.com approve
+read the image Desktop/scope.png
+```
+
+### Approve: dry-run vs live
+
+| What you see | What to do |
+| --- | --- |
+| Yellow **dry-run** / “Pass --approve to execute” | **Nothing.** Informational only — no traffic was sent |
+| **permission needed** → `Allow this action? y/n` | Type **`y`** or **`n`** (also `approve` / `deny`) |
+| Normal `hackbot · …:` prompt | New task |
+
+One session `/hunt … --approve` (or NL “approve”) unlocks active traffic for
+that hunt loop. OUT_OF_SCOPE stays hard-blocked. `/force` only softens missing
+active-testing / NOT_CONFIRMED wording — never OOS, never skips approve.
 
 ## Hunt workflow
+
+```text
+/target myprogram
+/session set A --bearer <tokenA>
+/session set B --bearer <tokenB>
+/hunt explore this host --approve
+```
+
+Or natural language (sessions from a file, then hunt):
 
 ```text
 credentials are in Downloads/tokens.yaml
 hunt whatever you can on example.com approve
 ```
 
-Or the short form (slash commands are optional shortcuts):
+What happens: map surface → prioritize → specialists (recon/authz/inject) →
+validate → `FINDINGS.md`. State under `targets/<name>/hunt/`
+(`surface.yaml`, `state.yaml`, …). Resume after pause:
 
 ```text
-/target demo
-/session set A --bearer <tokenA>
-/session set B --bearer <tokenB>
-/hunt explore this host --approve
+resume hunt
+# or: run_hunt with resume=true / HACKBOT_HUNT_RESUME=1
 ```
 
-Natural language loads sessions from files, maps surface, chains specialists,
-validates proof, then writes FINDINGS. One `approve` covers active traffic;
-OOS stays hard-blocked. State under `targets/<name>/hunt/`.
+**SSO / IdP / MFA:** hackbot never types IdP passwords or bypasses MFA. Use
+headed `browser_capture_session` (you finish login in the browser) → session
+saved + smoked. Hunt stops on `needs_setup`; capture, then resume.
 
-Screenshots: `read the image Desktop/scope.png` → `read_image` (OCR/vision).
+**Without accounts:** unauth recon still works — `run_tool` httpx/katana/nuclei,
+`analyze_js`, `cors_probe`, `open_redirect_probe`, `wayback_urls`, etc. (approve
+for live traffic).
 
-Also first-class: HAR/Burp XML import, Playwright navigate/screenshot/cookies/storage/network
-+ session inject / A-vs-B diff, mobile bridge, portable bug-bounty report drafts (any portal),
-JS/JWT/GraphQL/CORS/redirect/param mining, LFI/SSTI/XXE, crt.sh/wayback, headers, `list_dir`,
-and thin cross-program learning — all via normal language.
+### Useful REPL shortcuts
 
-**Campaign mode:** named classes still use `run_campaign` → FOUND/NOT_FOUND →
-validator → FINDINGS. Vague prompts prefer autonomous hunt. Low offline
-confidence + `/provider` uses the JSON router (`HACKBOT_AUTO_ROUTE=1`).
+```text
+/target <name> | clear
+/force on|off
+/hunt <prompt> [--approve] [--budget N]
+/hunt status | stop
+/session set A --bearer <token>
+/status          # brain + target + compact stack
+/tools           # httpx/katana/nuclei/ffuf + HexStrike/Burp health
+/config
+/stream on|off
+/verbose on|off
+/clear  /help  /exit
+```
 
-## Safety
+Tool packs: `HACKBOT_TOOL_PACK=auto|all|core,recon,inject,browser,mobile,report`.
 
-- Every target needs `SCOPE.md` (YAML front-matter preferred; Markdown fallback)
-- Explicitly OUT_OF_SCOPE hosts are hard-blocked (even with `/force`)
-- Soft gates (level-3 / NOT_CONFIRMED) yield to `/force` + approve
-- HTTP + Playwright re-check every redirect / request destination (not just the seed URL)
-- URL/CIDR SCOPE entries (`https://api:8443/v1/*`, `10.0.0.0/8`) are honored when present
-- `prohibited` in SCOPE is enforced; structured SCOPE hard-denies L2+ without active allow
-- `run_tool` / `rate_probe` default to dry-run; approve asks you first
-- Level-3 probes are capped (`rate_probe`: concurrency ≤ 20, total ≤ 100; also capped by `default_max_rps`)
-- Copy `configs/hackbot.example.yaml` → `configs/hackbot.yaml` (or set `HACKBOT_MAX_RPS` /
-  `HACKBOT_SUBPROCESS_TIMEOUT`). Inspect with `/config` or `hackbot show-config`
-- Every file change asks approval (path + preview/diff) before it happens
-- Writable paths default to kit + home + Downloads/Desktop (see `HACKBOT_WRITE_DIRS`)
-- Sensitive paths like `~/.ssh` / `~/.aws` are hard blocked
-- Approvals append to local `audit.log` (gitignored) with target/tool/host/`force_override`
-- Evidence redacts cookies, tokens, emails, common secrets (regex is best effort;
-  set `HACKBOT_STRICT_REDACT=1` for a harder refuse-to-save gate)
-- Default brain is offline; I never auto-switch to a paid/cloud model
-- HexStrike: prefer Docker compose (host loopback, no targets mount). See
-  [integrations/hexstrike/PROVENANCE.md](integrations/hexstrike/PROVENANCE.md)
-- Read `docs/OPERATING_RULES.md` and `docs/SAFETY_MODEL.md` before real hunting
+## Common asks → tools
 
-## Lockfile
+| You say | Tool |
+| --- | --- |
+| HAR / Burp XML in file X | `import_har` / `import_burp_xml` |
+| Analyze `app.js` / bundle URL | `analyze_js` |
+| Subdomains / wayback | `crt_subdomains` / `wayback_urls` |
+| httpx / katana / nuclei / ffuf | `run_tool` (dry-run first) |
+| IDOR A/B | `idor_probe` (+ sessions A/B) |
+| Detect login / SSO | `detect_login` · `session_smoke` · `browser_capture_session` |
+| Map surface / extract page | `map_surface` · `extract_page` |
+| Draft bounty report | `write_report_draft` |
+| What’s installed / up? | `capabilities` or `/tools` |
 
-Runtime pins: `requirements.lock` (from `requirements.in`). Refresh with
-`pip-compile requirements.in -o requirements.lock`.
+Full NL ↔ tool table and env knobs (OOB, Burp REST, Interactsh): see
+[docs/CLI.md](docs/CLI.md) (reference only).
 
-## Low-level commands
+## Safety (short)
 
-Still available if you want scripting: `hackbot scope-check`, `hackbot run`, etc.
-See [docs/CLI.md](docs/CLI.md).
+- Every program needs `targets/<name>/SCOPE.md` (YAML front-matter preferred)
+- Explicit **OUT_OF_SCOPE** is hard-blocked (even with `/force`)
+- Exact `in_scope` hosts win over OOS wildcards like `*.example.com`
+- Soft gates (level-3 / NOT_CONFIRMED) need `/force` **and** approve
+- HTTP + Playwright re-check every redirect destination
+- `prohibited` in SCOPE is enforced (e.g. heavy automated scanning)
+- Evidence redacts secrets (optional `HACKBOT_STRICT_REDACT=1`)
+- Approvals append to local `audit.log` (gitignored)
+
+Read [docs/SAFETY_MODEL.md](docs/SAFETY_MODEL.md) and
+[docs/OPERATING_RULES.md](docs/OPERATING_RULES.md) before real hunting.
+
+Copy `configs/hackbot.example.yaml` → `configs/hackbot.yaml` for RPS / timeouts
+(`/config` to inspect).
+
+## HexStrike / recon CLIs
+
+PATH tools (httpx, katana, nuclei, ffuf) show up in `/tools` when installed.
+HexStrike is **optional** and separate from the kit venv:
+
+```bash
+# preferred: Docker — see integrations/hexstrike/PROVENANCE.md
+cd integrations/hexstrike && docker compose up -d --build
+
+# or local hexstrike venv (not the hackbot .venv), then:
+python -m hackbot run targets/demo --tool hexstrike --approve
+curl -sS http://127.0.0.1:8888/health
+```
 
 ## Layout
 
 ```text
-hackbot/
-  repl.py           # interactive agent
-  agent.py          # think + tool loop
-  local_agent.py    # offline rule-based brain (no model)
-  tools.py          # scope, knowledge, plan, run, evidence...
-  providers.py      # model-agnostic provider registry + effort levels
-  llm.py            # OpenAI-wire / Anthropic-wire transport
-  codex_backend.py  # bridge to `codex exec` (your ChatGPT plan)
-  ui.py             # Rich terminal UI
-  ...
-targets/            # per-program workspaces
+hackbot/            # agent, tools, hunt, providers
+targets/            # per-program workspaces (demo ships; your programs stay local)
 bounty_knowledge/   # study notes
+integrations/       # HexStrike (vendored, loopback-only)
+docs/               # SAFETY_MODEL, OPERATING_RULES, CLI reference, install
+configs/            # hackbot.example.yaml
 ```
+
+## Lockfile & low-level CLI
+
+Runtime pins: `requirements.lock` (from `requirements.in`).
+
+Scripting still works (`scope-check`, `run --tool httpx`, `playbook`, …) —
+reference: [docs/CLI.md](docs/CLI.md).
