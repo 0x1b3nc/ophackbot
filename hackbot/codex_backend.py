@@ -595,9 +595,8 @@ def _run_quiet(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str] | N
 
 
 def _fmt_command(cmd: Any) -> str:
-    if isinstance(cmd, list):
-        return " ".join(str(p) for p in cmd)
-    return str(cmd)
+    """Human one-liner for stream UI (not the raw zsh -lc dump)."""
+    return ui.summarize_command(cmd)
 
 
 def _handle_event(obj: dict[str, Any], printed_hdr: dict[str, Any]) -> None:
@@ -607,21 +606,32 @@ def _handle_event(obj: dict[str, Any], printed_hdr: dict[str, Any]) -> None:
             ui.console.print(ui_text("codex", "hb.label"))
             printed_hdr["v"] = True
 
-    def line(text: str, style: str = "hb.muted") -> None:
-        text = text.strip()
-        if text and printed_hdr.get("last") != text:  # skip consecutive dupes
-            hdr()
-            ui.console.print(ui_text(text, style))
-            printed_hdr["last"] = text
+    def line(kind: str, text: str, style: str = "hb.muted") -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+        key = f"{kind}:{text}"
+        if printed_hdr.get("last") == key:
+            return
+        hdr()
+        ui.activity(kind, text, style=style)
+        printed_hdr["last"] = key
 
     # Newer "thread item" shape: {"type":"item.completed","item":{...}}
     if "item" in obj and isinstance(obj["item"], dict):
         item = obj["item"]
         itype = item.get("type") or item.get("item_type") or ""
         if "reason" in itype:
-            line(item.get("text") or item.get("summary") or "")
+            snippet = (item.get("text") or item.get("summary") or "").strip()
+            if len(snippet) > 120:
+                snippet = snippet[:117] + "…"
+            line("think", snippet)
         elif "command" in itype or "exec" in itype:
-            line("run: " + _fmt_command(item.get("command") or item.get("cmd") or ""), "hb.cmd")
+            line(
+                "run",
+                _fmt_command(item.get("command") or item.get("cmd") or ""),
+                "hb.cmd",
+            )
         return
 
     # Classic shape: {"id":..,"msg":{"type":..,..}}
@@ -630,11 +640,14 @@ def _handle_event(obj: dict[str, Any], printed_hdr: dict[str, Any]) -> None:
         return
     mtype = msg.get("type", "")
     if "reasoning" in mtype and "delta" not in mtype:
-        line(msg.get("text") or msg.get("summary") or "")
+        snippet = (msg.get("text") or msg.get("summary") or "").strip()
+        if len(snippet) > 120:
+            snippet = snippet[:117] + "…"
+        line("think", snippet)
     elif mtype == "exec_command_begin":
-        line("run: " + _fmt_command(msg.get("command") or ""), "hb.cmd")
+        line("run", _fmt_command(msg.get("command") or ""), "hb.cmd")
     elif mtype == "error":
-        line(msg.get("message") or "error", "hb.warn")
+        line("err", msg.get("message") or "error", "hb.warn")
 
 
 def _run_streaming(cmd: list[str], prompt: str, timeout: int) -> tuple[str, str] | None:

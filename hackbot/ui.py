@@ -225,10 +225,97 @@ def aggression_result(level: int, quote: str, warnings: list[str] | None = None)
         warn(w)
 
 
+def normalize_agent_text(text: str) -> str:
+    """Fix answers that arrive with literal ``\\n`` / ``\\t`` instead of real newlines.
+
+    Codex/Cursor sometimes dump JSON-escaped prose into the final panel — that
+    looks like a wall of ``\\n``. Heuristic: only unescape when escaped breaks
+    clearly outnumber real ones.
+    """
+    if not text:
+        return text
+    real_nl = text.count("\n")
+    esc_nl = text.count("\\n")
+    if esc_nl > 3 and esc_nl > real_nl:
+        out = text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+        out = out.replace('\\"', '"')
+        return out
+    return text
+
+
+def summarize_command(cmd: object, *, max_len: int = 96) -> str:
+    """Collapse ``zsh -lc 'huge script'`` into a Claude/Codex-style one-liner."""
+    body = ""
+    if isinstance(cmd, list) and len(cmd) >= 3:
+        # ["zsh", "-lc", "script…"] / ["/usr/bin/zsh", "-c", …]
+        flag = str(cmd[-2])
+        head = str(cmd[0]).rsplit("/", 1)[-1]
+        if flag in {"-lc", "-c"} and head in {"zsh", "bash", "sh"}:
+            body = str(cmd[-1])
+    if not body:
+        raw = " ".join(str(p) for p in cmd) if isinstance(cmd, list) else str(cmd or "").strip()
+        if not raw:
+            return "(empty)"
+        # Unwrap login-shell wrappers Codex loves to emit.
+        m = re.search(
+            r"(?:/usr/bin/|/bin/)?(?:zsh|bash|sh)\s+-lc\s+(?P<q>['\"])(?P<body>.*)(?P=q)\s*$",
+            raw,
+            re.DOTALL,
+        )
+        body = m.group("body") if m else raw
+    body = body.replace("\\\n", " ").replace("\n", " ")
+    body = re.sub(r"\s+", " ", body).strip()
+
+    if re.search(r"\bcurl\b", body):
+        method = "GET"
+        mm = re.search(r"(?:-X|--request)\s+([A-Z]+)", body)
+        if mm:
+            method = mm.group(1)
+        elif re.search(r"\b-I\b|\b--head\b", body):
+            method = "HEAD"
+        url_m = re.search(r"https?://[^\s'\"\\]+", body)
+        url = url_m.group(0) if url_m else "…"
+        if len(url) > 64:
+            url = url[:61] + "…"
+        loops = " ×N" if re.search(r"\bfor\b", body) else ""
+        return f"curl {method} {url}{loops}"
+
+    if re.search(r"\bpython(?:3)?\b.*\bhackbot\b", body):
+        return "python -m hackbot …"
+    if re.search(r"\brig\b|\bgrep\b", body) and re.search(r"\bsed\b", body):
+        return "shell · filter pipeline"
+    if body.startswith("sed ") or "sed -n" in body:
+        return "sed …"
+    if len(body) > max_len:
+        return body[: max_len - 1] + "…"
+    return body
+
+
+def activity(kind: str, detail: str, *, style: str = "hb.muted") -> None:
+    """Compact progress line: ``run  curl GET https://…`` (no full shell dump)."""
+    kind = (kind or "·").strip()
+    detail = (detail or "").strip()
+    if not detail:
+        return
+    console.print(
+        Text.from_markup(f"[hb.label]{kind}[/] [{style}]{detail}[/]")
+    )
+
+
 def markdown_panel(md: str, *, title: str) -> None:
+    """Render assistant markdown. Transcript-style for hackbot answers (less chrome)."""
+    body = normalize_agent_text(md or "")
+    soft = title.lower().startswith("hackbot")
+    if soft:
+        # Claude/Codex-ish: rule + markdown in scrollback, not a giant nested box.
+        console.print()
+        console.print(Rule(title, style="cyan"))
+        console.print(Markdown(body))
+        console.print()
+        return
     console.print(
         Panel(
-            Markdown(md),
+            Markdown(body),
             title=title,
             border_style="cyan",
             padding=(1, 2),
