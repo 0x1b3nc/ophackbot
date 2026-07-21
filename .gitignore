@@ -1,0 +1,41 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+.env
+*.log
+*.zip
+*.7z
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# Local corpora (import script only)
+external_knowledge/
+
+# Per-target secrets and raw evidence
+targets/*/secrets/
+targets/*/evidence/raw/
+targets/*/burp/
+targets/*/*.xml
+targets/*/*.har
+targets/*/screenshots/
+targets/*/reports/private/
+targets/*/recon/raw/
+targets/*/recon/reconftw/
+
+# Never commit live session material under targets
+targets/**/cookies.txt
+targets/**/headers.txt
+targets/**/*session*.txt
+targets/**/*token*.txt
+
+*.sqlite
+*.db
+
+# OS junk
+Thumbs.db
+.DS_Store

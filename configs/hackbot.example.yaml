@@ -1,0 +1,19 @@
+workspace: .
+
+safety:
+  require_scope_file: true
+  block_out_of_scope: true
+  require_policy_quote_for_active_testing: true
+  destructive_actions_require_approval: true
+  redact_secrets: true
+  default_max_rps: 3
+
+integrations:
+  hexstrike_server: http://127.0.0.1:8888
+  reconftw_path: ../reconftw/reconftw.sh
+  burp_exports_dir: ./targets
+
+knowledge:
+  routing: ./bounty_knowledge/study_notes/STUDY_MATERIAL_ROUTING.md
+  index: ./bounty_knowledge/study_notes/INDEX.md
+  external_dir: ./external_knowledge
