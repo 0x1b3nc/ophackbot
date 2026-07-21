@@ -2270,6 +2270,17 @@ def _normalize_tool_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
             out["target"] = Path(str(out["target_dir"]).replace("\\", "/")).name
         elif name in {"set_target", "write_report_draft", "policy_import"} and active:
             out["target"] = active.name
+        elif name == "set_target" and TARGETS.is_dir():
+            # Cursor often calls set_target {} — pick sole non-demo program if obvious.
+            names = sorted(
+                p.name
+                for p in TARGETS.iterdir()
+                if p.is_dir() and p.name not in {"__pycache__", "demo"}
+            )
+            if len(names) == 1:
+                out["target"] = names[0]
+            elif "bmwgroup" in names:
+                out["target"] = "bmwgroup"
 
     return out
 

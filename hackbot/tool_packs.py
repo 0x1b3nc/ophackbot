@@ -145,6 +145,7 @@ PACKS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Avoid tiny substrings that false-positive in PT/EN ("achar"→"har", "objeto"→…).
 PHASE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "browser": ("browser", "playwright", "screenshot", "cookie", "sessao", "sessão", "cdp"),
     "mobile": ("apk", "frida", "mobsf", "objection", "adb", "mobile"),
@@ -155,7 +156,7 @@ PHASE_KEYWORDS: dict[str, tuple[str, ...]] = {
         "ssti",
         "xxe",
         "ssrf",
-        "race",
+        "race condition",
         "websocket",
         "idor",
         "oob",
@@ -163,21 +164,57 @@ PHASE_KEYWORDS: dict[str, tuple[str, ...]] = {
         "oauth",
         "cors",
         "inject",
+        "vulnerab",
+        "vuln",
+        "unauth",
+        "sem conta",
+        "without account",
+        "no account",
+        "bola",
+        "broken access",
     ),
     "recon": (
         "recon",
         "subdomain",
         "wayback",
-        "har",
+        "import_har",
+        " .har",
         "burp",
-        "js",
+        "javascript",
+        ".js ",
+        "analyze_js",
         "surface",
         "headers",
         "discover",
         "fuzz",
+        "nuclei",
+        "httpx",
+        "katana",
+        "ffuf",
     ),
-    "report": ("report", "write-up", "writeup", "finding", "draft", "severity", "chain"),
+    "report": ("report", "write-up", "writeup", "finding", "draft", "graphql", "chain"),
 }
+
+# Open-ended hunt language (PT/EN) → full recon+inject+report surface
+_HUNT_HINTS: tuple[str, ...] = (
+    "run_hunt",
+    "explora",
+    "explore",
+    "hunt",
+    "hunting",
+    "vulnerab",
+    "vuln",
+    "achad",
+    "finding",
+    "próximo passo",
+    "proximo passo",
+    "next step",
+    "sem conta",
+    "without account",
+    "no account",
+    "unauth",
+    "achar vulnerab",
+)
 
 
 def resolve_packs(prompt: str = "", *, explicit: str = "") -> list[str]:
@@ -193,8 +230,8 @@ def resolve_packs(prompt: str = "", *, explicit: str = "") -> list[str]:
     for pack, words in PHASE_KEYWORDS.items():
         if any(w in low for w in words):
             packs.append(pack)
-    # Default hunt surface: include recon + inject lightly
-    if "run_hunt" in low or "explora" in low or "hunt" in low or len(packs) == 1:
+    # Open-ended hunt / vuln language → recon + inject + report (not recon-only)
+    if any(h in low for h in _HUNT_HINTS) or len(packs) == 1:
         for p in ("recon", "inject", "report"):
             if p not in packs:
                 packs.append(p)
