@@ -52,6 +52,9 @@ Linux notes: [docs/INSTALL_LINUX.md](docs/INSTALL_LINUX.md)
 # interactive agent (default)
 .\.venv\Scripts\python.exe -m hackbot
 
+# demo pitch smoke (SCOPE + fake A/B sessions, dry-run)
+.\.venv\Scripts\python.exe -m hackbot demo
+
 # one-shot
 .\.venv\Scripts\python.exe -m hackbot check if example.com is in scope for targets/demo
 ```
@@ -71,29 +74,51 @@ and I back off. Reasoning streams live as I think (toggle with `/stream`).
 ## Hunt workflow
 
 ```text
-/target demo
-open IDOR playbook for https://example.com/api/orders/1
+as credenciais estão no arquivo tokens.yaml em Downloads
+explora o que der em example.com approve
 ```
 
-Playbooks turn study notes into falsifiable steps. `/target` loads SCOPE,
-RESUME, and FINDINGS into the session so the agent remembers where you left off.
-Import program policy text into SCOPE YAML with `hackbot policy-import`.
+Or the short form (slash commands are optional shortcuts):
+
+```text
+/target demo
+/session set A --bearer <tokenA>
+/session set B --bearer <tokenB>
+/hunt explora o que der nesse host --approve
+```
+
+Natural language loads sessions from files, maps surface, chains specialists,
+validates proof, then writes FINDINGS. One `approve` covers active traffic;
+OOS stays hard-blocked. State under `targets/<name>/hunt/`.
+
+Screenshots: `leia a imagem Desktop/scope.png` → `read_image` (OCR/vision).
+
+Also first-class: HAR/Burp XML import, Playwright navigate/screenshot/cookies/storage/network
++ session inject / A-vs-B diff, mobile bridge, portable bug-bounty report drafts (any portal),
+JS/JWT/GraphQL/CORS/redirect/param mining, LFI/SSTI/XXE, crt.sh/wayback, headers, `list_dir`,
+and thin cross-program learning — all via normal language.
+
+**Campaign mode:** named classes still use `run_campaign` → FOUND/NOT_FOUND →
+validator → FINDINGS. Vague prompts prefer autonomous hunt. Low offline
+confidence + `/provider` uses the JSON router (`HACKBOT_AUTO_ROUTE=1`).
 
 ## Safety
 
 - Every target needs `SCOPE.md` (YAML front-matter preferred; Markdown fallback)
-- Tools refuse hosts I haven't confirmed in scope
-- `run_tool` defaults to dry-run; approve asks you first
+- Explicitly OUT_OF_SCOPE hosts are hard-blocked (even with `/force`)
+- Soft gates (level-3 / NOT_CONFIRMED) yield to `/force` + approve
+- `run_tool` / `rate_probe` default to dry-run; approve asks you first
+- Level-3 probes are capped (`rate_probe`: concurrency ≤ 20, total ≤ 100)
 - Every file change asks approval (path + preview/diff) before it happens
 - Writable paths default to kit + home + Downloads/Desktop (see `HACKBOT_WRITE_DIRS`)
 - Sensitive paths like `~/.ssh` / `~/.aws` are hard blocked
-- Approvals append to local `audit.log` (gitignored) with target/tool/host
+- Approvals append to local `audit.log` (gitignored) with target/tool/host/`force_override`
 - Evidence redacts cookies, tokens, emails, common secrets (regex is best effort;
   set `HACKBOT_STRICT_REDACT=1` for a harder refuse-to-save gate)
 - Default brain is offline; I never auto-switch to a paid/cloud model
 - HexStrike: prefer Docker compose (host loopback, no targets mount). See
   [integrations/hexstrike/PROVENANCE.md](integrations/hexstrike/PROVENANCE.md)
-- Read `docs/OPERATING_RULES.md` before real hunting
+- Read `docs/OPERATING_RULES.md` and `docs/SAFETY_MODEL.md` before real hunting
 
 ## Lockfile
 

@@ -141,16 +141,186 @@ Import a program policy dump into YAML:
 ```text
 /target demo          load SCOPE + RESUME + FINDINGS into the session
 /target clear
-/status               shows brain + active target + next step
+/force on             soft SCOPE override (level-3 / NOT_CONFIRMED); OOS still blocked
+/force off
+/status               shows brain + active target + force + next step
+/hunt <prompt> [--approve] [--budget N]   autonomous OODA hunter
+/hunt status
+/hunt stop
 ```
+
+`/force` is **operator responsibility**: it does not skip approve, and it cannot
+unlock explicitly OUT_OF_SCOPE hosts. Soft gates (missing level-3 / active
+wording, NOT_CONFIRMED hosts) can be overridden. See [SAFETY_MODEL.md](SAFETY_MODEL.md).
+
+**Natural language first.** You do **not** need `/hunt` or `/session`. Just talk:
+
+```text
+as credenciais estão no arquivo tokens.yaml em Downloads; depois explora o que der em example.com approve
+leia a imagem Desktop/scope.png e resume o que está in-scope
+explora vulnerabilidades em example.com
+```
+
+Slash commands below are optional shortcuts.
+
+### Autonomous hunt (`/hunt` shortcut)
+
+This is the main path to finish a bounty-style engagement without naming tools:
+
+```text
+/target demo
+/session set A --bearer <tokenA>
+/session set B --bearer <tokenB>
+/hunt explora o que der nesse host --approve
+```
+
+One **session approve** unlocks active traffic for the whole loop (map surface →
+prioritize → specialists with chaining → validate → FINDINGS). OOS stays
+hard-blocked. Without `--approve`, the loop dry-runs / plans only.
+
+State lives under `targets/<name>/hunt/` (`surface.yaml`, `attempts.jsonl`,
+`candidates.yaml`, `state.yaml`). Budget default ~28 (`HACKBOT_HUNT_BUDGET`).
+
+Vague offline prompts (“explora o que der…”) also plan `run_hunt` instead of
+the older linear campaign pack.
+
+### Authz hunting (A/B sessions)
+
+Prefer NL — point at a file:
+
+```text
+as sessões A/B estão em targets/demo/secrets/sessions.yaml
+# or
+credenciais no arquivo C:\Users\you\Downloads\tokens.json
+```
+
+That calls `load_sessions_from_file` (asks once to write into gitignored
+`secrets/sessions.yaml`). Optional shortcut:
+
+```text
+/target demo
+/session set A --bearer <tokenA>
+/session set B --bearer <tokenB>
+/sessions
+```
+
+### Images / screenshots
+
+```text
+leia a imagem Downloads/burp-idor.png e me diga o endpoint
+```
+
+Uses `read_image` (tesseract OCR if installed; optional vision via
+`HACKBOT_VISION=1` + model). Paths under kit, home, Downloads/Desktop are readable.
+
+### Essential bounty tools (NL)
+
+| Ask in natural language | Tool |
+| --- | --- |
+| HAR / Burp export in file X | `import_har` |
+| Analyze `app.js` / bundle URL | `analyze_js` |
+| Decode this JWT | `analyze_jwt` |
+| GraphQL introspection | `graphql_probe` |
+| CORS / open redirect | `cors_probe` / `open_redirect_probe` |
+| Hidden params | `mine_params` |
+| LFI / SSTI / XXE | `lfi_probe` / `ssti_probe` / `xxe_probe` |
+| JWT active (alg=none / claim flip) | `jwt_active_probe` |
+| OAuth authorize checks | `oauth_probe` |
+| Exploit chains A→B | `build_chains` |
+| Subdomains / wayback | `crt_subdomains` / `wayback_urls` |
+| Security headers | `analyze_headers` |
+| What’s in folder X | `list_dir` |
+| Open page / screenshot (Playwright) | `browser_navigate` / `browser_screenshot` |
+| Cookies / web storage (redacted) | `browser_cookies` / `browser_storage` |
+| Capture XHR during load → surface | `browser_network` |
+| Open as session A/B (inject auth) | `browser_with_session` |
+| Diff same URL as A vs B (soft IDOR) | `browser_diff_sessions` |
+| Burp XML → surface | `import_burp_xml` |
+| Local Burp REST up? | `burp_rest_health` |
+| What worked before? | `learn_suggest` |
+| Mobile toolchain / adb / APK peek | `mobile_status` / `adb_devices` / `inspect_apk` |
+| APK + HAR → surface (+ hunt) | `mobile_bridge` |
+| Draft bounty report (any portal) | `write_report_draft` (`generic` default) |
+| SSRF / race / websocket | `ssrf_probe` / `race_probe` / `websocket_probe` |
+| MobSF health/upload/scan | `mobsf_health` / `mobsf_upload` / `mobsf_scan` |
+| Frida/Objection (approve + allowlist) | `frida_status` / `frida_run_script` / `objection_explore` |
+| Console / set cookie (Playwright) | `browser_console` / `browser_set_cookie` |
+| Learning stats | `learn_stats` |
+
+### Demo pitch smoke
+
+```powershell
+.\.venv\Scripts\python.exe -m hackbot demo
+# or: python -m hackbot.demo
+```
+
+Prepares `targets/demo` (SCOPE + fake A/B sessions) and dry-runs the main loop.
+
+Tool packs (fewer tools to the model): `HACKBOT_TOOL_PACK=auto|all|core,recon,inject,browser,mobile,report`.
+
+Playwright is a **default** dependency (`pip install -e .`). Chromium: `playwright install chromium`.
+Frida scripts are allowlisted lab templates only — never silent hooks.
+
+Optional browser install: `pip install 'hackbot-kit[browser]'` then `playwright install chromium`.
+
+Frida hooks are **not** auto-run (operator-driven). Use `inspect_apk` / `mobile_bridge` + Burp HAR for mobile APIs.
+
+Autonomous `run_hunt` already chains headers, CORS, params, GraphQL, redirect,
+LFI/SSTI alongside secrets/authz, then runs `build_chains` and ingests validated
+signals into `learning/techniques.jsonl`.
+
+### Report drafts (any bounty platform)
+
+```text
+monta o draft do report a partir do FINDINGS
+draft yeswehack do C-001
+write-up bugcrowd
+```
+
+Default is **`generic`** — a portable markdown you paste into Bugcrowd, HackerOne,
+Intigriti, YesWeHack, Synack, Immunefi, etc. Named platforms only tweak headings
+(VRT / weakness / …). Drafts include **severity + CVSS hints** from bug class
+(triage aids — confirm against program policy). Output:
+`targets/<name>/reports/<platform>_draft.md`.
+
+`browser_diff_sessions` with a soft IDOR hint **auto-promotes** a hunt candidate and
+runs the validator (`verdict=likely` → FINDINGS). Pass `promote=false` to skip.
+
+### Manual IDOR playbook
+
+### Campaign (named multi-attack + results)
+
+When you **name** classes (DDoS, bruteforce, secrets, …), offline still uses
+`run_campaign`. Open-ended prompts prefer `/hunt` / `run_hunt`.
+
+Talk like this (offline or model) — **PT-BR or English**:
+
+```text
+/target demo
+/force on
+de acordo com o scope, faça DDoS, bruteforce, bypass de senha, achar tokens
+privados e leak de credenciais em example.com approve
+```
+
+FOUND rows are promoted through the **validator** into `FINDINGS.md` (proof
+required). Vague prompts without named classes use autonomous hunt instead.
+If offline confidence is low and a model is configured (`/provider`), Hackbot
+asks the model to interpret the prompt (JSON router) then executes with the
+same SCOPE/approve/force rails. Disable with `HACKBOT_AUTO_ROUTE=0`.
+Threshold: `HACKBOT_ROUTE_THRESHOLD=0.68`.
 
 Open a class playbook (falsifiable steps, not just notes):
 
 ```powershell
 .\.venv\Scripts\python.exe -m hackbot playbook idor --endpoint https://example.com/api/orders/1
+# dry-run executable steps
+.\.venv\Scripts\python.exe -m hackbot playbook rate-limit --run --host example.com --target-dir targets/demo
+# bounded rate probe (dry-run)
+.\.venv\Scripts\python.exe -m hackbot run targets/demo --tool rate_probe --host example.com
 ```
 
-In the agent: `open_playbook` / `set_target` tools do the same thing.
+In the agent: `open_playbook` / `run_playbook` / `set_target` tools do the same thing.
+Offline brain: `attack` / `test for` / `hunt` → `run_playbook` (dry-run unless you say approve).
 
 ### HexStrike containment
 

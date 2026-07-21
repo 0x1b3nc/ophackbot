@@ -58,14 +58,16 @@ _CHAT_PREFIXES = (
 # Signals that this is a real hunting / tooling task.
 _HUNT_RE = re.compile(
     r"(?i)\b("
-    r"scope|in[\s-]?scope|out[\s-]?of[\s-]?scope|"
-    r"idor|bola|bac|ssrf|xss|sqli|rce|lfi|ssrf|graphql|race|"
+    r"scope|scopo|in[\s-]?scope|out[\s-]?of[\s-]?scope|"
+    r"idor|bola|bac|ssrf|xss|sqli|rce|lfi|graphql|race|"
+    r"ddos|dos|brute|bypass|token|credencial|credential|secret|"
+    r"ataque|attack|exploit|pentest|hacke|vulnerab|"
     r"nuclei|httpx|katana|ffuf|recon|burp|hexstrike|"
     r"plan|hypothesis|evidence|report|bugcrowd|hackerone|intigriti|"
     r"target|endpoint|fuzz|scan|crawl|probe|"
     r"write|create|edit|delete|append|mkdir|move|"
     r"read_file|SCOPE\.md|PLAN\.md|FINDINGS|"
-    r"approve|dry[\s-]?run"
+    r"approve|dry[\s-]?run|campanha|campaign"
     r")\b"
 )
 

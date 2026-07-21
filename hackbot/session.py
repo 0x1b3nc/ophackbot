@@ -133,9 +133,12 @@ def clear_active() -> None:
 
 
 def status_line() -> str:
+    from .force import is_forced
+
+    force = "force=ON" if is_forced() else "force=off"
     s = _ACTIVE
     if s is None:
-        return "no active target  (/target <name>)"
+        return f"no active target  (/target <name>)  {force}"
     nxt = s.next_step or "(none in RESUME.md)"
     hosts = ",".join(s.in_scope_hosts[:3]) if s.in_scope_hosts else "?"
-    return f"target={s.name}  hosts={hosts}  next={nxt[:60]}"
+    return f"target={s.name}  hosts={hosts}  next={nxt[:60]}  {force}"

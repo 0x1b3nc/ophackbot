@@ -7,9 +7,16 @@ requires-python = ">=3.10"
 dependencies = [
     "rich>=13.7",
     "pyyaml>=6.0",
+    "playwright>=1.40",
 ]
 
 [project.optional-dependencies]
+browser = [
+    "playwright>=1.40",
+]
+mobile = [
+    "frida-tools>=12.0",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
@@ -43,4 +50,4 @@ where = ["."]
 include = ["hackbot*"]
 
 [tool.setuptools.package-data]
-hackbot = ["py.typed"]
+hackbot = ["py.typed", "runners/frida_scripts/*.js"]

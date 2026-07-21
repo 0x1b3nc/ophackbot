@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -13,7 +14,7 @@ from .policy_guard import ScopePolicy, host_from_target, policy_quote_for
 from .redaction import redact_text
 from .repl import start_repl
 from .reporting import render_bugcrowd, render_hackerone, render_intigriti
-from .runners import burp, hexstrike, projectdiscovery, reconftw
+from .runners import burp, hexstrike, projectdiscovery, rate_probe, reconftw
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = ROOT / "targets"
@@ -34,6 +35,7 @@ SUBCOMMANDS = frozenset(
         "run",
         "cmd",
         "ask",
+        "demo",
     }
 )
 
@@ -49,8 +51,14 @@ def target_init(name: str) -> int:
                 shutil.copyfile(path, dest)
     for subdir in ("evidence", "evidence/raw", "evidence/safe", "recon", "reports", "secrets"):
         (target_dir / subdir).mkdir(parents=True, exist_ok=True)
+    # Copy secrets example (safe to commit); live sessions.yaml stays gitignored.
+    example_src = TEMPLATE / "secrets" / "sessions.example.yaml"
+    example_dst = target_dir / "secrets" / "sessions.example.yaml"
+    if example_src.exists() and not example_dst.exists():
+        shutil.copyfile(example_src, example_dst)
     ui.success("target ready")
     ui.path_line("path", str(target_dir))
+    ui.info("copy secrets/sessions.example.yaml -> secrets/sessions.yaml and fill A/B tokens")
     return 0
 
 
@@ -201,12 +209,13 @@ def run_cmd(args: argparse.Namespace) -> int:
     approve = args.approve
     tool = args.tool
     host = args.host
+    force = bool(getattr(args, "force", False))
     try:
         if tool == "httpx":
-            result = projectdiscovery.httpx_probe(target, host, approve=approve)
+            result = projectdiscovery.httpx_probe(target, host, approve=approve, force=force)
         elif tool == "katana":
             result = projectdiscovery.katana_crawl(
-                target, host, depth=args.depth, approve=approve
+                target, host, depth=args.depth, approve=approve, force=force
             )
         elif tool == "nuclei":
             result = projectdiscovery.nuclei_scan(
@@ -216,16 +225,19 @@ def run_cmd(args: argparse.Namespace) -> int:
                 rate_limit=args.rate_limit,
                 concurrency=args.concurrency,
                 approve=approve,
+                force=force,
             )
         elif tool == "ffuf":
             if not args.wordlist:
                 ui.error("--wordlist required for ffuf")
                 return 2
             result = projectdiscovery.ffuf_dir(
-                target, host, args.wordlist, approve=approve
+                target, host, args.wordlist, approve=approve, force=force
             )
         elif tool == "reconftw":
-            result = reconftw.run_recon(target, host, mode=args.mode, approve=approve)
+            result = reconftw.run_recon(
+                target, host, mode=args.mode, approve=approve, force=force
+            )
         elif tool == "hexstrike":
             result = hexstrike.start_server(
                 port=args.port, approve=approve, docker=bool(getattr(args, "docker", False))
@@ -236,6 +248,17 @@ def run_cmd(args: argparse.Namespace) -> int:
                 return 2
             result = burp.summarize_xml(
                 target, Path(args.burp_xml), approve=approve, limit=args.limit
+            )
+        elif tool == "rate_probe":
+            result = rate_probe.rate_probe(
+                target,
+                host,
+                concurrency=args.concurrency,
+                total=getattr(args, "total", 25),
+                timeout=getattr(args, "timeout", 5.0),
+                method=getattr(args, "method", "GET"),
+                approve=approve,
+                force=force,
             )
         else:
             ui.error(f"unknown tool: {tool}")
@@ -269,9 +292,15 @@ def build_parser() -> argparse.ArgumentParser:
     know_p.add_argument("task", nargs="?", default="recon")
     know_p.add_argument("--routes", action="store_true")
 
-    pb_p = sub.add_parser("playbook", help="Print a falsifiable class playbook")
+    pb_p = sub.add_parser("playbook", help="Print or dry-run/execute a class playbook")
     pb_p.add_argument("task", nargs="?", default="recon")
     pb_p.add_argument("--endpoint", default="")
+    pb_p.add_argument("--host", default="", help="Host for --run (defaults to --endpoint)")
+    pb_p.add_argument("--target-dir", default="targets/demo", help="Target folder for --run")
+    pb_p.add_argument("--run", action="store_true", help="Dry-run executable steps (or --approve)")
+    pb_p.add_argument("--approve", action="store_true", help="Execute playbook (asks confirmation)")
+    pb_p.add_argument("--force", action="store_true", help="Operator force override for soft SCOPE gates")
+    pb_p.add_argument("--max-aggression", type=int, default=None)
 
     pol_p = sub.add_parser("policy-import", help="Import policy text into SCOPE.md YAML")
     pol_p.add_argument("target_dir")
@@ -318,7 +347,16 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--tool",
         required=True,
-        choices=("httpx", "katana", "nuclei", "ffuf", "reconftw", "hexstrike", "burp"),
+        choices=(
+            "httpx",
+            "katana",
+            "nuclei",
+            "ffuf",
+            "reconftw",
+            "hexstrike",
+            "burp",
+            "rate_probe",
+        ),
     )
     run_p.add_argument("--host", default="", help="In-scope host or URL")
     run_p.add_argument("--approve", action="store_true")
@@ -332,10 +370,15 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--docker", action="store_true", help="hexstrike via docker compose")
     run_p.add_argument("--burp-xml")
     run_p.add_argument("--limit", type=int, default=20)
+    run_p.add_argument("--force", action="store_true", help="Operator force override")
+    run_p.add_argument("--total", type=int, default=25, help="rate_probe total requests")
+    run_p.add_argument("--timeout", type=float, default=5.0, help="rate_probe timeout seconds")
+    run_p.add_argument("--method", default="GET", help="rate_probe HTTP method")
 
     sub.add_parser("cmd", help="Show low-level command menu")
     ask_p = sub.add_parser("ask", help="One-shot agent prompt")
     ask_p.add_argument("prompt", nargs=argparse.REMAINDER)
+    sub.add_parser("demo", help="Prepare targets/demo + dry-run smoke (proves the pitch)")
 
     return parser
 
@@ -355,9 +398,40 @@ def _dispatch(args: argparse.Namespace) -> int:
         return knowledge_cmd(args.task, args.routes)
     if args.subcommand == "playbook":
         from .playbooks import playbook_for, playbook_markdown
+        from .tools import execute_tool
 
         pb = playbook_for(args.task)
-        ui.markdown_panel(playbook_markdown(pb, endpoint=args.endpoint), title=f"playbook:{pb.class_name}")
+        if not args.run and not args.approve:
+            ui.markdown_panel(
+                playbook_markdown(pb, endpoint=args.endpoint),
+                title=f"playbook:{pb.class_name}",
+            )
+            return 0
+        host = args.host or args.endpoint
+        if not host:
+            ui.error("--host or --endpoint required with --run")
+            return 2
+
+        def _approve(prompt: str) -> bool:
+            from rich.prompt import Confirm
+
+            ui.permission(prompt)
+            return Confirm.ask("[bold yellow]Allow this action?[/]", default=False)
+
+        out = execute_tool(
+            "run_playbook",
+            {
+                "target_dir": args.target_dir,
+                "task": args.task,
+                "host": host,
+                "endpoint": args.endpoint or host,
+                "approve": bool(args.approve),
+                "force": bool(args.force),
+                "max_aggression": args.max_aggression,
+            },
+            approve_fn=_approve if args.approve else None,
+        )
+        ui.code_panel(out, title="run_playbook", lexer="json")
         return 0
     if args.subcommand == "policy-import":
         from .policy_import import import_policy_to_target
@@ -396,6 +470,12 @@ def _dispatch(args: argparse.Namespace) -> int:
             ui.error("usage: hackbot ask <prompt>")
             return 2
         return start_repl(one_shot=prompt)
+    if args.subcommand == "demo":
+        from .demo import run_demo_smoke
+
+        out = run_demo_smoke()
+        ui.code_panel(json.dumps(out, indent=2), title="demo smoke", lexer="json")
+        return 0 if out.get("ok") else 1
     return 2
 
 

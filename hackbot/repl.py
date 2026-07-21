@@ -18,6 +18,9 @@ from rich.prompt import Confirm, Prompt
 from . import ui
 from .agent import run_agent
 from .codex_backend import codex_available, run_codex_turn
+from .force import disable_force, enable_force, is_forced
+from .hunt_controller import hunt_status, request_stop, run_hunt
+from .identity import save_session
 from .local_agent import run_local_agent
 from .providers import (
     EFFORT_LEVELS,
@@ -27,6 +30,7 @@ from .providers import (
     resolve_config,
 )
 from .session import clear_active, get_active, set_active, status_line
+from .tools import execute_tool
 
 
 def _approve(prompt: str) -> bool:
@@ -84,6 +88,7 @@ class _Session:
     def clear(self) -> None:
         self.model_history.clear()
         self.codex_history.clear()
+        disable_force()
 
 
 def _prompt_label(mode: str) -> str:
@@ -198,6 +203,95 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.kv("brain", mode)
             ui.kv("config", label)
             ui.kv("hunt", status_line())
+            ui.kv("force", "ON" if is_forced() else "off")
+            active = get_active()
+            if active is not None:
+                st = hunt_status(active.target_dir)
+                if st.get("phase") and st.get("phase") != "idle":
+                    ui.kv(
+                        "autohunt",
+                        f"phase={st.get('phase')} budget={st.get('budget_remaining')}/{st.get('budget_total')} "
+                        f"endpoints={st.get('endpoints')}",
+                    )
+            continue
+
+        if text.startswith("/force"):
+            arg = text[len("/force") :].strip().lower()
+            if arg in {"", "on", "1", "true", "yes"}:
+                enable_force()
+            elif arg in {"off", "0", "false", "no"}:
+                disable_force()
+            else:
+                ui.kv("force", "ON" if is_forced() else "off")
+                ui.info("set: /force on | off")
+            continue
+
+        if text.startswith("/hunt"):
+            active = get_active()
+            rest = text[len("/hunt") :].strip()
+            if rest.lower() in {"", "help", "?"}:
+                ui.info("usage: /hunt <prompt> [--approve] [--budget N]")
+                ui.info("       /hunt status")
+                ui.info("       /hunt stop")
+                ui.info("session approve unlocks active traffic for the whole OODA loop")
+                continue
+            if rest.lower() == "stop":
+                request_stop()
+                ui.warn("hunt stop requested")
+                continue
+            if rest.lower() in {"status", "stat"}:
+                if active is None:
+                    ui.error("no active target — /target <name> first")
+                    continue
+                st = hunt_status(active.target_dir)
+                ui.code_panel(
+                    __import__("json").dumps(st, indent=2),
+                    title="hunt status",
+                    lexer="json",
+                )
+                continue
+            if active is None:
+                ui.error("no active target — /target <name> first")
+                continue
+            approve_session = False
+            budget = None
+            tokens = rest.split()
+            prompt_parts: list[str] = []
+            i = 0
+            while i < len(tokens):
+                tok = tokens[i]
+                if tok in {"--approve", "-a", "--yes"}:
+                    approve_session = True
+                    i += 1
+                    continue
+                if tok == "--budget" and i + 1 < len(tokens):
+                    try:
+                        budget = int(tokens[i + 1])
+                    except ValueError:
+                        ui.error("--budget needs an integer")
+                        break
+                    i += 2
+                    continue
+                prompt_parts.append(tok)
+                i += 1
+            else:
+                prompt = " ".join(prompt_parts).strip()
+                if not prompt:
+                    ui.error("usage: /hunt <prompt> [--approve]")
+                    continue
+                result = run_hunt(
+                    active.target_dir,
+                    prompt,
+                    approve_session=approve_session,
+                    budget=budget,
+                    approve_fn=_approve if approve_session else None,
+                    force=is_forced(),
+                )
+                ui.code_panel(
+                    __import__("json").dumps(result, indent=2)[:4000],
+                    title="hunt result",
+                    lexer="json",
+                )
             continue
 
         if text.startswith("/target"):
@@ -219,6 +313,62 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.info(status_line())
             if session.next_step:
                 ui.info(f"next: {session.next_step}")
+            continue
+
+        if text in {"/sessions", "/identity"}:
+            active = get_active()
+            if active is None:
+                ui.error("no active target — /target <name> first")
+                continue
+            out = execute_tool(
+                "show_identity",
+                {"target_dir": str(active.target_dir)},
+            )
+            ui.code_panel(out, title="identity", lexer="json")
+            continue
+
+        if text.startswith("/session"):
+            # /session set A --bearer TOKEN | --cookie VAL
+            active = get_active()
+            if active is None:
+                ui.error("no active target — /target <name> first")
+                continue
+            rest = text[len("/session") :].strip()
+            parts = rest.split()
+            if not parts or parts[0] in {"help", "?"}:
+                ui.info("usage: /session set A --bearer <token>")
+                ui.info("       /session set B --cookie <cookie>")
+                ui.info("       /sessions")
+                continue
+            if parts[0] != "set" or len(parts) < 2:
+                ui.error("usage: /session set <name> --bearer|--cookie <value>")
+                continue
+            name_s = parts[1]
+            bearer = ""
+            cookie = ""
+            if "--bearer" in parts:
+                idx = parts.index("--bearer")
+                bearer = parts[idx + 1] if idx + 1 < len(parts) else ""
+            if "--cookie" in parts:
+                idx = parts.index("--cookie")
+                cookie = parts[idx + 1] if idx + 1 < len(parts) else ""
+            if not bearer and not cookie:
+                ui.error("pass --bearer and/or --cookie")
+                continue
+            if not Confirm.ask(
+                f"[bold yellow]Write session {name_s} to secrets/sessions.yaml?[/]",
+                default=False,
+            ):
+                ui.warn("denied")
+                continue
+            ident = save_session(
+                active.target_dir,
+                name_s,
+                authorization=bearer or None,
+                cookie=cookie or None,
+            )
+            ui.success(f"session {name_s} saved (gitignored)")
+            ui.kv("ready", ", ".join(ident.ready_sessions()) or "(none)")
             continue
 
         # ---- providers / brains ------------------------------------------
@@ -335,17 +485,18 @@ def start_repl(*, one_shot: str | None = None) -> int:
             continue
 
         if text == "/help":
-            ui.info("just talk. examples:")
-            ui.info("  check if example.com is in scope for targets/demo")
-            ui.info("  open IDOR notes and draft a hunt plan for example.com/api/orders/1")
+            ui.info("just talk — slash commands are optional shortcuts:")
+            ui.info("  as credenciais estão no arquivo tokens.yaml em Downloads; explora example.com approve")
+            ui.info("  leia a imagem Desktop/scope.png")
+            ui.info("  explora vulnerabilidades em example.com (targets/demo)")
             ui.info("provider: /providers  /provider <name>  (/codex /local)")
             ui.info("model:    /models  /model <name>")
             ui.info("effort:   /effort <auto|minimal|low|medium|high|xhigh>")
             ui.info("stream:   /stream on|off   (live reasoning)")
             ui.info("verbose:  /verbose on|off  (full tool panels)")
             ui.info("codex:    /codex-write     (toggle codex file changes; on by default)")
-            ui.info("hunt:     /target <name>   /target clear")
-            ui.info("session:  /status  /clear  /exit   (Ctrl+C cancels a running turn)")
+            ui.info("shortcuts:/target  /hunt  /session  /force  /status")
+            ui.info("session:  /clear  /exit   (Ctrl+C cancels a running turn)")
             continue
 
         _run_turn(mode, text, session)

@@ -11,6 +11,9 @@ prohibited:
   - Credential stuffing
   - Spam
   - Destructive actions
+# Optional program identity headers (also settable in secrets/sessions.yaml):
+# headers:
+#   X-Bug-Bounty: researcher@example.com
 ---
 
 # Scope

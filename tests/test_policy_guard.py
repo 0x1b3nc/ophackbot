@@ -108,6 +108,12 @@ class PolicyGuardTests(unittest.TestCase):
         policy = self._policy(LEVEL3_ALLOWED)
         self.assertTrue(policy.allows_level3())
 
+    def test_assert_action_allowed_level3(self) -> None:
+        policy = self._policy(LEVEL3_ALLOWED)
+        gate = policy.assert_action_allowed("lab.local", "rate-limit testing", force=False)
+        self.assertEqual(gate["aggression"], 3)
+        self.assertFalse(gate["force_override"])
+
     def test_policy_quote(self) -> None:
         policy = self._policy()
         quote = policy_quote_for(policy, 1)

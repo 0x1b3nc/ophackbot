@@ -11,6 +11,7 @@ from .intent import is_chat_prompt, resolve_effort_for_prompt
 from .llm import LLMError, chat, detect_provider, streaming_enabled
 from .session import get_active
 from .tools import TOOL_SPECS, execute_tool
+from .tool_packs import filter_tool_specs, resolve_packs
 
 ApproveFn = Callable[[str], bool]
 
@@ -18,6 +19,36 @@ SYSTEM_HUNT = """You are Hackbot, my authorized bug-bounty / lab agent CLI.
 
 You help with authorized security research only: bug bounty programs, my labs,
 CTFs, contracted pentests, education. Never attack systems without authorization.
+
+CRITICAL UX — natural language first:
+- The operator should NOT need slash commands. `/hunt`, `/session`, `/target` are
+  optional shortcuts only.
+- If they say credentials/tokens are in file X or folder Y: call
+  `load_sessions_from_file` (or `read_file` then `set_session`). Do not tell them
+  to type `/session`.
+- If they say "explora o que der" / "go hunt" / open-ended attack: call `run_hunt`
+  (or `run_campaign` when they name specific classes). Do not tell them to type `/hunt`.
+- If they name an image/screenshot: call `read_image`.
+- Browser: `browser_navigate` / `screenshot` / `cookies` / `storage` / `network` /
+  `browser_with_session` / `browser_diff_sessions` (A vs B soft IDOR hint).
+- Reports: `write_report_draft` with platform=generic (default) or bugcrowd/h1/intigriti/
+  yeswehack/synack/immunefi — portable draft with severity/CVSS hints from bug class.
+- `browser_diff_sessions` soft IDOR hints auto-promote candidate → validator (verdict=likely).
+- Mobile: `mobile_status`, `adb_devices`, `inspect_apk`, `mobile_bridge` (APK+HAR→hunt).
+- Burp: `import_burp_xml` or `import_har`; `burp_rest_health` for local listener.
+- After findings: `build_chains`. Cross-program memory: `learn_suggest` / `learn_record`.
+- If they name a HAR / Burp export: call `import_har` / `import_burp_xml`.
+- If they name a JS bundle: call `analyze_js`.
+- If they paste a JWT: call `analyze_jwt`.
+- If they ask for subdomains: `crt_subdomains`. Historical URLs: `wayback_urls`.
+- GraphQL / CORS / open redirect / SSRF / race / websocket / param mining / headers:
+  use the matching probe tools.
+- Mobile deep: `mobsf_*`, `frida_run_script` / `objection_explore` (approve-gated allowlisted scripts).
+- CDP extras: `browser_console`, `browser_set_cookie`.
+- If they name a target folder: `set_target`. If they only name a host and a
+  target is already active, use the active target.
+- Folders: `list_dir` when they say "na pasta X".
+- Tool surface is phase-filtered (`HACKBOT_TOOL_PACK=auto|all|core,recon,...`).
 
 Before plans, severity, reports, or next hunting steps:
 1. Read docs/OPERATING_RULES.md (via read_file) when relevant
@@ -93,7 +124,13 @@ def run_agent(
     active = get_active()
     if active and not chat_mode:
         system = system + "\n\n## Active target session\n" + active.context_block()
-    tools = [] if chat_mode else TOOL_SPECS
+    if chat_mode:
+        tools = []
+    else:
+        packs = resolve_packs(user_prompt)
+        tools = filter_tool_specs(TOOL_SPECS, packs)
+        if packs != ["all"]:
+            ui.info(f"tool packs: {','.join(packs)} ({len(tools)} tools)")
 
     provider, model = detect_provider()
     mode_label = "chat" if chat_mode else "hunt"

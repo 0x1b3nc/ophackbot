@@ -142,6 +142,10 @@ class ScopePolicy:
                 "brute",
                 "password spray",
                 "credential stuffing",
+                "rate-limit",
+                "rate limit",
+                "rate_probe",
+                "rate-probe",
             )
         ):
             return 3
@@ -155,6 +159,10 @@ class ScopePolicy:
                 "idor",
                 "mutation",
                 "write",
+                "sqli",
+                "xss",
+                "injection",
+                "ssrf",
             )
         ):
             return 2
@@ -179,6 +187,79 @@ class ScopePolicy:
                 f"host not confirmed in SCOPE.md: {host}. "
                 "Refuse active traffic until scope text includes it."
             )
+
+    def assert_action_allowed(
+        self,
+        host: str,
+        action: str,
+        *,
+        force: bool = False,
+    ) -> dict[str, object]:
+        """Gate host + aggression. OOS never bypassable. Soft gates yield to force.
+
+        Returns a small dict for audit (status, aggression, force_override, warnings).
+        """
+        host = host.lower().strip().rstrip(".")
+        if self.is_explicitly_out_of_scope(host):
+            raise PermissionError(
+                f"host out of scope: {host} "
+                "(OUT_OF_SCOPE cannot be overridden with /force)"
+            )
+
+        in_scope = self.contains_host(host)
+        status = "IN_SCOPE" if in_scope else "NOT_CONFIRMED"
+        level = self.classify_aggression(action)
+        warnings: list[str] = []
+        force_override = False
+
+        if not in_scope:
+            if force:
+                force_override = True
+                warnings.append(
+                    "host NOT_CONFIRMED in SCOPE.md — forced by operator"
+                )
+            else:
+                raise PermissionError(
+                    f"host not confirmed in SCOPE.md: {host}. "
+                    "Add it to SCOPE or use /force (operator responsibility)."
+                )
+
+        if level >= 3 and not self.allows_level3():
+            if force:
+                force_override = True
+                warnings.append(
+                    "level 3 not explicitly allowed in SCOPE.md — forced by operator"
+                )
+            else:
+                raise PermissionError(
+                    "level 3 (rate-limit/stress/brute) not explicitly allowed in SCOPE.md. "
+                    "Add wording under Allowed, or use /force."
+                )
+
+        if level >= 2 and not self.mentions_active_testing():
+            if force:
+                force_override = True
+                warnings.append(
+                    "active/moderate testing not mentioned in SCOPE — forced by operator"
+                )
+            else:
+                warnings.append(
+                    "active/moderate action: confirm policy text before running "
+                    "(or /force to override)"
+                )
+                # Soft warning only for level 2 without force — still allow
+                # (matches prior CLI behavior). Level 2 without active wording
+                # does not hard-block unless we want stricter; plan says warning
+                # and with force allows. Without force: warn but proceed for L2.
+
+        return {
+            "host": host,
+            "status": status,
+            "aggression": level,
+            "force_override": force_override,
+            "warnings": warnings,
+            "policy_quote": policy_quote_for(self, level),
+        }
 
 
 def host_from_target(value: str) -> str:

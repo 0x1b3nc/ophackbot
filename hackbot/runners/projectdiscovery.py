@@ -12,8 +12,9 @@ def httpx_probe(
     host: str,
     *,
     approve: bool = False,
+    force: bool = False,
 ) -> RunnerResult:
-    require_in_scope(target_dir, host)
+    require_in_scope(target_dir, host, action="httpx fingerprint", force=force)
     url = host if "://" in host else f"https://{host}"
     return run_command(
         ["httpx", "-u", url, "-title", "-tech-detect", "-status-code", "-silent"],
@@ -27,8 +28,9 @@ def katana_crawl(
     *,
     depth: int = 2,
     approve: bool = False,
+    force: bool = False,
 ) -> RunnerResult:
-    require_in_scope(target_dir, host)
+    require_in_scope(target_dir, host, action="katana crawl", force=force)
     url = host if "://" in host else f"https://{host}"
     return run_command(
         ["katana", "-u", url, "-d", str(depth), "-silent"],
@@ -44,8 +46,9 @@ def nuclei_scan(
     rate_limit: int = 10,
     concurrency: int = 5,
     approve: bool = False,
+    force: bool = False,
 ) -> RunnerResult:
-    require_in_scope(target_dir, host)
+    require_in_scope(target_dir, host, action="nuclei templates", force=force)
     url = host if "://" in host else f"https://{host}"
     cmd = [
         "nuclei",
@@ -68,8 +71,9 @@ def ffuf_dir(
     wordlist: str,
     *,
     approve: bool = False,
+    force: bool = False,
 ) -> RunnerResult:
-    require_in_scope(target_dir, url)
+    require_in_scope(target_dir, url, action="ffuf fuzz", force=force)
     if "FUZZ" not in url:
         url = url.rstrip("/") + "/FUZZ"
     return run_command(

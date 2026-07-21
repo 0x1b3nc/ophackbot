@@ -1,8 +1,9 @@
-"""Class playbooks: knowledge routed into falsifiable next steps."""
+"""Class playbooks: knowledge routed into falsifiable (and optionally executable) steps."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from .knowledge import classify, notes_for_classes
 
@@ -15,6 +16,7 @@ class PlaybookStep:
     command: str
     expected: str
     stop: str
+    tool_call: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -37,28 +39,73 @@ _PLAYBOOKS: dict[str, Playbook] = {
         ),
         steps=(
             PlaybookStep(
+                title="Scope gate",
+                hypothesis="The host is listed in SCOPE.md before any traffic.",
+                aggression=0,
+                command="hackbot: scope_check on {target_dir} --host {host}",
+                expected="IN_SCOPE status.",
+                stop="NOT_CONFIRMED or OUT_OF_SCOPE.",
+                tool_call={
+                    "tool": "scope_check",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "host": "{host}",
+                        "action": "idor authz swap",
+                    },
+                },
+            ),
+            PlaybookStep(
                 title="Baseline as owner",
                 hypothesis="Owner A can read their own object at the candidate endpoint.",
                 aggression=1,
-                command='curl -i "$URL_WITH_A_ID" -H "Cookie: SESSION=A"  # expect 200 + A data',
+                command="http_request GET {endpoint} session=A",
                 expected="200 with A-owned fields.",
-                stop="Auth fails, 404 for owner, or endpoint not confirmed.",
+                stop="Auth fails, 404 for owner, or endpoint not confirmed. Load secrets/sessions.yaml first.",
+                tool_call={
+                    "tool": "http_request",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "method": "GET",
+                        "session": "A",
+                        "label": "idor_A",
+                    },
+                },
             ),
             PlaybookStep(
                 title="Cross-account swap",
                 hypothesis="User B can read A's object by swapping only the object ID.",
                 aggression=2,
-                command='curl -i "$URL_WITH_A_ID" -H "Cookie: SESSION=B"  # secure: 403/404; vuln: 200 + A data',
+                command="http_request GET {endpoint} session=B  # same URL as A's object",
                 expected="Secure: 403/404. Vulnerable: 200 with A's private data.",
                 stop="Any unexpected write, rate-limit, or out-of-scope host.",
+                tool_call={
+                    "tool": "http_request",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "method": "GET",
+                        "session": "B",
+                        "label": "idor_B",
+                    },
+                },
             ),
             PlaybookStep(
-                title="Negative control",
-                hypothesis="Random/nonexistent IDs do not leak other tenants.",
-                aggression=1,
-                command='curl -i "$URL_WITH_RANDOM_ID" -H "Cookie: SESSION=B"',
-                expected="404/403, not another user's data.",
-                stop="Stop after one clean A/B pair + negative control.",
+                title="Diff A vs B",
+                hypothesis="Cross-account response proves or falsifies object-level authz.",
+                aggression=2,
+                command="assert_diff label_a=idor_A label_b=idor_B",
+                expected="negative (denied) or confirmed/likely (IDOR).",
+                stop="inconclusive — fix sessions/baseline.",
+                tool_call={
+                    "tool": "assert_diff",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "label_a": "idor_A",
+                        "label_b": "idor_B",
+                        "kind": "idor",
+                    },
+                },
             ),
         ),
         study_notes=tuple(str(p) for p in notes_for_classes(["idor"])),
@@ -72,20 +119,60 @@ _PLAYBOOKS: dict[str, Playbook] = {
         ),
         steps=(
             PlaybookStep(
+                title="Scope gate",
+                hypothesis="The host is listed in SCOPE.md before any traffic.",
+                aggression=0,
+                command="hackbot: scope_check on {target_dir} --host {host}",
+                expected="IN_SCOPE status.",
+                stop="NOT_CONFIRMED or OUT_OF_SCOPE.",
+                tool_call={
+                    "tool": "scope_check",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "host": "{host}",
+                        "action": "ssrf probe",
+                    },
+                },
+            ),
+            PlaybookStep(
                 title="Benign fetch",
                 hypothesis="The app fetches the URL I supply and returns or logs the response.",
                 aggression=1,
-                command='curl -i "$ENDPOINT" -d "url=https://example.com/"',
+                command='http_request POST {endpoint} body={"url":"https://example.com/"} session=A',
                 expected="Response/log shows fetched content or error from remote.",
-                stop="No fetch behavior; parameter ignored.",
+                stop="No fetch behavior; parameter ignored. Adjust body key to match the param.",
+                tool_call={
+                    "tool": "http_request",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "method": "POST",
+                        "session": "A",
+                        "body": '{"url":"https://example.com/"}',
+                        "content_type": "application/json",
+                        "label": "ssrf_benign",
+                    },
+                },
             ),
             PlaybookStep(
                 title="Internal probe (policy permitting)",
                 hypothesis="The server can reach link-local/metadata or internal hosts.",
                 aggression=2,
-                command='curl -i "$ENDPOINT" -d "url=http://127.0.0.1/"  # or metadata IP if SCOPE allows',
+                command='http_request POST {endpoint} body={"url":"http://127.0.0.1/"}',
                 expected="Internal banner/body vs external control proves SSRF.",
-                stop="Level-3 / cloud metadata prohibited by SCOPE; stop immediately.",
+                stop="Cloud metadata / level-3 prohibited by SCOPE; stop immediately.",
+                tool_call={
+                    "tool": "http_request",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "method": "POST",
+                        "session": "A",
+                        "body": '{"url":"http://127.0.0.1/"}',
+                        "content_type": "application/json",
+                        "label": "ssrf_internal",
+                    },
+                },
             ),
         ),
         study_notes=tuple(str(p) for p in notes_for_classes(["ssrf"])),
@@ -96,20 +183,34 @@ _PLAYBOOKS: dict[str, Playbook] = {
         preconditions=("In-scope input that echoes into HTML/JS", "Browser or proxy to observe sink"),
         steps=(
             PlaybookStep(
+                title="Scope gate",
+                hypothesis="Endpoint is in SCOPE before any reflection probe.",
+                aggression=0,
+                command="scope_check",
+                expected="IN_SCOPE / allowed for reflection testing.",
+                stop="OUT_OF_SCOPE or NOT_CONFIRMED without /force.",
+                tool_call={
+                    "tool": "scope_check",
+                    "args": {"target_dir": "{target_dir}", "host": "{host}"},
+                },
+            ),
+            PlaybookStep(
                 title="Canary reflect",
                 hypothesis="My marker string is reflected into the response body unencoded.",
                 aggression=1,
-                command='curl -i "$ENDPOINT?q=hackbotXSS1337"',
+                command='xss_probe "$ENDPOINT" param=q',
                 expected="Marker appears in HTML/JS context.",
                 stop="No reflection.",
-            ),
-            PlaybookStep(
-                title="Minimal probe",
-                hypothesis="A minimal HTML/JS breakout executes in the reflected context.",
-                aggression=2,
-                command='curl -i "$ENDPOINT?q=<svg/onload=alert(1)>"  # ACTIVE only if SCOPE allows',
-                expected="Sink executes or CSP blocks with evidence of injection point.",
-                stop="CSP hard-block with no bypass angle; do not spray payloads.",
+                tool_call={
+                    "tool": "xss_probe",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "param": "q",
+                        "approve": "{approve}",
+                        "force": "{force}",
+                    },
+                },
             ),
         ),
         study_notes=tuple(str(p) for p in notes_for_classes(["xss"])),
@@ -120,20 +221,34 @@ _PLAYBOOKS: dict[str, Playbook] = {
         preconditions=("In-scope parameter suspected in a query", "Low rate; no destructive payloads"),
         steps=(
             PlaybookStep(
-                title="Baseline",
-                hypothesis="Normal value returns a stable response shape.",
-                aggression=1,
-                command='curl -i "$ENDPOINT?id=1"',
-                expected="Stable 200 body length/status.",
-                stop="Unstable endpoint; fix baseline first.",
+                title="Scope gate",
+                hypothesis="Endpoint is in SCOPE before injection probes.",
+                aggression=0,
+                command="scope_check",
+                expected="IN_SCOPE.",
+                stop="OUT_OF_SCOPE.",
+                tool_call={
+                    "tool": "scope_check",
+                    "args": {"target_dir": "{target_dir}", "host": "{host}"},
+                },
             ),
             PlaybookStep(
-                title="Boolean differential",
-                hypothesis="True/false probes change status or body in a query-dependent way.",
+                title="Boolean / error differential",
+                hypothesis="True/false or syntax probes change status/body in a query-dependent way.",
                 aggression=2,
-                command='curl -i "$ENDPOINT?id=1 AND 1=1" ; curl -i "$ENDPOINT?id=1 AND 1=2"',
-                expected="Clear differential between true/false; not just WAF noise.",
+                command='sqli_probe "$ENDPOINT" param=id',
+                expected="Clear differential or SQL error marker; not just WAF noise.",
                 stop="WAF 403 loop, errors without differential, or SCOPE forbids injection tests.",
+                tool_call={
+                    "tool": "sqli_probe",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "param": "id",
+                        "approve": "{approve}",
+                        "force": "{force}",
+                    },
+                },
             ),
         ),
         study_notes=tuple(str(p) for p in notes_for_classes(["sqli"])),
@@ -144,6 +259,22 @@ _PLAYBOOKS: dict[str, Playbook] = {
         preconditions=("Two parallel slots or scripted concurrent requests", "Idempotent or reversible action"),
         steps=(
             PlaybookStep(
+                title="Scope gate",
+                hypothesis="The host is listed in SCOPE.md before any traffic.",
+                aggression=0,
+                command="hackbot: scope_check on {target_dir} --host {host}",
+                expected="IN_SCOPE status.",
+                stop="NOT_CONFIRMED or OUT_OF_SCOPE.",
+                tool_call={
+                    "tool": "scope_check",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "host": "{host}",
+                        "action": "race parallel burst",
+                    },
+                },
+            ),
+            PlaybookStep(
                 title="Single-thread limit",
                 hypothesis="The limit/coupon/balance enforces correctly for one request at a time.",
                 aggression=1,
@@ -152,12 +283,22 @@ _PLAYBOOKS: dict[str, Playbook] = {
                 stop="Action not reversible; abort.",
             ),
             PlaybookStep(
-                title="Parallel burst",
+                title="Parallel burst (bounded)",
                 hypothesis="N concurrent requests bypass the limit once.",
                 aggression=2,
-                command="seq 1 5 | xargs -P5 -I{} curl -s -o /dev/null -w '%{http_code}\\n' -X POST \"$ENDPOINT\" ...",
+                command="rate_probe concurrency=5 total=10 against $ENDPOINT",
                 expected="More successes than the limit allows.",
-                stop="One burst only; clean up created objects; no DoS flooding.",
+                stop="One burst only; clean up created objects; no unbounded flood.",
+                tool_call={
+                    "tool": "run_tool",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "tool": "rate_probe",
+                        "host": "{endpoint}",
+                        "concurrency": 5,
+                        "total": 10,
+                    },
+                },
             ),
         ),
         study_notes=tuple(str(p) for p in notes_for_classes(["race"])),
@@ -171,9 +312,17 @@ _PLAYBOOKS: dict[str, Playbook] = {
                 title="Scope gate",
                 hypothesis="The host is listed in SCOPE.md before any traffic.",
                 aggression=0,
-                command="hackbot: scope_check on targets/<program> --host <host>",
+                command="hackbot: scope_check on {target_dir} --host {host}",
                 expected="IN_SCOPE status.",
                 stop="NOT_CONFIRMED or OUT_OF_SCOPE.",
+                tool_call={
+                    "tool": "scope_check",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "host": "{host}",
+                        "action": "httpx fingerprint",
+                    },
+                },
             ),
             PlaybookStep(
                 title="Passive notes",
@@ -190,9 +339,325 @@ _PLAYBOOKS: dict[str, Playbook] = {
                 command="run_tool httpx (approve=false first)",
                 expected="Status/title/tech without heavy crawling.",
                 stop="Active scanning not in SCOPE allowed list.",
+                tool_call={
+                    "tool": "run_tool",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "tool": "httpx",
+                        "host": "{host}",
+                    },
+                },
             ),
         ),
         study_notes=tuple(str(p) for p in notes_for_classes(["recon"])),
+    ),
+    "rate-limit": Playbook(
+        class_name="rate-limit",
+        summary=(
+            "Controlled concurrency probe to test rate limits / soft DoS posture. "
+            "Hard-capped totals — not an unbounded flood. Needs SCOPE level-3 wording or /force."
+        ),
+        preconditions=(
+            "Host in SCOPE.md (or operator /force for NOT_CONFIRMED)",
+            "Level-3 allowed in SCOPE or /force with operator responsibility",
+            "Prefer a durable, non-destructive endpoint",
+        ),
+        steps=(
+            PlaybookStep(
+                title="Scope gate",
+                hypothesis="Policy allows (or force overrides) a bounded rate-limit probe.",
+                aggression=0,
+                command="hackbot: scope_check --action 'rate-limit testing'",
+                expected="IN_SCOPE; level 3 allowed or force planned.",
+                stop="OUT_OF_SCOPE host.",
+                tool_call={
+                    "tool": "scope_check",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "host": "{host}",
+                        "action": "rate-limit testing dos stress",
+                    },
+                },
+            ),
+            PlaybookStep(
+                title="Baseline single request",
+                hypothesis="A single GET returns a stable status for the endpoint.",
+                aggression=1,
+                command="run_tool httpx against {host}",
+                expected="Live HTTP status/title.",
+                stop="Host down or TLS failure.",
+                tool_call={
+                    "tool": "run_tool",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "tool": "httpx",
+                        "host": "{host}",
+                    },
+                },
+            ),
+            PlaybookStep(
+                title="Bounded concurrency probe",
+                hypothesis="Status/latency under capped parallel load reveals rate-limit behavior.",
+                aggression=3,
+                command="rate_probe concurrency=5 total=25 timeout=5s",
+                expected="Status histogram + avg latency; 429/503 or soft degradation is evidence.",
+                stop="Stop after one bounded run; do not raise caps without re-reading SCOPE.",
+                tool_call={
+                    "tool": "run_tool",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "tool": "rate_probe",
+                        "host": "{endpoint}",
+                        "concurrency": 5,
+                        "total": 25,
+                        "timeout": 5.0,
+                    },
+                },
+            ),
+        ),
+        study_notes=tuple(str(p) for p in notes_for_classes(["race", "api"])),
+    ),
+    "brute": Playbook(
+        class_name="brute",
+        summary=(
+            "Capped password spray against a login endpoint (max 20 attempts). "
+            "Requires SCOPE level-3 wording or /force."
+        ),
+        preconditions=(
+            "Login URL (default /login)",
+            "Level-3 allowed or /force",
+            "Prefer program test accounts only",
+        ),
+        steps=(
+            PlaybookStep(
+                title="Scope gate",
+                hypothesis="Brute/spray is allowed for this host.",
+                aggression=0,
+                command="scope_check action=brute force",
+                expected="IN_SCOPE; level 3 or force.",
+                stop="OUT_OF_SCOPE",
+                tool_call={
+                    "tool": "scope_check",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "host": "{host}",
+                        "action": "brute force password spray",
+                    },
+                },
+            ),
+            PlaybookStep(
+                title="Capped spray",
+                hypothesis="A weak password on the test user is accepted.",
+                aggression=3,
+                command="brute_login {endpoint} username=test",
+                expected="success=false (secure) or success=true (finding).",
+                stop="Lockout / CAPTCHA — stop immediately.",
+                tool_call={
+                    "tool": "brute_login",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "username": "test",
+                    },
+                },
+            ),
+        ),
+        study_notes=tuple(str(p) for p in notes_for_classes(["brute"])),
+    ),
+    "auth-bypass": Playbook(
+        class_name="auth-bypass",
+        summary=(
+            "Login / password bypass probes: empty password, SQL-ish auth payloads, "
+            "verb tampering. Tight stop — not credential stuffing."
+        ),
+        preconditions=(
+            "Login endpoint known (default /login or prompt path)",
+            "Host in SCOPE; prefer test account usernames only",
+        ),
+        steps=(
+            PlaybookStep(
+                title="Scope gate",
+                hypothesis="Login host is in SCOPE before auth probes.",
+                aggression=0,
+                command="scope_check {host} action=auth bypass",
+                expected="IN_SCOPE",
+                stop="OUT_OF_SCOPE",
+                tool_call={
+                    "tool": "scope_check",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "host": "{host}",
+                        "action": "auth bypass login",
+                    },
+                },
+            ),
+            PlaybookStep(
+                title="Empty password",
+                hypothesis="Empty password is accepted for a known username.",
+                aggression=2,
+                command='http_request POST {endpoint} body=username=test&password=',
+                expected="Secure: 401/403. Vuln: 200/302 into session.",
+                stop="Account lockout signals — abort.",
+                tool_call={
+                    "tool": "http_request",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "method": "POST",
+                        "body": "username=test&password=",
+                        "content_type": "application/x-www-form-urlencoded",
+                        "label": "bypass_empty",
+                    },
+                },
+            ),
+            PlaybookStep(
+                title="SQLi auth probe (single)",
+                hypothesis="Classic auth SQLi payload alters login outcome.",
+                aggression=2,
+                command="http_request POST login with ' OR '1'='1",
+                expected="Secure: fail. Vuln: unexpected success / error differential.",
+                stop="One probe only; no dump payloads.",
+                tool_call={
+                    "tool": "http_request",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "method": "POST",
+                        "body": "username=admin' OR '1'='1&password=x",
+                        "content_type": "application/x-www-form-urlencoded",
+                        "label": "bypass_sqli",
+                    },
+                },
+            ),
+        ),
+        study_notes=tuple(str(p) for p in notes_for_classes(["brute", "jwt", "session"])),
+    ),
+    "secrets": Playbook(
+        class_name="secrets",
+        summary="Scan common paths and responses for exposed tokens / credentials.",
+        preconditions=("Host in SCOPE",),
+        steps=(
+            PlaybookStep(
+                title="Secrets scan",
+                hypothesis="Config/env/JS endpoints leak credentials or tokens.",
+                aggression=1,
+                command="secrets_scan {host}",
+                expected="No secrets, or redacted hits with kind+URL.",
+                stop="Stop after one pass; confirm impact manually.",
+                tool_call={
+                    "tool": "secrets_scan",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "host": "{host}",
+                    },
+                },
+            ),
+        ),
+        study_notes=tuple(str(p) for p in notes_for_classes(["api", "recon"])),
+    ),
+    "lfi": Playbook(
+        class_name="lfi",
+        summary="Path traversal / local file inclusion via file-like params.",
+        preconditions=("In-scope param that reads files",),
+        steps=(
+            PlaybookStep(
+                title="Scope gate",
+                hypothesis="Host in SCOPE.",
+                aggression=0,
+                command="scope_check",
+                expected="IN_SCOPE",
+                stop="OOS",
+                tool_call={"tool": "scope_check", "args": {"target_dir": "{target_dir}", "host": "{host}"}},
+            ),
+            PlaybookStep(
+                title="Traversal canary",
+                hypothesis="../../etc/passwd or win.ini markers appear.",
+                aggression=2,
+                command="lfi_probe",
+                expected="File marker in body.",
+                stop="No marker / WAF loop.",
+                tool_call={
+                    "tool": "lfi_probe",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "param": "file",
+                        "approve": "{approve}",
+                        "force": "{force}",
+                    },
+                },
+            ),
+        ),
+        study_notes=tuple(str(p) for p in notes_for_classes(["injection", "lfi"])),
+    ),
+    "ssti": Playbook(
+        class_name="ssti",
+        summary="Server-side template injection via math canaries.",
+        preconditions=("Reflected param into template engine",),
+        steps=(
+            PlaybookStep(
+                title="Scope gate",
+                hypothesis="Host in SCOPE.",
+                aggression=0,
+                command="scope_check",
+                expected="IN_SCOPE",
+                stop="OOS",
+                tool_call={"tool": "scope_check", "args": {"target_dir": "{target_dir}", "host": "{host}"}},
+            ),
+            PlaybookStep(
+                title="Math canary",
+                hypothesis="{{7*7}} evaluates to 49.",
+                aggression=2,
+                command="ssti_probe",
+                expected="Evaluated canary.",
+                stop="No evaluation.",
+                tool_call={
+                    "tool": "ssti_probe",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "param": "q",
+                        "approve": "{approve}",
+                        "force": "{force}",
+                    },
+                },
+            ),
+        ),
+        study_notes=tuple(str(p) for p in notes_for_classes(["ssti", "injection"])),
+    ),
+    "xxe": Playbook(
+        class_name="xxe",
+        summary="XML external entity file-read probe.",
+        preconditions=("XML-accepting endpoint",),
+        steps=(
+            PlaybookStep(
+                title="Scope gate",
+                hypothesis="Host in SCOPE.",
+                aggression=0,
+                command="scope_check",
+                expected="IN_SCOPE",
+                stop="OOS",
+                tool_call={"tool": "scope_check", "args": {"target_dir": "{target_dir}", "host": "{host}"}},
+            ),
+            PlaybookStep(
+                title="XXE file canary",
+                hypothesis="file:///etc/passwd content reflected.",
+                aggression=2,
+                command="xxe_probe",
+                expected="passwd/win.ini markers.",
+                stop="Parser disables external entities.",
+                tool_call={
+                    "tool": "xxe_probe",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "approve": "{approve}",
+                        "force": "{force}",
+                    },
+                },
+            ),
+        ),
+        study_notes=tuple(str(p) for p in notes_for_classes(["xxe", "injection"])),
     ),
 }
 
@@ -205,6 +670,21 @@ for _alias, _canon in (
     ("access-control", "idor"),
     ("injection", "sqli"),
     ("nosqli", "sqli"),
+    ("dos", "rate-limit"),
+    ("ddos", "rate-limit"),
+    ("stress", "rate-limit"),
+    ("bruteforce", "brute"),
+    ("rate_limit", "rate-limit"),
+    ("ratelimit", "rate-limit"),
+    ("password-bypass", "auth-bypass"),
+    ("authbypass", "auth-bypass"),
+    ("credential-leak", "secrets"),
+    ("tokens", "secrets"),
+    ("path-traversal", "lfi"),
+    ("path_traversal", "lfi"),
+    ("local-file-inclusion", "lfi"),
+    ("template-injection", "ssti"),
+    ("xml-external-entity", "xxe"),
 ):
     if _canon in _PLAYBOOKS:
         base = _PLAYBOOKS[_canon]
@@ -229,6 +709,11 @@ def playbook_for(task_or_class: str) -> Playbook:
     return _PLAYBOOKS["recon"]
 
 
+def executable_steps(pb: Playbook, *, max_aggression: int = 2) -> list[PlaybookStep]:
+    """Steps at or below max_aggression (includes manual steps for display)."""
+    return [s for s in pb.steps if s.aggression <= max_aggression]
+
+
 def playbook_markdown(pb: Playbook, *, endpoint: str = "") -> str:
     target = endpoint or "<endpoint>"
     lines = [
@@ -242,7 +727,12 @@ def playbook_markdown(pb: Playbook, *, endpoint: str = "") -> str:
         "## Steps",
     ]
     for i, step in enumerate(pb.steps, 1):
-        cmd = step.command.replace("$ENDPOINT", target).replace("$URL_WITH_A_ID", target)
+        cmd = (
+            step.command.replace("$ENDPOINT", target)
+            .replace("$URL_WITH_A_ID", target)
+            .replace("{endpoint}", target)
+            .replace("{host}", target)
+        )
         lines.extend(
             [
                 f"### {i}. {step.title}",
@@ -251,9 +741,11 @@ def playbook_markdown(pb: Playbook, *, endpoint: str = "") -> str:
                 f"- Command:\n```text\n{cmd}\n```",
                 f"- Expected: {step.expected}",
                 f"- Stop: {step.stop}",
-                "",
             ]
         )
+        if step.tool_call:
+            lines.append(f"- Executable: `{step.tool_call.get('tool')}`")
+        lines.append("")
     if pb.study_notes:
         lines.append("## Study notes")
         lines.extend(f"- `{n}`" for n in pb.study_notes)

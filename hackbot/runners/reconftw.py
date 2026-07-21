@@ -24,8 +24,9 @@ def run_recon(
     *,
     mode: str = "recon",
     approve: bool = False,
+    force: bool = False,
 ) -> RunnerResult:
-    require_in_scope(target_dir, domain)
+    require_in_scope(target_dir, domain, action="reconftw recon", force=force)
     binary = resolve_reconftw()
     if not binary:
         cmd = [

@@ -27,7 +27,7 @@ THEME = Theme(
     }
 )
 
-console = Console(theme=THEME, highlight=False)
+console = Console(theme=THEME, highlight=False, legacy_windows=False)
 
 _STATUS_STYLE = {
     "IN_SCOPE": "hb.ok",

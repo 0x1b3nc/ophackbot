@@ -1,15 +1,16 @@
 ---
 in_scope:
   - example.com
+  - demo.hackbot.local
 out_of_scope:
   - "*.example.net"
 allowed:
   - Passive recon
+  - Active testing
+  - IDOR / BOLA checks with provided test accounts
 prohibited:
   - DoS
-  - Brute force
-  - Credential stuffing
-  - Spam
+  - Credential stuffing against third parties
   - Destructive actions
 ---
 
@@ -17,10 +18,13 @@ prohibited:
 
 Demo program for smoke-testing the kit. Not a real bounty.
 
+Use `example.com` / `demo.hackbot.local` for dry-runs. Fake sessions live in
+`secrets/sessions.yaml` (gitignored) — copy from `sessions.example.yaml`.
+
 ## Required Headers / Identity
 
-- None documented yet.
+- Bug bounty header optional: `X-Bug-Bounty: hackbot-demo`
 
 ## Rate Limits / Automation
 
-- Not confirmed yet. I treat active scanning as off-limits until the policy says otherwise.
+- Keep probes capped (kit defaults). Active traffic still needs `approve`.

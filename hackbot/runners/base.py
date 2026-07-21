@@ -20,10 +20,33 @@ class RunnerResult:
     message: str
 
 
-def require_in_scope(target_dir: Path, host_or_url: str) -> ScopePolicy:
+def require_in_scope(
+    target_dir: Path,
+    host_or_url: str,
+    *,
+    action: str = "",
+    force: bool = False,
+) -> ScopePolicy:
+    """Load SCOPE and gate host (+ optional action aggression).
+
+    When action is empty, only host gates apply (OOS hard-block; NOT_CONFIRMED
+    unless force). When action is set, full assert_action_allowed runs.
+    """
     policy = ScopePolicy.load(target_dir)
     host = host_from_target(host_or_url)
-    policy.assert_host_allowed(host)
+    if action:
+        policy.assert_action_allowed(host, action, force=force)
+    else:
+        if policy.is_explicitly_out_of_scope(host):
+            raise PermissionError(
+                f"host out of scope: {host} "
+                "(OUT_OF_SCOPE cannot be overridden with /force)"
+            )
+        if not policy.contains_host(host) and not force:
+            raise PermissionError(
+                f"host not confirmed in SCOPE.md: {host}. "
+                "Add it to SCOPE or use /force (operator responsibility)."
+            )
     return policy
 
 

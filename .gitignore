@@ -36,6 +36,9 @@ targets/**/headers.txt
 targets/**/*session*.txt
 targets/**/*token*.txt
 
+# Cross-program learning log (local operator memory)
+learning/
+
 *.sqlite
 *.db
 

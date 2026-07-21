@@ -3,11 +3,12 @@
 This is the "brain-lite" path. It cannot free-form reason, but it can:
   - read a plain-language task
   - pull out the host / target folder / bug class / tool / platform
+  - open study notes + executable playbooks
   - build an ordered plan of concrete tool calls
-  - execute each one (dry-run first, active traffic still needs --approve)
+  - execute each one (dry-run first; active traffic still needs --approve)
 
 Everything routes through the same tools the LLM agent uses, so the safety
-rails (scope check, redaction, approve gate) are identical.
+rails (scope check, redaction, approve gate, /force) are identical.
 """
 
 from __future__ import annotations
@@ -15,21 +16,51 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from . import ui
+from .campaign import has_attack_intent, is_campaign_prompt
+from .force import is_forced, prompt_wants_force
+from .identity import load_identity
+from .intent import is_chat_prompt
 from .knowledge import classify
-from .tools import TARGETS, execute_tool
+from .playbooks import playbook_for
+from .prompt_router import RouteDecision, route_prompt
+from .session import get_active
+from .session_import import extract_path_mentions
+from .tools import ROOT, TARGETS, execute_tool
+
+_AUTHZ_CLASSES = frozenset(
+    {"idor", "bola", "bac", "bfla", "authz", "ssrf", "race", "rate-limit", "dos", "stress"}
+)
 
 ApproveFn = Callable[[str], bool]
 
-TOOL_NAMES = ("httpx", "katana", "nuclei", "ffuf", "reconftw", "hexstrike", "burp")
+TOOL_NAMES = (
+    "httpx",
+    "katana",
+    "nuclei",
+    "ffuf",
+    "reconftw",
+    "hexstrike",
+    "burp",
+    "rate_probe",
+)
 
 PLATFORM_ALIASES = {
     "bugcrowd": "bugcrowd",
     "hackerone": "hackerone",
     "h1": "hackerone",
     "intigriti": "intigriti",
+    "yeswehack": "yeswehack",
+    "ywh": "yeswehack",
+    "synack": "synack",
+    "immunefi": "immunefi",
+    "yogosha": "yogosha",
+    "generic": "generic",
+    "agnostic": "generic",
+    "universal": "generic",
 }
 
 APPROVE_WORDS = (
@@ -55,106 +86,6 @@ _TARGET_RE = re.compile(
 # Tokens that look like a domain but are really filenames.
 _FILE_SUFFIXES = (".md", ".txt", ".py", ".json", ".xml", ".har", ".yaml", ".yml", ".png", ".jpg")
 
-# bug class -> (hypothesis, action label, concrete command template with {t})
-_CLASS_PLAYBOOK: dict[str, tuple[str, str, str]] = {
-    "idor": (
-        "I can read or change another user's object by swapping an identifier.",
-        "authenticated request with a swapped object id (idor/bola)",
-        'curl -s -H "Authorization: Bearer <userA>" "{t}"\n'
-        "# repeat with <userB> token, diff the responses (200 + other user data = win)",
-    ),
-    "bola": (
-        "The API returns another tenant's object when I change the id.",
-        "authenticated bola test with swapped id",
-        'curl -s -H "Authorization: Bearer <userA>" "{t}"\n# then <userB>, compare',
-    ),
-    "bac": (
-        "A privileged action is reachable by a low-priv user.",
-        "call the privileged endpoint as a low-priv account (bac)",
-        'curl -s -H "Authorization: Bearer <lowpriv>" "{t}"  # expect 403; 200 = broken access control',
-    ),
-    "authz": (
-        "Authorization is enforced client-side only.",
-        "replay the request without / with a weaker role (authz)",
-        'curl -s "{t}"  # strip auth, downgrade role, compare',
-    ),
-    "ssrf": (
-        "The server fetches a user-supplied URL and I can aim it inward.",
-        "point a fetch parameter at an internal address (ssrf)",
-        'curl -s "{t}" --data-urlencode "url=http://169.254.169.254/latest/meta-data/"',
-    ),
-    "sqli": (
-        "A parameter reaches a SQL query unsanitized.",
-        "boolean/time-based payloads with a negative control (sqli)",
-        "# add  ' OR 1=1--  and  ' OR sleep(5)--  to params, diff timing/response vs baseline",
-    ),
-    "injection": (
-        "User input reaches an interpreter (SQL/OS/template) unsanitized.",
-        "inject marker payloads and diff responses (injection)",
-        "# send benign marker, then payloads; compare responses to a clean baseline",
-    ),
-    "ssti": (
-        "A template engine evaluates my input.",
-        "inject template math and check for evaluation (ssti)",
-        "# try {{7*7}} / ${7*7} in reflected fields; 49 in output = ssti",
-    ),
-    "xss": (
-        "Input is reflected or stored without proper encoding.",
-        "inject a unique marker and check DOM/HTML sinks (xss)",
-        '# inject hb%3Cscript%3E marker into params, grep response + DOM for unencoded reflection',
-    ),
-    "race": (
-        "A check and an update are not atomic.",
-        "fire parallel requests to exploit the window (race condition)",
-        "# send N parallel POSTs to {t}, compare outcomes (double-spend / limit bypass)",
-    ),
-    "oauth": (
-        "The OAuth flow trusts an attacker-controlled redirect_uri or state.",
-        "tamper redirect_uri / state and observe token leakage (oauth)",
-        "# swap redirect_uri to attacker host, drop state, follow the code",
-    ),
-    "jwt": (
-        "The JWT signature or claims can be tampered.",
-        "test alg=none / weak key / claim swap (jwt)",
-        "# resign token with alg=none or a guessed key; swap sub/role; replay to {t}",
-    ),
-    "session": (
-        "Session handling allows fixation or weak invalidation.",
-        "test fixation, logout invalidation, cookie flags (session)",
-        "# check Secure/HttpOnly/SameSite, reuse token post-logout on {t}",
-    ),
-    "graphql": (
-        "GraphQL exposes fields/mutations without proper authz.",
-        "introspect then query cross-tenant objects (graphql)",
-        "# POST introspection query to {t}, then request other tenants' node ids",
-    ),
-    "api": (
-        "An API endpoint leaks or mutates data without proper authz.",
-        "map the API and test object/function-level authz (owasp api top 10)",
-        "# enumerate endpoints, swap ids, test methods (GET/PUT/DELETE) on {t}",
-    ),
-    "takeover": (
-        "A dangling DNS record points to an unclaimed service.",
-        "resolve CNAMEs and fingerprint dangling providers (subdomain takeover)",
-        "# check CNAME of {t} against fingerprints (NoSuchBucket, etc.)",
-    ),
-    "recon": (
-        "There are unlinked hosts/endpoints inside the authorized scope.",
-        "passive recon + content discovery (httpx/katana)",
-        "httpx -silent -u {t}\n# then: katana -silent -u {t} -d 2",
-    ),
-    "discovery": (
-        "There is hidden content reachable under an in-scope host.",
-        "content discovery with a sane wordlist (discovery)",
-        "# ffuf -u {t}/FUZZ -w <wordlist> -mc 200,204,301,302,401,403",
-    ),
-    "mobile": (
-        "The mobile app's backend API trusts client-side controls.",
-        "pull the APK's API calls and test them directly (mobile/api)",
-        "# extract endpoints from the app, replay to {t} with tampered params",
-    ),
-}
-
 
 @dataclass
 class Action:
@@ -172,6 +103,7 @@ class Interpretation:
     tool: str | None
     platform: str | None
     approve: bool
+    force: bool
     intents: list[str] = field(default_factory=list)
 
 
@@ -196,29 +128,44 @@ def _detect_target_dir(text: str) -> str:
     for name in known:
         if re.search(rf"(?<![a-z0-9]){re.escape(name)}(?![a-z0-9])", low):
             return f"targets/{name}"
+    active = get_active()
+    if active:
+        return f"targets/{active.name}"
     if "demo" in known:
         return "targets/demo"
-    if known:
-        return f"targets/{known[0]}"
     return "targets/demo"
 
 
 def _detect_targets(text: str) -> tuple[str | None, str | None]:
-    """Return (full_target_with_path, host)."""
-    for raw in _TARGET_RE.findall(text):
-        token = raw.rstrip(".,);:'\"")
-        host_part = token.split("/")[0].split(":")[0].lower()
-        if host_part.endswith(_FILE_SUFFIXES):
+    """Return (full_match, host) from the prompt, or session fallback."""
+    for m in _TARGET_RE.finditer(text):
+        raw = m.group(0).rstrip(".,;:)")
+        low = raw.lower()
+        if any(low.endswith(suf) for suf in _FILE_SUFFIXES):
             continue
-        if host_part.startswith("targets"):
-            continue
-        host = re.sub(r"^https?://", "", host_part)
-        return token, host
+        host = raw
+        if "://" in host:
+            from urllib.parse import urlparse
+
+            host = urlparse(host).hostname or host
+        host = host.split("/")[0].split(":")[0]
+        return raw, host.lower()
+    active = get_active()
+    if active and active.in_scope_hosts:
+        h = active.in_scope_hosts[0]
+        # Strip wildcard prefix for a usable host hint
+        if h.startswith("*."):
+            return None, None
+        return h, h
     return None, None
 
 
 def _detect_tool(text: str) -> str | None:
     low = text.lower()
+    if any(w in low for w in ("rate_probe", "rate-probe", "rate probe")):
+        return "rate_probe"
+    if re.search(r"\bdos\b", low) or "stress test" in low or "rate-limit" in low or "rate limit" in low:
+        return "rate_probe"
     for name in TOOL_NAMES:
         if name in low:
             return name
@@ -227,9 +174,13 @@ def _detect_tool(text: str) -> str | None:
 
 def _detect_platform(text: str) -> str | None:
     low = text.lower()
-    for alias, canonical in PLATFORM_ALIASES.items():
-        if re.search(rf"(?<![a-z]){re.escape(alias)}(?![a-z])", low):
-            return canonical
+    # Prefer longer aliases; short ones (h1, ywh) need word boundaries.
+    for alias, canon in sorted(PLATFORM_ALIASES.items(), key=lambda x: -len(x[0])):
+        if len(alias) <= 3:
+            if re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", low):
+                return canon
+        elif alias in low:
+            return canon
     return None
 
 
@@ -244,6 +195,7 @@ def interpret(text: str) -> Interpretation:
     platform = _detect_platform(text)
     classes = classify(text)
     approve = _wants(text, *APPROVE_WORDS)
+    force = is_forced() or prompt_wants_force(text)
 
     intents: list[str] = []
     if _wants(text, "list target", "which target", "what target", "show target"):
@@ -251,19 +203,245 @@ def interpret(text: str) -> Interpretation:
     if _wants(text, "scope", "in-scope", "in scope", "allowed", "is it ok"):
         intents.append("scope")
     if _wants(
-        text, "note", "notes", "study", "knowledge", "learn", "playbook", "read up", "how do i test", "how to test"
+        text,
+        "note",
+        "notes",
+        "study",
+        "knowledge",
+        "learn",
+        "playbook",
+        "read up",
+        "how do i test",
+        "how to test",
     ):
         intents.append("knowledge")
-    if _wants(text, "plan", "hypothesis", "hunt", "test for", "attack", "approach", "strategy"):
+    if _wants(text, "plan", "hypothesis", "approach", "strategy"):
         intents.append("plan")
+    # Attack / hunt → executable playbook (dry-run by default)
+    if _wants(text, "hunt", "test for", "attack", "exploit", "run playbook", "execute playbook"):
+        intents.append("playbook_run")
     if tool or _wants(text, "run", "dry-run", "dry run", "scan", "probe", "crawl", "fuzz", "recon"):
         intents.append("run")
     if platform or _wants(text, "report", "write-up", "writeup", "write up", "submit"):
         intents.append("report")
     if _wants(text, "redact"):
         intents.append("redact")
-    if _wants(text, "read ", "show me", "open the", "context"):
+    if _wants(text, "read ", "show me", "open the", "context", "abre o", "abre a", "leia ", "ler "):
         intents.append("read")
+    # Sessions: slash commands are optional — NL + file paths are first-class
+    if _wants(
+        text,
+        "set session",
+        "session a",
+        "session b",
+        "/session",
+        "credencial",
+        "credenciais",
+        "credentials",
+        "tokens estão",
+        "tokens estao",
+        "tokens are",
+        "bearer",
+        "cookie",
+        "sessions.yaml",
+        "arquivo com",
+        "file with",
+        "load session",
+        "carregar session",
+        "carregar sessao",
+        "carregar sessão",
+        "import session",
+        "importar session",
+        "conta a",
+        "conta b",
+        "account a",
+        "account b",
+    ):
+        intents.append("set_session")
+    if _wants(
+        text,
+        "show identity",
+        "show session",
+        "/sessions",
+        "which sessions",
+        "quais sessoes",
+        "quais sessões",
+    ):
+        intents.append("show_identity")
+    if _wants(
+        text,
+        "imagem",
+        "image",
+        "screenshot",
+        "print ",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        "leia a imagem",
+        "read the image",
+        "ocr",
+    ):
+        intents.append("read_image")
+    if _wants(text, ".har", "har file", "arquivo har", "burp export", "proxy history", "import har"):
+        intents.append("import_har")
+    if _wants(text, "jwt", "json web token", "decode jwt", "analisa jwt", "analyze jwt"):
+        intents.append("analyze_jwt")
+    if _wants(text, ".js", "javascript", "bundle", "analyze js", "analisa o js", "endpoints no js"):
+        intents.append("analyze_js")
+    if _wants(text, "graphql", "introspection"):
+        intents.append("graphql")
+    if _wants(text, "cors", "cross-origin", "access-control-allow"):
+        intents.append("cors")
+    if _wants(text, "open redirect", "openredirect", "redirect aberto", "unvalidated redirect"):
+        intents.append("open_redirect")
+    if _wants(text, "param min", "mine param", "hidden param", "arjun", "parametros escondidos", "parâmetros escondidos"):
+        intents.append("mine_params")
+    if _wants(text, "crt.sh", "subdomain", "subdominio", "subdomínio", "certificate transparency"):
+        intents.append("crt")
+    if _wants(text, "wayback", "arquivo morto", "historical url", "urls antigas"):
+        intents.append("wayback")
+    if _wants(text, "lista a pasta", "listar pasta", "list dir", "list folder", "o que tem na pasta", "na pasta"):
+        intents.append("list_dir")
+    if _wants(text, "security header", "headers de seguranca", "headers de segurança", "analyze headers"):
+        intents.append("analyze_headers")
+    if _wants(text, "lfi", "path traversal", "path-traversal", "/etc/passwd", "local file"):
+        intents.append("lfi")
+    if _wants(text, "ssti", "template injection", "{{7*7}}", "jinja", "freemarker"):
+        intents.append("ssti")
+    if _wants(text, "xxe", "xml external", "external entity"):
+        intents.append("xxe")
+    if _wants(text, "ssrf", "server-side request", "metadata.google", "169.254.169.254"):
+        intents.append("ssrf")
+    if _wants(text, "race condition", "race cond", "toctou", "parallel burst", "condicao de corrida", "condição de corrida"):
+        intents.append("race")
+    if _wants(text, "websocket", "websockets", "wss://", "ws://"):
+        intents.append("websocket")
+    if _wants(text, "mobsf", "mobile security framework"):
+        intents.append("mobsf")
+    if _wants(text, "frida", "objection", "ssl unpin", "unpinning"):
+        intents.append("frida")
+    if _wants(text, "oauth", "authorize?", "openid", "/oauth/"):
+        intents.append("oauth")
+
+    if _wants(text, "jwt active", "alg=none", "forge jwt", "jwt bypass"):
+        intents.append("jwt_active")
+    if _wants(text, "chain", "encadear", "exploit chain", "build chain", "cadeia"):
+        intents.append("build_chains")
+    if _wants(text, "frida", "mobile", "apk", "objection", "mobsf", "adb"):
+        intents.append("mobile")
+    if _wants(
+        text,
+        "mobile bridge",
+        "apk e har",
+        "apk and har",
+        "pipeline mobile",
+        "bridge mobile",
+        "do apk pro hunt",
+        "do har pro hunt",
+    ):
+        intents.append("mobile_bridge")
+    if _wants(
+        text,
+        "com sessao",
+        "com sessão",
+        "with session",
+        "browser session",
+        "abre autenticado",
+        "open authenticated",
+        "inject session",
+        "usa sessao",
+        "usa sessão",
+        "session a",
+        "session b",
+        "sessao a",
+        "sessão a",
+        "sessao b",
+        "sessão b",
+    ):
+        intents.append("browser_session")
+    if _wants(
+        text,
+        "diff session",
+        "diff a/b",
+        "diff a b",
+        "compara sessao",
+        "compara sessão",
+        "compare session",
+        "a vs b",
+        "a versus b",
+        "idor browser",
+        "browser idor",
+    ):
+        intents.append("browser_diff")
+    if _wants(
+        text,
+        "cookies",
+        "cookie jar",
+        "lista cookies",
+        "list cookies",
+        "ver cookies",
+    ):
+        intents.append("browser_cookies")
+    if _wants(
+        text,
+        "localstorage",
+        "sessionstorage",
+        "local storage",
+        "session storage",
+        "web storage",
+        "storage do browser",
+    ):
+        intents.append("browser_storage")
+    if _wants(
+        text,
+        "network capture",
+        "capture requests",
+        "captura rede",
+        "captura de rede",
+        "xhr",
+        "browser network",
+        "traffic no browser",
+    ):
+        intents.append("browser_network")
+    if _wants(
+        text,
+        "browser",
+        "playwright",
+        "cdp",
+        "puppeteer",
+        "selenium",
+        "screenshot",
+        "abre no browser",
+        "open in browser",
+        "tire um print",
+    ):
+        intents.append("browser")
+    if _wants(text, "burp.xml", "burp xml", "export burp", "import burp", ".xml"):
+        # only if burp-ish
+        if _wants(text, "burp", "proxy", "export"):
+            intents.append("import_burp")
+    if _wants(text, "burp rest", "burp mcp", "burp api", "burp running"):
+        intents.append("burp_rest")
+    if _wants(text, "o que funcionou", "what worked", "learn suggest", "tecnicas", "técnicas anteriores"):
+        intents.append("learn_suggest")
+    if is_campaign_prompt(text) or has_attack_intent(text):
+        intents.append("campaign")
+    # Bare "hunt this" without slash — still campaign/hunt
+    if _wants(text, "go hunt", "start hunting", "comeca a cacar", "começa a caçar", "cacada", "caçada"):
+        if "campaign" not in intents:
+            intents.append("campaign")
+
+    # Single-class hunt still works when not treated as full campaign
+    if "campaign" not in intents and any(
+        c in _AUTHZ_CLASSES
+        or c in ("rate-limit", "dos", "stress", "race", "brute", "secrets", "auth-bypass")
+        for c in classes
+    ):
+        if "playbook_run" not in intents and _wants(
+            text, "test", "check", "try", "do ", "attack", "hunt"
+        ):
+            intents.append("playbook_run")
 
     return Interpretation(
         target_dir=_detect_target_dir(text),
@@ -273,6 +451,7 @@ def interpret(text: str) -> Interpretation:
         tool=tool,
         platform=platform,
         approve=approve,
+        force=force,
         intents=intents,
     )
 
@@ -281,14 +460,9 @@ def interpret(text: str) -> Interpretation:
 # planning: interpretation -> ordered tool calls
 # ---------------------------------------------------------------------------
 
-def _playbook_for(classes: list[str]) -> tuple[str, str, str, str]:
-    """Return (class_key, hypothesis, action, command_template)."""
-    for cls in classes:
-        if cls in _CLASS_PLAYBOOK:
-            hyp, act, cmd = _CLASS_PLAYBOOK[cls]
-            return cls, hyp, act, cmd
-    hyp, act, cmd = _CLASS_PLAYBOOK["recon"]
-    return "recon", hyp, act, cmd
+def _primary_class(classes: list[str]) -> str:
+    pb = playbook_for(" ".join(classes) if classes else "recon")
+    return pb.class_name
 
 
 def build_plan(text: str, interp: Interpretation) -> list[Action]:
@@ -296,9 +470,583 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
     intents = interp.intents
     host = interp.host
     target = interp.full_target or host or ""
+    cls = _primary_class(interp.classes)
 
     if "list" in intents:
         plan.append(Action("List the target folders I know about.", "list_targets", {}))
+
+    if "show_identity" in intents:
+        plan.append(
+            Action(
+                "Show masked sessions/headers for this target.",
+                "show_identity",
+                {"target_dir": interp.target_dir},
+            )
+        )
+
+    if "set_session" in intents:
+        # 1) Inline bearer/cookie
+        m = re.search(
+            r"session\s+([A-Za-z0-9_-]+)\s+(?:bearer|authorization)\s+(\S+)",
+            text,
+            re.I,
+        )
+        m_cookie = re.search(r"session\s+([A-Za-z0-9_-]+)\s+cookie\s+(\S+)", text, re.I)
+        # 2) NL: "credenciais no arquivo X" / "tokens in file Y"
+        paths = extract_path_mentions(text)
+        cred_paths = [
+            p
+            for p in paths
+            if not p.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"))
+        ]
+        if m:
+            plan.append(
+                Action(
+                    f"Save session {m.group(1)} bearer (gitignored).",
+                    "set_session",
+                    {
+                        "target_dir": interp.target_dir,
+                        "name": m.group(1),
+                        "authorization": m.group(2),
+                    },
+                )
+            )
+        elif m_cookie:
+            plan.append(
+                Action(
+                    f"Save session {m_cookie.group(1)} cookie (gitignored).",
+                    "set_session",
+                    {
+                        "target_dir": interp.target_dir,
+                        "name": m_cookie.group(1),
+                        "cookie": m_cookie.group(2),
+                    },
+                )
+            )
+        elif cred_paths:
+            plan.append(
+                Action(
+                    f"Ler credenciais em `{cred_paths[0]}` e gravar sessões A/B (sem /session).",
+                    "load_sessions_from_file",
+                    {
+                        "target_dir": interp.target_dir,
+                        "path": cred_paths[0],
+                        "write": True,
+                    },
+                )
+            )
+        else:
+            # Look for common relative secrets path mentioned loosely
+            m_path = re.search(
+                r"(?i)(?:arquivo|file|path|em|in)\s+[\"']?([^\s\"']+)[\"']?",
+                text,
+            )
+            if m_path and any(
+                x in m_path.group(1).lower()
+                for x in (".yaml", ".yml", ".json", ".env", ".txt", "session", "token", "secret")
+            ):
+                plan.append(
+                    Action(
+                        f"Ler credenciais em `{m_path.group(1)}` e gravar sessões.",
+                        "load_sessions_from_file",
+                        {
+                            "target_dir": interp.target_dir,
+                            "path": m_path.group(1),
+                            "write": True,
+                        },
+                    )
+                )
+            else:
+                plan.append(
+                    Action(
+                        "Preciso do caminho do arquivo de credenciais (ou bearer/cookie inline).",
+                        "_note",
+                        {
+                            "message": (
+                                "ex: as credenciais estão no arquivo tokens.yaml na pasta Downloads\n"
+                                "ou: set session A bearer <token>\n"
+                                "(/session é só atalho — não é obrigatório)"
+                            )
+                        },
+                    )
+                )
+
+    if "read_image" in intents:
+        img_paths = [
+            p
+            for p in extract_path_mentions(text)
+            if p.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"))
+        ]
+        if not img_paths:
+            m_img = re.search(
+                r"(?i)((?:[\w./\\:~-])+\.(?:png|jpe?g|webp|gif|bmp))",
+                text,
+            )
+            if m_img:
+                img_paths = [m_img.group(1)]
+        if img_paths:
+            plan.append(
+                Action(
+                    f"Ler imagem `{img_paths[0]}` (OCR/visão) — sem comando especial.",
+                    "read_image",
+                    {"path": img_paths[0], "question": text[:300]},
+                )
+            )
+        else:
+            plan.append(
+                Action(
+                    "Você pediu para ler uma imagem mas não deu o caminho.",
+                    "_note",
+                    {"message": "ex: leia a imagem Downloads/scope.png e resume o que está in-scope"},
+                )
+            )
+
+    if "import_har" in intents:
+        har_paths = [p for p in extract_path_mentions(text) if p.lower().endswith(".har")]
+        if not har_paths:
+            m = re.search(r"(?i)((?:[\w./\\:~-])+\.har)", text)
+            if m:
+                har_paths = [m.group(1)]
+        if har_paths:
+            plan.append(
+                Action(
+                    f"Importar HAR `{har_paths[0]}` → surface.",
+                    "import_har",
+                    {"target_dir": interp.target_dir, "path": har_paths[0]},
+                )
+            )
+
+    if "analyze_js" in intents:
+        js_paths = [
+            p
+            for p in extract_path_mentions(text)
+            if p.lower().endswith(".js") or "http" in p.lower()
+        ]
+        m = re.search(r"(https?://\S+\.js\S*)", text, re.I)
+        source = m.group(1).rstrip(".,;") if m else (js_paths[0] if js_paths else "")
+        if not source:
+            m2 = re.search(r"(?i)((?:[\w./\\:~-])+\.js)", text)
+            source = m2.group(1) if m2 else ""
+        if source:
+            plan.append(
+                Action(
+                    f"Analisar JS `{source}` (endpoints/secrets).",
+                    "analyze_js",
+                    {
+                        "target_dir": interp.target_dir,
+                        "source": source,
+                        "approve": interp.approve,
+                        "force": interp.force,
+                    },
+                )
+            )
+
+    if "analyze_jwt" in intents:
+        m = re.search(r"(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)", text)
+        if m:
+            plan.append(Action("Decode/analyze JWT.", "analyze_jwt", {"token": m.group(1)}))
+        else:
+            plan.append(
+                Action(
+                    "Cole o JWT no prompt (eyJ…).",
+                    "_note",
+                    {"message": "ex: analisa este jwt eyJhbGciOi..."},
+                )
+            )
+
+    if "list_dir" in intents:
+        # Prefer explicit folder after "pasta"
+        m = re.search(
+            r"(?i)(?:pasta|folder|dir(?:ectory)?)\s+[\"']?([^\s\"']+)[\"']?",
+            text,
+        )
+        folder = m.group(1) if m else ""
+        if not folder:
+            for token in ("Downloads", "Desktop", "Documentos", "Documents"):
+                if token.lower() in text.lower():
+                    folder = token
+                    break
+        if folder:
+            plan.append(Action(f"Listar pasta `{folder}`.", "list_dir", {"path": folder}))
+
+    if "crt" in intents and host:
+        plan.append(Action(f"Subdomains passivos (crt.sh) para {host}.", "crt_subdomains", {"domain": host}))
+    if "wayback" in intents and host:
+        plan.append(Action(f"URLs históricas (wayback) para {host}.", "wayback_urls", {"domain": host}))
+
+    if "graphql" in intents and host:
+        gurl = target if target and "graphql" in (target or "").lower() else (
+            (host if "://" in host else f"https://{host}") + "/graphql"
+        )
+        plan.append(
+            Action(
+                f"GraphQL introspection em {gurl}.",
+                "graphql_probe",
+                {
+                    "target_dir": interp.target_dir,
+                    "url": gurl,
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+    if "cors" in intents and (target or host):
+        plan.append(
+            Action(
+                "CORS Origin reflection probe.",
+                "cors_probe",
+                {
+                    "target_dir": interp.target_dir,
+                    "url": target or (host if "://" in (host or "") else f"https://{host}"),
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+    if "open_redirect" in intents and (target or host):
+        plan.append(
+            Action(
+                "Open redirect probe.",
+                "open_redirect_probe",
+                {
+                    "target_dir": interp.target_dir,
+                    "url": target or (host if "://" in (host or "") else f"https://{host}"),
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+    if "mine_params" in intents and (target or host):
+        plan.append(
+            Action(
+                "Hidden parameter mining.",
+                "mine_params",
+                {
+                    "target_dir": interp.target_dir,
+                    "url": target or (host if "://" in (host or "") else f"https://{host}"),
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+    if "analyze_headers" in intents and (target or host):
+        plan.append(
+            Action(
+                "Security headers / tech fingerprint.",
+                "analyze_headers",
+                {
+                    "target_dir": interp.target_dir,
+                    "url": target or (host if "://" in (host or "") else f"https://{host}"),
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+
+    for inj, tool, param in (
+        ("lfi", "lfi_probe", "file"),
+        ("ssti", "ssti_probe", "q"),
+        ("xxe", "xxe_probe", None),
+        ("ssrf", "ssrf_probe", "url"),
+    ):
+        if inj in intents and (target or host):
+            args: dict[str, Any] = {
+                "target_dir": interp.target_dir,
+                "url": target or (host if "://" in (host or "") else f"https://{host}"),
+                "approve": interp.approve,
+                "force": interp.force,
+            }
+            if param:
+                args["param"] = param
+            plan.append(Action(f"{inj.upper()} probe.", tool, args))
+
+    if "race" in intents and (target or host):
+        plan.append(
+            Action(
+                "Bounded race / parallel burst.",
+                "race_probe",
+                {
+                    "target_dir": interp.target_dir,
+                    "url": target or (host if "://" in (host or "") else f"https://{host}"),
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+    if "websocket" in intents and (target or host):
+        url = target or host or ""
+        if url.startswith("http://"):
+            url = "ws://" + url[len("http://") :]
+        elif url.startswith("https://"):
+            url = "wss://" + url[len("https://") :]
+        elif "://" not in url:
+            url = f"wss://{url}"
+        plan.append(
+            Action(
+                "Websocket handshake probe.",
+                "websocket_probe",
+                {
+                    "target_dir": interp.target_dir,
+                    "url": url,
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+    if "mobsf" in intents:
+        plan.append(Action("MobSF health check.", "mobsf_health", {}))
+    if "frida" in intents:
+        plan.append(Action("Frida/Objection status.", "frida_status", {}))
+
+    if "oauth" in intents and (target or host):
+        plan.append(
+            Action(
+                "OAuth authorize probe.",
+                "oauth_probe",
+                {
+                    "target_dir": interp.target_dir,
+                    "authorize_url": target
+                    or (host if "://" in (host or "") else f"https://{host}/oauth/authorize"),
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+
+    if "jwt_active" in intents:
+        m = re.search(r"(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)", text)
+        if m and (target or host):
+            plan.append(
+                Action(
+                    "JWT active bypass variants.",
+                    "jwt_active_probe",
+                    {
+                        "target_dir": interp.target_dir,
+                        "url": target or (host if "://" in (host or "") else f"https://{host}"),
+                        "token": m.group(1),
+                        "approve": interp.approve,
+                        "force": interp.force,
+                    },
+                )
+            )
+        elif m:
+            plan.append(Action("Decode JWT first.", "analyze_jwt", {"token": m.group(1)}))
+
+    if "build_chains" in intents:
+        plan.append(
+            Action(
+                "Build A→B exploit chains from FINDINGS.",
+                "build_chains",
+                {"target_dir": interp.target_dir},
+            )
+        )
+    if "mobile_bridge" in intents or (
+        "mobile" in intents
+        and (
+            any(p.lower().endswith(".har") for p in extract_path_mentions(text))
+            or ".har" in text.lower()
+        )
+        and (
+            any(p.lower().endswith(".apk") for p in extract_path_mentions(text))
+            or ".apk" in text.lower()
+            or _wants(text, "hunt", "explora", "bridge")
+        )
+    ):
+        apk_paths = [p for p in extract_path_mentions(text) if p.lower().endswith(".apk")]
+        har_paths = [p for p in extract_path_mentions(text) if p.lower().endswith(".har")]
+        m_apk = re.search(r"(?i)((?:[\w./\\:~-])+\.apk)", text)
+        m_har = re.search(r"(?i)((?:[\w./\\:~-])+\.har)", text)
+        if m_apk and not apk_paths:
+            apk_paths = [m_apk.group(1)]
+        if m_har and not har_paths:
+            har_paths = [m_har.group(1)]
+        args: dict[str, Any] = {
+            "target_dir": interp.target_dir,
+            "approve": interp.approve,
+            "force": interp.force,
+            "start_hunt": bool(interp.approve and _wants(text, "hunt", "explora", "cac", "caça")),
+        }
+        if apk_paths:
+            args["apk_path"] = apk_paths[0]
+        if har_paths:
+            args["har_path"] = har_paths[0]
+        if host:
+            args["host"] = host
+        plan.append(
+            Action(
+                "Mobile bridge: APK/HAR → surface (+ optional hunt).",
+                "mobile_bridge",
+                args,
+            )
+        )
+    elif "mobile" in intents:
+        apk_paths = [p for p in extract_path_mentions(text) if p.lower().endswith(".apk")]
+        m = re.search(r"(?i)((?:[\w./\\:~-])+\.apk)", text)
+        if m and not apk_paths:
+            apk_paths = [m.group(1)]
+        if apk_paths:
+            plan.append(
+                Action(
+                    f"Inspect APK `{apk_paths[0]}`.",
+                    "inspect_apk",
+                    {"target_dir": interp.target_dir, "path": apk_paths[0]},
+                )
+            )
+        elif _wants(text, "adb", "devices", "emulador", "emulator"):
+            plan.append(Action("List adb devices.", "adb_devices", {}))
+        else:
+            plan.append(
+                Action(
+                    "Mobile toolchain status + checklist.",
+                    "mobile_status",
+                    {"task": text[:200]},
+                )
+            )
+    if "browser_session" in intents and "browser_diff" not in intents:
+        url = target or (host if host and "://" in host else (f"https://{host}" if host else ""))
+        sess = "A"
+        m = re.search(r"(?i)(?:session|sess[aã]o)\s*([AB])\b", text)
+        if m:
+            sess = m.group(1).upper()
+        elif _wants(text, "session b", "sessao b", "sessão b"):
+            sess = "B"
+        if url:
+            plan.append(
+                Action(
+                    f"Browser with session {sess} at {url}.",
+                    "browser_with_session",
+                    {
+                        "target_dir": interp.target_dir,
+                        "url": url,
+                        "session": sess,
+                        "approve": interp.approve,
+                        "force": interp.force,
+                        "capture_network": _wants(text, "network", "rede", "xhr"),
+                    },
+                )
+            )
+        else:
+            plan.append(
+                Action(
+                    "Need URL for browser_with_session.",
+                    "_note",
+                    {"message": "ex: abre autenticado com sessão A em https://app.example.com targets/demo"},
+                )
+            )
+    if "browser_diff" in intents:
+        url = target or (host if host and "://" in host else (f"https://{host}" if host else ""))
+        if url:
+            plan.append(
+                Action(
+                    f"Browser A vs B diff at {url}.",
+                    "browser_diff_sessions",
+                    {
+                        "target_dir": interp.target_dir,
+                        "url": url,
+                        "session_a": "A",
+                        "session_b": "B",
+                        "approve": interp.approve,
+                        "force": interp.force,
+                    },
+                )
+            )
+        else:
+            plan.append(
+                Action(
+                    "Need URL for browser_diff_sessions.",
+                    "_note",
+                    {"message": "ex: compara sessão A vs B em https://app.example.com/api/me targets/demo"},
+                )
+            )
+    if "browser_cookies" in intents or "browser_storage" in intents or "browser_network" in intents:
+        url = target or (host if host and "://" in host else (f"https://{host}" if host else ""))
+        common = {
+            "target_dir": interp.target_dir,
+            "url": url or "https://example.com",
+            "approve": interp.approve,
+            "force": interp.force,
+        }
+        if not url:
+            plan.append(Action("Browser status / install hint.", "browser_hint", {"task": text[:200]}))
+        else:
+            if "browser_cookies" in intents:
+                plan.append(Action(f"List cookies at {url}.", "browser_cookies", dict(common)))
+            if "browser_storage" in intents:
+                plan.append(Action(f"Dump web storage at {url}.", "browser_storage", dict(common)))
+            if "browser_network" in intents:
+                plan.append(
+                    Action(
+                        f"Capture browser network at {url}.",
+                        "browser_network",
+                        {**common, "seed_surface": True},
+                    )
+                )
+    if "browser" in intents and not any(
+        x in intents
+        for x in (
+            "browser_cookies",
+            "browser_storage",
+            "browser_network",
+            "browser_session",
+            "browser_diff",
+        )
+    ):
+        url = target or (host if host and "://" in host else (f"https://{host}" if host else ""))
+        if url and _wants(text, "screenshot", "print", "tire um print"):
+            plan.append(
+                Action(
+                    f"Browser screenshot of {url}.",
+                    "browser_screenshot",
+                    {
+                        "target_dir": interp.target_dir,
+                        "url": url,
+                        "approve": interp.approve,
+                        "force": interp.force,
+                    },
+                )
+            )
+        elif url:
+            plan.append(
+                Action(
+                    f"Browser navigate {url}.",
+                    "browser_navigate",
+                    {
+                        "target_dir": interp.target_dir,
+                        "url": url,
+                        "approve": interp.approve,
+                        "force": interp.force,
+                    },
+                )
+            )
+        else:
+            plan.append(Action("Browser status / install hint.", "browser_hint", {"task": text[:200]}))
+    if "import_burp" in intents:
+        paths = [p for p in extract_path_mentions(text) if p.lower().endswith(".xml")]
+        m = re.search(r"(?i)((?:[\w./\\:~-])+\.xml)", text)
+        if m and not paths:
+            paths = [m.group(1)]
+        if paths:
+            plan.append(
+                Action(
+                    f"Import Burp XML `{paths[0]}` → surface.",
+                    "import_burp_xml",
+                    {"target_dir": interp.target_dir, "path": paths[0]},
+                )
+            )
+    if "burp_rest" in intents:
+        plan.append(Action("Check local Burp REST listener.", "burp_rest_health", {}))
+    if "learn_suggest" in intents:
+        plan.append(
+            Action(
+                "Suggest modules from past hunts.",
+                "learn_suggest",
+                {"host": host or ""},
+            )
+        )
+    if "browser_hint" in intents and "browser" not in intents and not any(
+        x in intents for x in ("browser_cookies", "browser_storage", "browser_network")
+    ):
+        plan.append(Action("Browser CDP checklist.", "browser_hint", {"task": text[:200]}))
 
     if "knowledge" in intents:
         plan.append(
@@ -308,10 +1056,17 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
                 {"task": text, "max_chars": 3000},
             )
         )
+        plan.append(
+            Action(
+                f"Open the falsifiable playbook for {cls}.",
+                "open_playbook",
+                {"task": cls, "endpoint": target or ""},
+            )
+        )
 
     # Scope check whenever we have a host, or the user explicitly asked.
-    if host and ("scope" in intents or "plan" in intents or "run" in intents):
-        action_label = interp.tool or (_playbook_for(interp.classes)[2])
+    if host and ("scope" in intents or "plan" in intents or "run" in intents or "playbook_run" in intents):
+        action_label = interp.tool or cls
         plan.append(
             Action(
                 f"Confirm {host} is in scope for {interp.target_dir} before anything active.",
@@ -320,7 +1075,6 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
             )
         )
     elif "scope" in intents and not host:
-        # asked about scope but gave no host -> still show the scope file
         plan.append(
             Action(
                 "No host given, so read the SCOPE.md so we can see what's allowed.",
@@ -329,9 +1083,21 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
             )
         )
 
-    if "plan" in intents:
-        cls, hyp, act, cmd = _playbook_for(interp.classes)
-        t = target or "<in-scope host>"
+    if interp.force and ("run" in intents or "playbook_run" in intents):
+        plan.append(
+            Action(
+                "FORCE is on — soft SCOPE gates may be overridden; OUT_OF_SCOPE still blocked; "
+                "approve still required for live traffic. Responsibility is yours.",
+                "_note",
+                {"message": "force override active (operator responsibility)"},
+            )
+        )
+
+    if "plan" in intents and "playbook_run" not in intents:
+        pb = playbook_for(cls)
+        step = pb.steps[0] if pb.steps else None
+        hyp = step.hypothesis if step else pb.summary
+        cmd = (step.command if step else "").replace("{host}", target or "<host>")
         plan.append(
             Action(
                 f"Draft a falsifiable hunt step for {cls}.",
@@ -339,21 +1105,175 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
                 {
                     "target_dir": interp.target_dir,
                     "hypothesis": hyp,
-                    "target": t,
-                    "action": act,
-                    "command": cmd.format(t=t),
+                    "target": target or "<in-scope host>",
+                    "action": cls,
+                    "command": cmd or f"# see playbook {cls}",
                 },
             )
         )
 
-    if "run" in intents:
+    if "campaign" in intents:
+        if not host:
+            plan.append(
+                Action(
+                    "Campaign/hunt precisa de host in-scope.",
+                    "_note",
+                    {
+                        "message": (
+                            "ex: /hunt explora o que der em example.com --approve\n"
+                            "ou: de acordo com o scope, faça DDoS e secrets em example.com"
+                        )
+                    },
+                )
+            )
+        else:
+            mode = "EXECUTE" if interp.approve else "dry-run"
+            from .campaign import resolve_modules
+
+            mods, used_default = resolve_modules(text)
+            # Open-ended / default-pack / recon-only → autonomous OODA hunt.
+            # Named offensive classes (dos, secrets, idor, …) keep run_campaign.
+            named = [m for m in mods if m.id not in {"recon"}]
+            use_hunt = used_default or not named or bool(
+                re.search(
+                    r"\b(/hunt|autonom|explora o que|explore what|go hunt|cacada|caçada|"
+                    r"quebra o que|tudo que der|faz o que puder)\b",
+                    text,
+                    re.I,
+                )
+            )
+            if use_hunt:
+                note = " (autonomous OODA hunt)"
+                plan.append(
+                    Action(
+                        f"{mode}: hunt autônomo contra {host}{note} → surface + specialists + FINDINGS.",
+                        "run_hunt",
+                        {
+                            "target_dir": interp.target_dir,
+                            "prompt": text,
+                            "host": host,
+                            "approve": interp.approve,
+                            "force": interp.force,
+                        },
+                    )
+                )
+                if used_default:
+                    plan.insert(
+                        -1,
+                        Action(
+                            "Prompt aberto — usando /hunt (surface → chain → validate).",
+                            "_note",
+                            {
+                                "message": (
+                                    "Autonomous hunt maps surface then chains secrets/auth/IDOR/injection. "
+                                    "Name specific classes to use the older campaign pack instead."
+                                )
+                            },
+                        ),
+                    )
+            else:
+                note = ""
+                if used_default:
+                    note = " (default pack — prompt was vague)"
+                plan.append(
+                    Action(
+                        f"{mode}: campanha contra {host}{note} → relatório FOUND/NOT_FOUND.",
+                        "run_campaign",
+                        {
+                            "target_dir": interp.target_dir,
+                            "host": host,
+                            "prompt": text,
+                            "endpoint": target or host,
+                            "approve": interp.approve,
+                            "force": interp.force,
+                        },
+                    )
+                )
+                if used_default:
+                    plan.insert(
+                        -1,
+                        Action(
+                            "Prompt sem classes claras — usando pacote padrão de hunt.",
+                            "_note",
+                            {
+                                "message": (
+                                    "default pack: recon, secrets, auth-bypass, brute, dos. "
+                                    "Name classes to narrow; /force for level-3."
+                                )
+                            },
+                        ),
+                    )
+
+    if "playbook_run" in intents and "campaign" not in intents:
+        if not host:
+            plan.append(
+                Action(
+                    f"You asked to run the {cls} playbook but gave no host.",
+                    "_note",
+                    {
+                        "message": (
+                            f"give me a host, e.g. 'test {cls} on example.com for {interp.target_dir}' "
+                            "or set /target first"
+                        )
+                    },
+                )
+            )
+        else:
+            needs_ab = cls in {"idor", "bola", "bac", "bfla", "authz", "ssrf"}
+            if needs_ab:
+                plan.append(
+                    Action(
+                        "Check A/B sessions are loaded (masked).",
+                        "show_identity",
+                        {"target_dir": interp.target_dir},
+                    )
+                )
+                tdir = Path(interp.target_dir)
+                if not tdir.is_absolute():
+                    tdir = ROOT / tdir
+                ident = load_identity(tdir)
+                ready = set(ident.ready_sessions())
+                if not ({"A", "B"} <= ready or len(ready) >= 2):
+                    plan.append(
+                        Action(
+                            "A/B sessions missing — authz playbook will fail without them.",
+                            "_note",
+                            {
+                                "message": (
+                                    "load secrets first: copy sessions.example.yaml -> sessions.yaml "
+                                    "or `set session A bearer <token>` and same for B"
+                                )
+                            },
+                        )
+                    )
+            mode = "EXECUTE" if interp.approve else "dry-run"
+            plan.append(
+                Action(
+                    f"{mode}: executable playbook `{cls}` against {host}.",
+                    "run_playbook",
+                    {
+                        "target_dir": interp.target_dir,
+                        "task": cls,
+                        "host": host,
+                        "endpoint": target or host,
+                        "approve": interp.approve,
+                        "force": interp.force,
+                    },
+                )
+            )
+
+    if "run" in intents and "playbook_run" not in intents:
         tool = interp.tool or "httpx"
         if not host:
             plan.append(
                 Action(
                     f"You asked to run {tool} but gave no in-scope host, so I'll stop and ask for one.",
                     "_note",
-                    {"message": f"give me a host, e.g. 'dry-run {tool} on example.com for {interp.target_dir}'"},
+                    {
+                        "message": (
+                            f"give me a host, e.g. 'dry-run {tool} on example.com for {interp.target_dir}'"
+                        )
+                    },
                 )
             )
         else:
@@ -362,50 +1282,64 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
                 "tool": tool,
                 "host": host,
                 "approve": interp.approve,
+                "force": interp.force,
             }
             if tool == "ffuf":
                 run_args["wordlist"] = "<wordlist>"
             mode = "EXECUTE (active traffic)" if interp.approve else "dry-run (print only)"
-            plan.append(
-                Action(f"{mode}: {tool} against {host}.", "run_tool", run_args)
-            )
+            plan.append(Action(f"{mode}: {tool} against {host}.", "run_tool", run_args))
 
     if "report" in intents:
-        platform = interp.platform or "bugcrowd"
-        cls, hyp, _, _ = _playbook_for(interp.classes)
+        platform = interp.platform or "generic"
         plan.append(
             Action(
-                f"Write a {platform} report draft skeleton for {cls}.",
+                f"Write a {platform} bug-bounty report draft from FINDINGS.md.",
                 "write_report_draft",
                 {
                     "target_dir": interp.target_dir,
                     "platform": platform,
-                    "title": f"{cls.upper()} on {host or target or 'target'}",
-                    "target": target or host or "TBD",
-                    "steps": "1. ...\n2. ...\n3. ...",
-                    "impact": "TBD - fill from confirmed evidence",
+                    "finding_id": "latest",
                 },
             )
         )
 
-    if "read" in intents and not any(a.tool == "read_file" for a in plan):
-        # try to read a specific file the user named, else SCOPE
-        m = re.search(r"([a-z0-9_./\\-]+\.(?:md|txt|json|xml|yaml|yml))", text, re.IGNORECASE)
-        path = m.group(1) if m else f"{interp.target_dir}/SCOPE.md"
+    if "read" in intents and not any(
+        a.tool in {"read_file", "load_sessions_from_file", "read_image"} for a in plan
+    ):
+        paths = extract_path_mentions(text)
+        text_paths = [
+            p
+            for p in paths
+            if not p.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"))
+        ]
+        if text_paths:
+            path = text_paths[0]
+        else:
+            m = re.search(
+                r"([a-z0-9_./\\:~-]+\.(?:md|txt|json|xml|yaml|yml|env))",
+                text,
+                re.IGNORECASE,
+            )
+            path = m.group(1) if m else f"{interp.target_dir}/SCOPE.md"
         plan.append(Action(f"Read {path}.", "read_file", {"path": path, "max_chars": 4000}))
 
-    # Nothing matched: give a useful default based on what we could extract.
     if not plan:
-        if host:
-            plan.append(
-                Action(
-                    f"I'll at least verify {host} against {interp.target_dir}'s scope.",
-                    "scope_check",
-                    {"target_dir": interp.target_dir, "host": host},
-                )
+        plan.append(
+            Action(
+                "Não mapeei um passo concreto — fala natural funciona.",
+                "_note",
+                {
+                    "message": (
+                        "Exemplos:\n"
+                        "- as credenciais estão no arquivo tokens.yaml em Downloads; "
+                        "explora example.com approve\n"
+                        "- leia a imagem Desktop/scope.png\n"
+                        "- explora vulnerabilidades em example.com (targets/demo)\n"
+                        "(/hunt e /session são atalhos opcionais)"
+                    )
+                },
             )
-        else:
-            plan.append(Action("Show the targets I can work with.", "list_targets", {}))
+        )
 
     return plan
 
@@ -437,6 +1371,69 @@ def _render_result(tool: str, result_json: str) -> None:
         ui.markdown_panel(preview[:2500] or "(no notes)", title="knowledge")
         return
 
+    if tool == "open_playbook":
+        ui.markdown_panel(data.get("playbook", "")[:4000], title=f"playbook:{data.get('class', '?')}")
+        return
+
+    if tool == "run_playbook":
+        if data.get("executed"):
+            ui.success(f"playbook {data.get('class')} executed ({len(data.get('results') or [])} steps)")
+            if data.get("verdict"):
+                ui.kv("verdict", str(data["verdict"]))
+        else:
+            ui.info(f"playbook {data.get('class')} dry-run — {len(data.get('steps') or [])} steps")
+            if data.get("playbook"):
+                ui.markdown_panel(str(data["playbook"])[:3000], title="playbook")
+        ui.code_panel(json.dumps(data, indent=2)[:4000], title="run_playbook", lexer="json")
+        return
+
+    if tool == "http_request":
+        ui.kv("label", str(data.get("label", "?")))
+        ui.kv("status", str(data.get("status", "?")))
+        return
+
+    if tool == "assert_diff":
+        ui.kv("verdict", str(data.get("verdict", "?")))
+        ui.info(str(data.get("reason", "")))
+        return
+
+    if tool == "log_finding":
+        ui.success(f"logged {data.get('finding_id')}")
+        ui.path_line("path", data.get("path", ""))
+        return
+
+    if tool == "show_identity":
+        ui.kv("ready", ", ".join(data.get("ready") or []) or "(none)")
+        ui.code_panel(json.dumps(data.get("sessions") or {}, indent=2), title="sessions (masked)", lexer="json")
+        return
+
+    if tool == "run_campaign":
+        ui.kv("found", str(data.get("found_count", 0)))
+        if data.get("finding_ids"):
+            ui.kv("findings", ", ".join(data["finding_ids"]))
+        if data.get("report_md"):
+            ui.markdown_panel(str(data["report_md"]), title="campaign results")
+        return
+
+    if tool == "run_hunt":
+        ui.kv("acts", str(data.get("acts_done", 0)))
+        ui.kv("findings", ", ".join(data.get("findings") or []) or "(none)")
+        ui.kv("stop", str(data.get("stop_reason") or "complete"))
+        return
+
+    if tool == "map_surface":
+        ui.kv("endpoints", str(data.get("endpoints", 0)))
+        return
+
+    if tool == "load_sessions_from_file":
+        ui.kv("saved", ", ".join(data.get("saved") or []) or "(preview)")
+        ui.kv("path", str(data.get("path") or ""))
+        return
+
+    if tool == "read_image":
+        ui.kv("source", str(data.get("source") or "?"))
+        return
+
     if tool == "make_plan":
         ui.markdown_panel(data.get("plan", ""), title="hunt step")
         if not data.get("in_scope", False):
@@ -444,8 +1441,6 @@ def _render_result(tool: str, result_json: str) -> None:
         return
 
     if tool == "run_tool":
-        # The runner (run_command) already printed the command panel, the
-        # dry-run banner, and any stdout/exit code. Nothing to re-render.
         return
 
     if tool in ("write_report_draft", "save_evidence"):
@@ -474,39 +1469,86 @@ def run_local_agent(
     *,
     approve_fn: ApproveFn | None = None,
 ) -> None:
-    """Read the prompt, show the plan, execute each step. No LLM."""
-    from .intent import is_chat_prompt
+    """Read the prompt, show the plan, execute each step. No LLM required.
+
+    When offline confidence is low and a model provider is configured,
+    prompt_router asks the model for a PT-BR/EN JSON interpretation, then
+    we still execute via the same tools (SCOPE / approve / force).
+    """
 
     if is_chat_prompt(user_prompt):
         ui.markdown_panel(
-            "Hey. Offline brain here (no model). I can still run scope checks and "
-            "dry-run tools if you give me a host or target folder.\n\n"
-            "For free-form chat, switch with `/provider` (or `/codex`).",
+            "Hey. Offline brain here (no model). **Fala natural** — não precisa de `/hunt` "
+            "nem `/session`.\n\n"
+            "Exemplos:\n"
+            "- as credenciais estão no arquivo `tokens.yaml` em Downloads; explora "
+            "example.com approve\n"
+            "- leia a imagem `Desktop/scope.png`\n"
+            "- explora o que der em example.com (targets/demo)\n\n"
+            "PT-BR / EN ok. Modelo: `/provider`. "
+            "`approve` / `/force` quando for tráfego real / level-3.",
             title="hackbot (offline)",
         )
         return
 
     interp = interpret(user_prompt)
+    route = route_prompt(
+        user_prompt,
+        host=interp.host,
+        target_dir=interp.target_dir,
+        intents=interp.intents,
+        classes=interp.classes,
+        approve=interp.approve,
+        force=interp.force,
+    )
+    interp = _apply_route(interp, route)
     plan = build_plan(user_prompt, interp)
+    # If router says campaign with modules, ensure a campaign action exists
+    if route.intent == "campaign" and route.modules and not any(
+        a.tool == "run_campaign" for a in plan
+    ):
+        host = interp.host
+        if host:
+            plan = [
+                Action(
+                    f"Routed campaign ({route.source}): {', '.join(route.modules)}",
+                    "run_campaign",
+                    {
+                        "target_dir": interp.target_dir,
+                        "host": host,
+                        "prompt": _campaign_prompt_from_route(user_prompt, route),
+                        "endpoint": route.endpoint or interp.full_target or host,
+                        "approve": interp.approve,
+                        "force": interp.force,
+                    },
+                )
+            ]
 
-    # Show the "thinking": what I understood + the ordered plan.
     understood = [
+        f"- lang: `{route.language}`  route: `{route.source}`  confidence: `{route.confidence:.2f}`",
+        f"- understood: {route.summary_for_ui()}",
         f"- target: `{interp.target_dir}`",
         f"- host: `{interp.host or '(none found)'}`",
         f"- bug class: `{','.join(interp.classes)}`",
     ]
+    if route.modules:
+        understood.append(f"- modules: `{', '.join(route.modules)}`")
     if interp.tool:
         understood.append(f"- tool: `{interp.tool}`")
     if interp.platform:
         understood.append(f"- platform: `{interp.platform}`")
     understood.append(f"- mode: `{'approve/active' if interp.approve else 'dry-run/safe'}`")
+    understood.append(f"- force: `{'ON' if interp.force else 'off'}`")
     steps = "\n".join(f"{i}. {a.thought}" for i, a in enumerate(plan, 1))
     ui.markdown_panel(
         "**what I understood**\n" + "\n".join(understood) + "\n\n**plan**\n" + steps,
-        title="thinking (offline)",
+        title=f"thinking ({route.source})",
     )
 
-    for i, action in enumerate(plan, 1):
+    i = 0
+    while i < len(plan):
+        action = plan[i]
+        i += 1
         ui.rule(f"step {i}/{len(plan)}")
         ui.info(action.thought)
         if action.tool == "_note":
@@ -518,5 +1560,84 @@ def run_local_agent(
         result = execute_tool(action.tool, action.args, approve_fn=approve_fn)
         _render_result(action.tool, result)
 
-    ui.console.print()
-    ui.success("done (offline mode). set an API key for free-form reasoning.")
+        if action.tool == "run_playbook":
+            try:
+                data = json.loads(result)
+            except json.JSONDecodeError:
+                data = {}
+            verdict = (data.get("verdict") or "").lower()
+            if data.get("executed") and verdict in {"confirmed", "likely"}:
+                endpoint = action.args.get("endpoint") or action.args.get("host") or ""
+                cls = data.get("class") or "finding"
+                follow = [
+                    Action(
+                        f"Log {verdict} finding for {cls}.",
+                        "log_finding",
+                        {
+                            "target_dir": action.args.get("target_dir"),
+                            "title": f"{cls.upper()} on {endpoint}",
+                            "class_name": cls,
+                            "endpoint": endpoint,
+                            "verdict": verdict,
+                            "observed": f"Playbook verdict={verdict}",
+                            "evidence": "See evidence/safe/ (http_* and diff_*)",
+                            "next_step": "Draft and submit platform report",
+                            "update_resume": True,
+                        },
+                    ),
+                    Action(
+                        "Draft report from latest finding.",
+                        "write_report_draft",
+                        {
+                            "target_dir": action.args.get("target_dir"),
+                            "platform": interp.platform or "generic",
+                            "title": f"{cls.upper()} on {endpoint}",
+                            "target": endpoint,
+                            "finding_id": "latest",
+                        },
+                    ),
+                ]
+                plan.extend(follow)
+                ui.info("verdict interesting — queuing log_finding + report draft")
+
+    ui.success("offline plan finished")
+
+
+def _apply_route(interp: Interpretation, route: RouteDecision) -> Interpretation:
+    """Merge RouteDecision into Interpretation (host/target/approve/force/intents)."""
+    if route.host and not interp.host:
+        interp.host = route.host
+        if not interp.full_target:
+            interp.full_target = route.endpoint or route.host
+    if route.endpoint:
+        interp.full_target = route.endpoint
+    if route.target_dir:
+        interp.target_dir = route.target_dir
+    if route.approve:
+        interp.approve = True
+    if route.force:
+        interp.force = True
+    if route.tool and not interp.tool:
+        interp.tool = route.tool
+    if route.modules:
+        # Prefer routed modules as classes for playbook selection
+        interp.classes = list(dict.fromkeys(route.modules + interp.classes))
+    if route.intent == "campaign" and "campaign" not in interp.intents:
+        interp.intents = ["campaign", *interp.intents]
+    elif route.intent == "playbook" and "playbook_run" not in interp.intents:
+        interp.intents = ["playbook_run", *interp.intents]
+    elif route.intent == "run_tool" and "run" not in interp.intents:
+        interp.intents = ["run", *interp.intents]
+    elif route.intent == "scope" and "scope" not in interp.intents:
+        interp.intents = ["scope", *interp.intents]
+    elif route.intent == "knowledge" and "knowledge" not in interp.intents:
+        interp.intents = ["knowledge", *interp.intents]
+    return interp
+
+
+def _campaign_prompt_from_route(original: str, route: RouteDecision) -> str:
+    """Enrich campaign prompt with explicit module names for the executor."""
+    if not route.modules:
+        return original
+    tags = " ".join(route.modules)
+    return f"{original}\n\n[routed modules: {tags}]"
