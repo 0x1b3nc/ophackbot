@@ -67,9 +67,41 @@ def import_har(path: Path, target_dir: Path, *, max_entries: int = 500) -> dict[
                 }
             )
 
+    # Drop explicitly OUT_OF_SCOPE hosts from surface (silent OOS seed is a bug).
+    # NOT_CONFIRMED hosts may remain; live fetch still re-gates (force = operator).
+    skipped_oos = 0
+    try:
+        from ..policy_guard import ScopePolicy, host_from_target
+
+        policy = ScopePolicy.load(target_dir)
+        filtered: list[Endpoint] = []
+        for ep in endpoints:
+            h = host_from_target(ep.url)
+            if h and policy.is_explicitly_out_of_scope(h):
+                skipped_oos += 1
+                continue
+            filtered.append(ep)
+        endpoints = filtered
+        hosts = {host_from_target(e.url) for e in endpoints if host_from_target(e.url)}
+    except Exception:  # noqa: BLE001
+        pass
+
     memory = HuntMemory(target_dir)
     if endpoints:
-        host = next(iter(hosts), "")
+        # Prefer an in-scope host as surface primary when available
+        host = ""
+        try:
+            from ..policy_guard import ScopePolicy, host_from_target
+
+            policy = ScopePolicy.load(target_dir)
+            for candidate in sorted(hosts):
+                if policy.contains_host(candidate):
+                    host = candidate
+                    break
+        except Exception:  # noqa: BLE001
+            host = ""
+        if not host:
+            host = next(iter(sorted(hosts)), "")
         memory.upsert_endpoints(endpoints[:300], host=host)
 
     return {
@@ -80,6 +112,7 @@ def import_har(path: Path, target_dir: Path, *, max_entries: int = 500) -> dict[
         "methods": methods,
         "status_codes": status_codes,
         "endpoints_seeded": min(len(endpoints), 300),
+        "skipped_oos": skipped_oos,
         "interesting": interesting[:40],
         "surface": str(memory.root / "surface.yaml"),
     }

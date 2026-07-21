@@ -70,20 +70,32 @@ def _install_fake_sdk(agent: _FakeAgent) -> types.ModuleType:
     """Inject a minimal cursor_sdk module into sys.modules."""
 
     class _LocalAgentOptions:
-        def __init__(self, cwd: str = "."):
+        def __init__(self, cwd: str = ".", custom_tools=None, **_kwargs):
             self.cwd = cwd
+            self.custom_tools = custom_tools or {}
 
     class _AgentOptions:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            agent.last_options = kwargs  # type: ignore[attr-defined]
 
     class _SendOptions:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
+    class _CustomTool:
+        def __init__(self, execute=None, description=None, input_schema=None):
+            self.execute = execute
+            self.description = description
+            self.input_schema = input_schema
+
     class _AgentAPI:
         @staticmethod
         def create(*args, **kwargs):
+            if args and hasattr(args[0], "kwargs"):
+                agent.last_options = args[0].kwargs  # type: ignore[attr-defined]
+            elif kwargs:
+                agent.last_options = kwargs  # type: ignore[attr-defined]
             return agent
 
     mod = types.ModuleType("cursor_sdk")
@@ -91,7 +103,11 @@ def _install_fake_sdk(agent: _FakeAgent) -> types.ModuleType:
     mod.LocalAgentOptions = _LocalAgentOptions
     mod.AgentOptions = _AgentOptions
     mod.SendOptions = _SendOptions
+    types_mod = types.ModuleType("cursor_sdk.types")
+    types_mod.CustomTool = _CustomTool
+    mod.types = types_mod
     sys.modules["cursor_sdk"] = mod
+    sys.modules["cursor_sdk.types"] = types_mod
     return mod
 
 
@@ -129,6 +145,7 @@ class CursorAvailableTests(unittest.TestCase):
     def tearDown(self) -> None:
         close_cursor_agent()
         sys.modules.pop("cursor_sdk", None)
+        sys.modules.pop("cursor_sdk.types", None)
 
     def test_false_without_key(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=False):
@@ -167,6 +184,7 @@ class CursorTurnTests(unittest.TestCase):
     def tearDown(self) -> None:
         close_cursor_agent()
         sys.modules.pop("cursor_sdk", None)
+        sys.modules.pop("cursor_sdk.types", None)
 
     def test_turn_returns_assistant_text(self) -> None:
         self.agent.next_text = "Pronto para caçar."
@@ -176,6 +194,7 @@ class CursorTurnTests(unittest.TestCase):
                 "CURSOR_API_KEY": "cursor_test",
                 "HACKBOT_STREAM": "0",
                 "HACKBOT_CURSOR_MODE": "plan",
+                "HACKBOT_CURSOR_TOOLS": "0",
             },
             clear=False,
         ):
@@ -199,7 +218,11 @@ class CursorTurnTests(unittest.TestCase):
             self.agent.next_text = block
             with mock.patch.dict(
                 os.environ,
-                {"CURSOR_API_KEY": "cursor_test", "HACKBOT_STREAM": "0"},
+                {
+                    "CURSOR_API_KEY": "cursor_test",
+                    "HACKBOT_STREAM": "0",
+                    "HACKBOT_CURSOR_TOOLS": "0",
+                },
                 clear=False,
             ):
                 answer = run_cursor_turn(
@@ -224,7 +247,11 @@ class CursorTurnTests(unittest.TestCase):
             self.agent.next_text = block
             with mock.patch.dict(
                 os.environ,
-                {"CURSOR_API_KEY": "cursor_test", "HACKBOT_STREAM": "0"},
+                {
+                    "CURSOR_API_KEY": "cursor_test",
+                    "HACKBOT_STREAM": "0",
+                    "HACKBOT_CURSOR_TOOLS": "0",
+                },
                 clear=False,
             ):
                 run_cursor_turn(
@@ -256,7 +283,11 @@ class CursorTurnTests(unittest.TestCase):
     def test_close_disposes_agent(self) -> None:
         with mock.patch.dict(
             os.environ,
-            {"CURSOR_API_KEY": "cursor_test", "HACKBOT_STREAM": "0"},
+            {
+                "CURSOR_API_KEY": "cursor_test",
+                "HACKBOT_STREAM": "0",
+                "HACKBOT_CURSOR_TOOLS": "0",
+            },
             clear=False,
         ):
             run_cursor_turn("oi", approve_fn=lambda _d: False)
@@ -270,12 +301,55 @@ class CursorTurnTests(unittest.TestCase):
         self.agent.next_status = "error"
         with mock.patch.dict(
             os.environ,
-            {"CURSOR_API_KEY": "cursor_test", "HACKBOT_STREAM": "0"},
+            {
+                "CURSOR_API_KEY": "cursor_test",
+                "HACKBOT_STREAM": "0",
+                "HACKBOT_CURSOR_TOOLS": "0",
+            },
             clear=False,
         ):
             answer = run_cursor_turn("explora example.com", approve_fn=lambda _d: False)
         self.assertIn("cursor", answer.lower())
         self.assertIn("error", answer.lower())
+
+    def test_hunt_registers_custom_tools(self) -> None:
+        self.agent.next_text = "mapeando."
+        self.agent.last_options = {}  # type: ignore[attr-defined]
+        with mock.patch.dict(
+            os.environ,
+            {
+                "CURSOR_API_KEY": "cursor_test",
+                "HACKBOT_STREAM": "0",
+                "HACKBOT_CURSOR_TOOLS": "1",
+                "HACKBOT_CURSOR_MODE": "agent",
+                "HACKBOT_TOOL_PACK": "core,recon",
+            },
+            clear=False,
+        ):
+            with mock.patch(
+                "hackbot.cursor_backend.resolve_cursor_model",
+            ) as resolve:
+                from hackbot.cursor_models import CatalogEntry, ResolvedCursorModel
+
+                resolve.return_value = ResolvedCursorModel(
+                    entry=CatalogEntry(id="composer-2.5", display_name="Composer 2.5"),
+                    effort=None,
+                    fast=False,
+                    source="curated",
+                )
+                run_cursor_turn(
+                    "map the surface of example.com for targets/demo",
+                    approve_fn=lambda _d: False,
+                )
+        opts = getattr(self.agent, "last_options", {}) or {}
+        local = opts.get("local")
+        self.assertIsNotNone(local)
+        tools = getattr(local, "custom_tools", {}) or {}
+        self.assertIn("map_surface", tools)
+        self.assertIn("list_targets", tools)
+        self.assertGreaterEqual(len(tools), 10)
+        prompt = self.agent.prompts[-1]
+        self.assertIn("custom tools", prompt.lower())
 
 
 if __name__ == "__main__":

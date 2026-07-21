@@ -22,6 +22,7 @@ from .findings import (
     report_fields_from_finding,
     update_resume_next_step,
 )
+from .boolparse import parse_bool
 from .force import is_forced
 from .identity import ensure_example, load_identity, save_session
 from .knowledge import open_notes, required_bundle
@@ -178,7 +179,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "session_b": {"type": "string", "default": "B"},
                 "approve": {"type": "boolean", "default": False},
                 "force": {"type": "boolean", "default": False},
-                "use_jar": {"type": "boolean", "default": True},
+                "use_jar": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Merge shared cookie jar (off by default for clean A/B)",
+                },
                 "method": {"type": "string", "default": "GET"},
                 "methods": {
                     "type": "string",
@@ -2349,7 +2354,7 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         return json.dumps(
             browser_runner.cdp_attach(
                 args.get("cdp_url") or "http://127.0.0.1:9222",
-                approve=bool(args.get("approve")),
+                approve=parse_bool(args.get("approve")),
             )
         )
     if name == "hunt_checklist":
@@ -2411,7 +2416,7 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         from .runners import advanced_http as adv
 
         target = _target_path(args["target_dir"])
-        approve = bool(args.get("approve"))
+        approve = parse_bool(args.get("approve"))
         force = _resolve_force_arg(args)
         if approve:
             refusal = _require_approval(
@@ -2660,6 +2665,7 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         cvss_vector = ""
         fid = args.get("finding_id") or "latest"
         found = parse_finding_by_id(target, fid)
+        vrt_arg = args.get("vrt") or ""
         if found:
             filled = report_fields_from_finding(found)
             title = filled["title"] or title
@@ -2672,12 +2678,17 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
             observed = filled.get("observed") or ""
             severity_hint = filled.get("severity_hint") or ""
             cvss_vector = filled.get("cvss_vector") or ""
+            vrt_arg = vrt_arg or filled.get("vrt") or ""
         if not severity_hint:
             from .severity import severity_for_class
 
             sev = severity_for_class(vuln_type)
             severity_hint = sev.line()
             cvss_vector = sev.vector
+        if not vrt_arg:
+            from .severity import vrt_for_class
+
+            vrt_arg = vrt_for_class(vuln_type)
         body = render_report(
             platform,
             title=title,
@@ -2687,7 +2698,7 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
             impact=impact,
             evidence=evidence,
             vuln_type=vuln_type,
-            vrt=args.get("vrt") or vuln_type,
+            vrt=vrt_arg or vuln_type,
             weakness=args.get("weakness") or vuln_type,
             observed=observed,
             severity_hint=severity_hint,
@@ -2724,10 +2735,10 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
                 "finding_id": (found or {}).get("finding_id") if found else None,
                 "severity_hint": severity_hint,
                 "cvss_vector": cvss_vector,
+                "vrt": vrt_arg or vuln_type,
                 "hint": (
-                    "Portable draft — paste into whichever bounty portal the program uses "
-                    "(Bugcrowd, H1, Intigriti, YesWeHack, Synack, …). "
-                    "Severity/CVSS are triage hints from bug class."
+                    "Submit-ready draft (HUMAN SUBMIT GATE — paste into the portal). "
+                    "Bugcrowd VRT + minimal PoC + CVSS hints from bug class; triage before submit."
                 ),
             }
         )
@@ -2852,7 +2863,7 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         if tool in {"dos", "stress"}:
             tool = "rate_probe"
         host = args["host"]
-        approve = bool(args.get("approve"))
+        approve = parse_bool(args.get("approve"))
         force = _resolve_force_arg(args)
 
         action_label = tool if tool != "rate_probe" else "rate-limit testing dos stress"
@@ -2933,11 +2944,11 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
 
 
 def _resolve_force_arg(args: dict[str, Any]) -> bool:
-    if args.get("force") is True:
-        return True
+    if "force" not in args or args.get("force") is None:
+        return is_forced()
     if args.get("force") is False:
         return is_forced()
-    return is_forced()
+    return bool(parse_bool(args.get("force"), default=False) or is_forced())
 
 
 def _target_path(value: str) -> Path:
@@ -2954,7 +2965,7 @@ def _cache_key(target_dir: Path, label: str) -> str:
 def _tool_http_request(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     url = args["url"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     session = args.get("session")
     label = args.get("label") or (f"{session}" if session else "anon")
@@ -2983,7 +2994,7 @@ def _tool_http_request(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
         approve=approve,
         force=force,
         label=label,
-        use_jar=bool(args.get("use_jar", True)),
+        use_jar=parse_bool(args.get("use_jar"), default=True),
     )
     payload: dict[str, Any]
     try:
@@ -3027,7 +3038,7 @@ def _tool_http_request(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
 def _tool_idor_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     url = args["url"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -3050,7 +3061,7 @@ def _tool_idor_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
         session_b=str(args.get("session_b") or "B"),
         approve=approve,
         force=force,
-        use_jar=bool(args.get("use_jar", True)),
+        use_jar=parse_bool(args.get("use_jar"), default=False),
         method=str(args.get("method") or "GET"),
         methods=str(args.get("methods") or ""),
         body=str(args.get("body") or ""),
@@ -3088,7 +3099,7 @@ def _tool_idor_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
 def _tool_session_bootstrap(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     base_url = args.get("base_url") or args.get("url") or ""
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -3125,7 +3136,7 @@ def _tool_session_bootstrap(args: dict[str, Any], *, approve_fn: ApproveFn | Non
 def _tool_discover_paths(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     base_url = args.get("base_url") or args.get("url") or ""
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -3264,7 +3275,7 @@ def _run_playbook(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
         target = ROOT / target
     host = args["host"]
     endpoint = args.get("endpoint") or host
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     pb = playbook_for(args["task"])
 
@@ -3432,7 +3443,7 @@ def _tool_simple_probe(
 ) -> str:
     target = _target_path(args["target_dir"])
     url = args["url"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -3481,7 +3492,7 @@ def _tool_param_probe(
     target = _target_path(args["target_dir"])
     url = args["url"]
     param = args.get("param") or default_param
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -3515,7 +3526,7 @@ def _tool_param_probe(
 def _tool_xxe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     url = args["url"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -3550,7 +3561,7 @@ def _tool_jwt_active(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
     target = _target_path(args["target_dir"])
     url = args["url"]
     token = args["token"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -3577,7 +3588,7 @@ def _tool_jwt_active(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
 def _tool_oauth(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     url = args["authorize_url"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -3604,7 +3615,7 @@ def _tool_oauth(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
 def _tool_race_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     url = args["url"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -3652,7 +3663,7 @@ def _tool_race_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
 def _tool_websocket_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     url = args["url"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -3691,7 +3702,7 @@ def _tool_websocket_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None)
 
 def _tool_mobsf_upload(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     try:
         path = _readable_path(args["path"])
     except PermissionError as exc:
@@ -3716,7 +3727,7 @@ def _tool_mobsf_upload(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
 def _tool_mobsf_scan(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     hash_id = args["hash"]
     scan_type = str(args.get("scan_type") or "apk")
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     if approve:
         refusal = _require_approval(
             approve_fn,
@@ -3740,7 +3751,7 @@ def _tool_frida_run_script(args: dict[str, Any], *, approve_fn: ApproveFn | None
     package = args["package"]
     script = str(args.get("script") or "ssl_unpin_lab.js")
     spawn = True if args.get("spawn") is None else bool(args.get("spawn"))
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     if approve:
         refusal = _require_approval(
             approve_fn,
@@ -3766,7 +3777,7 @@ def _tool_frida_run_script(args: dict[str, Any], *, approve_fn: ApproveFn | None
 
 def _tool_objection_explore(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     package = args["package"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     if approve:
         refusal = _require_approval(
             approve_fn,
@@ -3790,7 +3801,7 @@ def _tool_browser(
 ) -> str:
     target = _target_path(args["target_dir"])
     url = args["url"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     tool = f"browser_{kind}"
     if approve:
@@ -3906,7 +3917,7 @@ def _tool_import_burp_xml(args: dict[str, Any]) -> str:
 def _tool_burp_replay(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     url = args["url"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -3934,7 +3945,7 @@ def _tool_burp_replay(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> 
 
 def _tool_burp_replay_history(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     idx = int(args.get("index") or 0)
     if approve:
@@ -3961,7 +3972,7 @@ def _tool_burp_replay_history(args: dict[str, Any], *, approve_fn: ApproveFn | N
 
 def _tool_mobile_bridge(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     start_hunt = bool(args.get("start_hunt"))
     apk_path = None
@@ -4045,7 +4056,7 @@ def _tool_analyze_js(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
 
     target = _target_path(args["target_dir"])
     source = args["source"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     is_url = source.startswith("http://") or source.startswith("https://")
     if is_url and approve:
@@ -4080,7 +4091,7 @@ def _tool_analyze_js(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
 def _tool_mine_params(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     url = args["url"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -4105,7 +4116,7 @@ def _tool_mine_params(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> 
 def _tool_graphql_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     url = args["url"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -4148,7 +4159,7 @@ def _tool_import_har(args: dict[str, Any]) -> str:
 def _tool_cors_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     url = args["url"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -4175,7 +4186,7 @@ def _tool_cors_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
 def _tool_open_redirect(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     url = args["url"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -4202,7 +4213,7 @@ def _tool_open_redirect(args: dict[str, Any], *, approve_fn: ApproveFn | None) -
 def _tool_analyze_headers(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     url = args["url"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -4322,7 +4333,7 @@ def _tool_load_sessions_from_file(
 def _tool_secrets_scan(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     host = args["host"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -4362,7 +4373,7 @@ def _tool_sqli_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
     target = _target_path(args["target_dir"])
     url = args["url"]
     param = args.get("param") or "id"
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -4399,7 +4410,7 @@ def _tool_xss_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> st
     target = _target_path(args["target_dir"])
     url = args["url"]
     param = args.get("param") or "q"
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -4438,7 +4449,7 @@ def _tool_second_order_xss(args: dict[str, Any], *, approve_fn: ApproveFn | None
     trigger = str(args.get("trigger_url") or url)
     param = args.get("param") or "comment"
     method = str(args.get("method") or "POST")
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -4482,7 +4493,7 @@ def _tool_map_surface(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> 
 
     target = _target_path(args["target_dir"])
     seed = args["seed"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -4505,7 +4516,7 @@ def _tool_run_hunt(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str
 
     target = _target_path(args["target_dir"])
     prompt = args["prompt"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     budget = args.get("budget")
     budget_i = int(budget) if budget is not None else None
@@ -4524,7 +4535,7 @@ def _tool_run_hunt(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str
 def _tool_brute_login(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     url = args["url"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     if approve:
         refusal = _require_approval(
@@ -4565,7 +4576,7 @@ def _run_campaign(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     host = args["host"]
     prompt = args["prompt"]
-    approve = bool(args.get("approve"))
+    approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
     endpoint = args.get("endpoint") or host
     login_url = args.get("login_url") or ""

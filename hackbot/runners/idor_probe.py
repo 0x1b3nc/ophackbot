@@ -104,7 +104,7 @@ def idor_probe(
     session_b: str = "B",
     approve: bool = False,
     force: bool = False,
-    use_jar: bool = True,
+    use_jar: bool = False,
     timeout: float = 20.0,
     method: str = "GET",
     methods: str = "",
@@ -122,11 +122,19 @@ def idor_probe(
     identity = load_identity(target_dir)
     ready = set(identity.ready_sessions())
     method_list = [m.strip().upper() for m in (methods or method or "GET").split(",") if m.strip()]
-    # Cap: at most GET + 2 write methods
-    writes = [m for m in method_list if m in WRITE_METHODS][:2]
+    # Cap: at most GET + 2 write methods (prefer PATCH/PUT over DELETE when both present)
+    writes = [m for m in method_list if m in WRITE_METHODS]
+    write_pref = [m for m in ("PATCH", "PUT", "POST", "DELETE") if m in writes][:2]
     reads = [m for m in method_list if m not in WRITE_METHODS] or ["GET"]
-    method_list = list(dict.fromkeys(reads[:1] + writes))
+    method_list = list(dict.fromkeys(reads[:1] + write_pref))
     matrix = (matrix or "bola").lower()
+    # GraphQL mutations: force POST + both matrix when body looks like a mutation
+    body_l = (body or "").lower()
+    if "graphql" in url.lower() or "mutation" in body_l:
+        if "POST" not in method_list:
+            method_list = ["POST"] + [m for m in method_list if m != "GET"][:2]
+        if matrix in {"bola", "read"}:
+            matrix = "both"
     plan = {
         "url": url,
         "session_a": session_a,

@@ -14,6 +14,13 @@ from . import ui
 from .audit import log_decision
 from .force import is_forced
 from .hunt_memory import Candidate, HuntMemory, HuntState
+from .hunt_phases import (
+    advance_phase,
+    allocate_phase_budgets,
+    phase_for_module,
+    pivot_modules,
+    prefer_phase,
+)
 from .identity import load_identity
 from .policy_guard import ScopePolicy, host_from_target, policy_quote_for
 from .surface import normalize_seed, seed_candidates_from_surface
@@ -298,6 +305,7 @@ def run_hunt(
             extra={"force_override": force_flag, "budget": budget_total},
         )
 
+    phase_budgets = allocate_phase_budgets(budget_total)
     state = HuntState(
         phase="observe",
         prompt=prompt,
@@ -307,6 +315,10 @@ def run_hunt(
         acts_done=0,
         failures=0,
         stopped=False,
+        hunt_phase="recon",
+        phase_budget_recon=phase_budgets.get("recon", 0),
+        phase_budget_authz=phase_budgets.get("authz", 0),
+        phase_budget_inject=phase_budgets.get("inject", 0),
     )
     memory.save_state(state)
 
@@ -319,6 +331,11 @@ def run_hunt(
     ui.rule("hunt start")
     ui.kv("host", host)
     ui.kv("budget", str(budget_total))
+    ui.kv(
+        "phase_budgets",
+        f"recon={state.phase_budget_recon} authz={state.phase_budget_authz} "
+        f"inject={state.phase_budget_inject}",
+    )
     ui.kv("approve_session", str(approve_session))
 
     # Default: clear sticky pause so a new hunt session can run
@@ -368,6 +385,16 @@ def run_hunt(
 
         if not queue:
             queue = _decide(memory, host, seed, target_dir=target_dir)
+        # Prefer current hunt_phase; advance when phase budget empty or no work left
+        queue = prefer_phase(queue, state.hunt_phase)
+        queue, advanced = _apply_phase_gate(state, queue)
+        if advanced:
+            ui.info(f"hunt phase → {state.hunt_phase}")
+            memory.save_state(state)
+        if not queue:
+            queue = _decide(memory, host, seed, target_dir=target_dir)
+            queue = prefer_phase(queue, state.hunt_phase)
+            queue, _ = _apply_phase_gate(state, queue)
         if not queue:
             state.stopped = True
             state.stop_reason = "no more hypotheses"
@@ -458,8 +485,10 @@ def run_hunt(
 
         state.budget_remaining -= 1
         state.acts_done += 1
+        _charge_phase_budget(state, hyp.module)
         acts.append({"module": hyp.module, "result": act_result})
 
+        outcome = str(act_result.get("outcome") or "done")
         memory.append_attempt(
             {
                 "phase": "act",
@@ -470,11 +499,27 @@ def run_hunt(
                 "aggression": level,
                 "scope_quote": quote[:200],
                 "dedupe_key": hyp.dedupe_key(),
-                "outcome": act_result.get("outcome") or "done",
+                "outcome": outcome,
                 "detail": act_result.get("summary") or "",
+                "signal": bool(act_result.get("signal")),
                 "signal_tags": list(hyp.signal_tags),
+                "hunt_phase": state.hunt_phase,
             }
         )
+
+        # Pivot: ban modules that keep coming back clean
+        if outcome == "clean" and hyp.module in FINDING_MODULES and not act_result.get("signal"):
+            before = _banned_modules(target_dir)
+            _bump_clean_count(target_dir, hyp.module, ban_after=3)
+            after = _banned_modules(target_dir)
+            newly = after - before
+            if newly:
+                for banned_mod in newly:
+                    ui.warn(f"pivot: ban {banned_mod} after clean streak")
+                    for pivot_mod in pivot_modules(banned_mod):
+                        for follow in _pivot_hypotheses(memory, host, seed, pivot_mod, boost=15):
+                            if not _already_attempted(memory, follow):
+                                queue.append(follow)
 
         # Chaining: inject follow-ups from this result + re-rank
         for follow in _chain_from_result(hyp, act_result, memory, host):
@@ -502,13 +547,14 @@ def run_hunt(
         if act_result.get("signal") and hyp.module in FINDING_MODULES:
             state.phase = "validate"
             memory.save_state(state)
+            win_params = _winning_params(hyp, act_result)
             cand = Candidate(
                 id=memory.next_candidate_id(),
                 module=hyp.module,
                 title=hyp.title,
                 url=hyp.url,
                 detail=str(act_result.get("summary") or ""),
-                params=dict(hyp.params or {}),
+                params=win_params,
                 status="pending",
             )
             memory.upsert_candidate(cand)
@@ -602,13 +648,18 @@ def run_hunt(
     except Exception:  # noqa: BLE001
         learned = {}
 
-    # Auto report drafts for new findings
+    # Auto submit-ready drafts (Bugcrowd/VRT by default)
     if findings_logged and approve_session:
+        report_plat = (os.environ.get("HACKBOT_REPORT_PLATFORM") or "bugcrowd").strip().lower()
         for fid in findings_logged[:3]:
             try:
                 execute_tool(
                     "write_report_draft",
-                    {"target_dir": str(target_dir), "finding_id": fid, "platform": "generic"},
+                    {
+                        "target_dir": str(target_dir),
+                        "finding_id": fid,
+                        "platform": report_plat,
+                    },
                     approve_fn=tool_approve,
                 )
             except Exception:  # noqa: BLE001
@@ -673,6 +724,141 @@ def _seed_queue(memory: HuntMemory, host: str, seed: str) -> None:
         memory.save_surface(data)
 
 
+def _phase_budget_remaining(state: HuntState, phase: str) -> int:
+    if phase == "recon":
+        return int(state.phase_budget_recon)
+    if phase == "authz":
+        return int(state.phase_budget_authz)
+    return int(state.phase_budget_inject)
+
+
+def _set_phase_budget(state: HuntState, phase: str, value: int) -> None:
+    value = max(0, int(value))
+    if phase == "recon":
+        state.phase_budget_recon = value
+    elif phase == "authz":
+        state.phase_budget_authz = value
+    else:
+        state.phase_budget_inject = value
+
+
+def _charge_phase_budget(state: HuntState, module: str) -> None:
+    phase = phase_for_module(module)
+    # Prefer charging the module's phase; if that bucket is empty, charge current hunt_phase
+    if _phase_budget_remaining(state, phase) > 0:
+        _set_phase_budget(state, phase, _phase_budget_remaining(state, phase) - 1)
+    elif _phase_budget_remaining(state, state.hunt_phase) > 0:
+        _set_phase_budget(
+            state, state.hunt_phase, _phase_budget_remaining(state, state.hunt_phase) - 1
+        )
+
+
+def _apply_phase_gate(state: HuntState, queue: list[Hypothesis]) -> tuple[list[Hypothesis], bool]:
+    """Drop/skip work outside current phase when budget remains; advance when empty."""
+    advanced = False
+    # Advance while current phase has no budget left
+    while _phase_budget_remaining(state, state.hunt_phase) <= 0:
+        nxt = advance_phase(state.hunt_phase)
+        if nxt is None:
+            break
+        state.hunt_phase = nxt
+        advanced = True
+
+    phase = state.hunt_phase
+    in_phase = [h for h in queue if phase_for_module(h.module) == phase]
+    if in_phase and _phase_budget_remaining(state, phase) > 0:
+        # Keep later-phase items for after advance; drop earlier-phase leftovers
+        later = [
+            h
+            for h in queue
+            if phase_for_module(h.module) != phase
+            and _phase_index(phase_for_module(h.module)) > _phase_index(phase)
+        ]
+        return prefer_phase(in_phase + later, phase), advanced
+
+    # No work in this phase — advance once and retry partition
+    nxt = advance_phase(phase)
+    if nxt is None:
+        return prefer_phase(queue, phase), advanced
+    state.hunt_phase = nxt
+    advanced = True
+    return prefer_phase(queue, state.hunt_phase), advanced
+
+
+def _phase_index(phase: str) -> int:
+    from .hunt_phases import PHASE_ORDER
+
+    try:
+        return PHASE_ORDER.index(phase)
+    except ValueError:
+        return 99
+
+
+def _banned_modules(target_dir: Path) -> set[str]:
+    neg = Path(target_dir) / "hunt" / "negative_learning.json"
+    if not neg.exists():
+        return set()
+    try:
+        return set(json.loads(neg.read_text(encoding="utf-8")).get("banned_modules") or [])
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _winning_params(hyp: Hypothesis, act_result: dict[str, Any]) -> dict[str, str]:
+    """Capture replayable winning-act fields for validator + learning."""
+    params = {k: str(v) for k, v in dict(hyp.params or {}).items()}
+    params["_method"] = hyp.method or "GET"
+    detail_obj = act_result.get("detail") if isinstance(act_result.get("detail"), dict) else {}
+    nested = detail_obj.get("detail") if isinstance(detail_obj.get("detail"), dict) else detail_obj
+    if isinstance(nested, dict):
+        if nested.get("matrix"):
+            params["matrix"] = str(nested["matrix"])
+        methods = nested.get("methods")
+        if isinstance(methods, list) and methods:
+            params["methods"] = ",".join(str(m) for m in methods)
+        elif nested.get("method"):
+            params["methods"] = str(nested["method"])
+        if nested.get("param"):
+            params.setdefault("param", str(nested["param"]))
+        # Best row payload hints
+        rows = nested.get("rows") if isinstance(nested.get("rows"), list) else []
+        best = next((r for r in rows if r.get("verdict") in {"confirmed", "likely"}), None)
+        if isinstance(best, dict) and best.get("method"):
+            params["_winning_method"] = str(best["method"])
+    params["_winning_summary"] = str(act_result.get("summary") or "")[:400]
+    return params
+
+
+def _pivot_hypotheses(
+    memory: HuntMemory,
+    host: str,
+    seed: str,
+    module: str,
+    *,
+    boost: int = 10,
+) -> list[Hypothesis]:
+    """Spawn a small set of pivot acts after a module is banned."""
+    origin = seed if "://" in seed else f"https://{host}"
+    out: list[Hypothesis] = []
+    if module not in MODULE_AGGRESSION and module not in FINDING_MODULES:
+        return out
+    # Prefer endpoints already on surface
+    eps = list(memory.endpoints())[:5]
+    urls = [e.url for e in eps] or [origin]
+    for url in urls[:2]:
+        out.append(
+            Hypothesis(
+                module=module,
+                url=url,
+                title=f"Pivot after clean ban → {module}",
+                priority=70 + boost,
+                aggression=MODULE_AGGRESSION.get(module, 2),
+                signal_tags=("pivot",),
+            )
+        )
+    return out
+
+
 def _decide(
     memory: HuntMemory,
     host: str,
@@ -683,12 +869,17 @@ def _decide(
     """Build hypothesis queue — evidence-driven, not blind always-ons."""
     ideas: list[Hypothesis] = []
     try:
-        from .learning import suggest_for_host
+        from .learning import suggest_for_host, suggest_payload_hints
 
         learned = suggest_for_host(host).get("suggestions") or []
+        payload_hints = suggest_payload_hints(host)
     except Exception:  # noqa: BLE001
         learned = []
+        payload_hints = []
     boost = {s["module"]: int(s.get("score") or 0) for s in learned if isinstance(s, dict)}
+    hint_by_mod = {
+        str(h.get("module")): h for h in payload_hints if isinstance(h, dict) and h.get("module")
+    }
 
     # Negative learning: skip modules marked dead for this host
     banned: set[str] = set()
@@ -765,16 +956,42 @@ def _decide(
         method = "GET"
         if mod == "idor":
             method = params.get("method") or "GET"
-            # Prefer write matrix when endpoint looks mutable
-            if any(x in idea["url"].lower() for x in ("/api/", "order", "user", "account")):
+            url_l = str(idea["url"]).lower()
+            # Full BOLA/BFLA write matrix when A/B likely useful
+            if any(
+                x in url_l
+                for x in ("/api/", "order", "user", "account", "graphql", "admin", "profile")
+            ):
+                if "graphql" in url_l:
+                    params.setdefault("methods", "POST")
+                    params.setdefault("matrix", "both")
+                    params.setdefault(
+                        "body",
+                        '{"query":"mutation($id:ID!){update(id:$id){id}}","variables":{"id":"1"}}',
+                    )
+                else:
+                    params.setdefault("methods", "GET,PATCH,PUT,DELETE")
+                    params.setdefault("matrix", "both")
+            else:
                 params.setdefault("methods", "GET,PATCH")
                 params.setdefault("matrix", "both")
+        # Apply cross-program payload/param hints
+        ph = hint_by_mod.get(mod)
+        if ph:
+            if ph.get("param"):
+                params.setdefault("param", str(ph["param"]))
+            if ph.get("payload") and mod in {"ssrf", "xss", "sqli", "ssti", "lfi", "xxe"}:
+                params.setdefault("payload", str(ph["payload"])[:300])
+            if ph.get("body") and mod == "idor":
+                params.setdefault("body", str(ph["body"])[:500])
         ideas.append(
             Hypothesis(
                 module=mod,
                 url=str(idea["url"]),
                 title=str(idea["title"]),
-                priority=int(idea.get("priority") or 50) + boost.get(mod, 0),
+                priority=int(idea.get("priority") or 50)
+                + boost.get(mod, 0)
+                + (8 if ph else 0),
                 params=params,
                 method=method,
                 aggression=MODULE_AGGRESSION.get(mod, 2),
@@ -1618,21 +1835,35 @@ def _act(
 
     if hyp.module == "openapi_ingest":
         try:
-            import urllib.request
-
             from .openapi_parse import ingest_openapi_text
+            from .scoped_http import scoped_fetch_bytes
             from .surface import origin_of
 
-            req = urllib.request.Request(hyp.url, headers={"User-Agent": "hackbot-openapi"})
-            with urllib.request.urlopen(req, timeout=12) as resp:
-                text = resp.read(500_000).decode("utf-8", errors="replace")
+            resp = scoped_fetch_bytes(
+                hyp.url,
+                target_dir=target_dir,
+                action="openapi ingest",
+                force=force,
+                timeout=12,
+                headers={"User-Agent": "hackbot-openapi"},
+                max_bytes=500_000,
+            )
+            text = resp.body.decode("utf-8", errors="replace")
             r = ingest_openapi_text(target_dir, text, base_url=origin_of(hyp.url), host=host)
+            r["final_url"] = resp.url
+            r["redirect_hops"] = resp.hops
             return {
                 "outcome": "mapped",
                 "signal": False,
                 "chain": int(r.get("seeded") or 0) > 0,
                 "summary": f"openapi seeded={r.get('seeded')}",
                 "detail": r,
+            }
+        except PermissionError as exc:
+            return {
+                "outcome": "scope_denied",
+                "signal": False,
+                "summary": f"openapi_ingest scope: {exc}",
             }
         except Exception as exc:  # noqa: BLE001
             return {

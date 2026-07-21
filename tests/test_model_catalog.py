@@ -5,7 +5,12 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from hackbot.model_catalog import known_models, resolve_model
+from hackbot.model_catalog import (
+    clear_model_cache,
+    fetch_live_models,
+    known_models,
+    resolve_model,
+)
 
 
 class ModelCatalogTests(unittest.TestCase):
@@ -67,6 +72,38 @@ class ModelCatalogTests(unittest.TestCase):
         with mock.patch("hackbot.cursor_models.fetch_live_catalog", return_value=None):
             mid, _ = resolve_model("cursor", "grok 4.5")
         self.assertEqual(mid, "grok-4.5")
+
+    def test_anthropic_live_extends(self) -> None:
+        clear_model_cache("anthropic")
+        with mock.patch(
+            "hackbot.model_catalog._fetch_anthropic_models",
+            return_value=["claude-opus-4-6-20260204"],
+        ):
+            mid, src = resolve_model("anthropic", "claude-opus-4-6-20260204")
+        self.assertEqual(mid, "claude-opus-4-6-20260204")
+        self.assertEqual(src, "live")
+
+    def test_live_cache_avoids_refetch(self) -> None:
+        clear_model_cache("openrouter")
+        with mock.patch(
+            "hackbot.model_catalog._fetch_live_uncached",
+            return_value=["acme/one"],
+        ) as fetch:
+            a = fetch_live_models("openrouter")
+            b = fetch_live_models("openrouter")
+        self.assertEqual(a, ["acme/one"])
+        self.assertEqual(b, ["acme/one"])
+        self.assertEqual(fetch.call_count, 1)
+
+    def test_force_refresh_refetches(self) -> None:
+        clear_model_cache("ollama")
+        with mock.patch(
+            "hackbot.model_catalog._fetch_live_uncached",
+            side_effect=[["m1"], ["m2"]],
+        ) as fetch:
+            self.assertEqual(fetch_live_models("ollama"), ["m1"])
+            self.assertEqual(fetch_live_models("ollama", force_refresh=True), ["m2"])
+        self.assertEqual(fetch.call_count, 2)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ from .agent import run_agent
 from .codex_backend import codex_available, run_codex_turn
 from .cursor_backend import close_cursor_agent, cursor_available, run_cursor_turn
 from .cursor_models import last_resolved_label, parse_effort_fast, resolve_cursor_model
-from .model_catalog import known_models, resolve_model
+from .model_catalog import clear_model_cache, known_models, live_models_status, resolve_model
 from .force import disable_force, enable_force, is_forced
 from .hunt_controller import hunt_status, request_stop, run_hunt
 from .identity import save_session
@@ -211,14 +211,22 @@ def _cmd_providers() -> None:
     ui.info("switch with:  /provider <name>")
 
 
-def _cmd_models(provider_name: str) -> None:
+def _cmd_models(provider_name: str, *, refresh: bool = False) -> None:
     ui.rule(f"models ({provider_name})")
+    if refresh:
+        clear_model_cache(provider_name)
+        ui.info("cache cleared — refetching live catalog…")
+        from .model_catalog import fetch_live_models
+
+        fetch_live_models(provider_name, force_refresh=True)
     rows = known_models(provider_name, include_live=True)
     if not rows:
-        ui.warn("no known models — start the local server or set the API key, then /models")
+        ui.warn("no known models — start the local server or set the API key, then /models refresh")
     for mid, note in rows:
         ui.kv(mid, note)
-    ui.info("ONLY these ids are accepted. set:  /model <id>")
+    if provider_name not in {"cursor", "offline"}:
+        ui.info(f"live status: {live_models_status(provider_name)}")
+    ui.info("ONLY these ids are accepted. set:  /model <id>   |   refresh: /models refresh")
 
 
 def _current_label() -> str:
@@ -530,7 +538,8 @@ def start_repl(*, one_shot: str | None = None) -> int:
             continue
 
         # ---- model --------------------------------------------------------
-        if text == "/models":
+        if text == "/models" or text.startswith("/models "):
+            refresh = text.strip().lower() in {"/models refresh", "/models --refresh"}
             try:
                 prov = resolve_config().provider
             except ConfigError:
@@ -539,10 +548,17 @@ def start_repl(*, one_shot: str | None = None) -> int:
                 )
             if mode in {"cursor", "codex", "model"} and prov in {"", "offline"}:
                 prov = "cursor" if mode == "cursor" else ("codex" if mode == "codex" else prov)
-            _cmd_models(prov if prov and prov != "offline" else (os.environ.get("HACKBOT_PROVIDER") or "openai"))
+            _cmd_models(
+                prov if prov and prov != "offline" else (os.environ.get("HACKBOT_PROVIDER") or "openai"),
+                refresh=refresh,
+            )
             if prov == "cursor" or mode == "cursor":
                 ui.info("effort+fast:  /effort high fast   |   /fast on|off")
                 ui.info("proof: after each turn, look for 'used model …'")
+                ui.info(
+                    "tools: HACKBOT_CURSOR_TOOLS=1 (default) registers hackbot "
+                    "CustomTools; mode defaults to agent"
+                )
             continue
         if text.startswith("/model"):
             arg = text[len("/model"):].strip()
@@ -674,7 +690,7 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.info("  leia a imagem Desktop/scope.png")
             ui.info("  explora vulnerabilidades em example.com (targets/demo)")
             ui.info("provider: /providers  /provider <name>  (/codex /cursor /local)")
-            ui.info("model:    /models  /model <id>   (ALL providers reject unknown ids)")
+            ui.info("model:    /models  /models refresh  /model <id>  (unknown ids rejected)")
             ui.info("effort:   /effort <auto|low|medium|high>[ fast]   /fast on|off")
             ui.info("stream:   /stream on|off   (live reasoning)")
             ui.info("verbose:  /verbose on|off  (full tool panels)")
@@ -682,7 +698,8 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.info("cursor:   /model grok-4.5 | composer-2.5 | auto")
             ui.info("          /effort high fast   — real ModelSelection params")
             ui.info("          after each turn: 'used model …' proves SDK selection")
-            ui.info("          HACKBOT_CURSOR_MODE=plan|agent  (default plan)")
+            ui.info("          HACKBOT_CURSOR_TOOLS=1  CustomTool loop (SCOPE/approve)")
+            ui.info("          HACKBOT_CURSOR_MODE=plan|agent  (default agent if tools on)")
             ui.info("shortcuts:/target  /hunt  /session  /force  /status")
             ui.info("session:  /clear  /exit   (Ctrl+C cancels a running turn)")
             continue

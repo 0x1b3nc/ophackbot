@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -162,8 +163,8 @@ def _replace_section_bullets(text: str, heading_substr: str, bullets: list[str])
 
 
 def report_fields_from_finding(finding: dict[str, Any]) -> dict[str, str]:
-    """Map FINDINGS fields into write_report_draft args."""
-    from .severity import severity_for_class
+    """Map FINDINGS fields into write_report_draft args (submit-ready PoC)."""
+    from .severity import severity_for_class, vrt_for_class
 
     endpoint = finding.get("endpoint") or finding.get("asset") or "TBD"
     verdict = finding.get("verdict") or "draft"
@@ -172,31 +173,129 @@ def report_fields_from_finding(finding: dict[str, Any]) -> dict[str, str]:
     class_name = finding.get("class") or finding.get("class_name") or "TBD"
     observed = finding.get("observed") or ""
     sev = severity_for_class(class_name)
-    steps = (
-        f"1. Authenticate as account A and fetch owned object at {endpoint}\n"
-        f"2. Replay the same request as account B (ID swap only)\n"
-        f"3. Compare responses (verdict={verdict})\n"
-        f"4. See FINDINGS.md {fid} and evidence/safe/"
+    vrt = vrt_for_class(class_name)
+    evidence_path = finding.get("evidence") or ""
+    win = _load_evidence_blob(evidence_path)
+    params = win.get("params") if isinstance(win.get("params"), dict) else {}
+    methods = str(params.get("methods") or params.get("_winning_method") or "GET")
+    matrix = str(params.get("matrix") or "bola")
+    param = str(params.get("param") or "")
+    rehit = win.get("rehit") if isinstance(win.get("rehit"), dict) else {}
+    winning = rehit.get("winning_replay") if isinstance(rehit.get("winning_replay"), dict) else {}
+    neg = rehit.get("negative") if isinstance(rehit.get("negative"), dict) else {}
+
+    steps = _minimal_poc_steps(
+        class_name=class_name,
+        endpoint=endpoint,
+        methods=methods,
+        matrix=matrix,
+        param=param,
+        verdict=verdict,
+        fid=fid,
+        winning=winning,
+        negative=neg,
+        observed=observed,
     )
-    if observed:
-        steps += f"\n\nObserved notes from FINDINGS:\n{observed}"
     impact = finding.get("impact") or (
-        "Cross-account access to another user's object (BOLA/IDOR). "
-        "Confirm data sensitivity and write paths before final severity."
+        f"Potential {class_name} on {endpoint}. Confirm data sensitivity and "
+        "write/mutation impact before final severity."
     )
     if sev.score != "TBD" and "Severity hint" not in impact:
         impact = f"{impact}\n\nSeverity hint: {sev.line()} — {sev.rationale}"
+    impact = f"{impact}\n\nVRT hint: {vrt}"
+    evidence_block = evidence_path or "See evidence/safe/ and FINDINGS.md"
+    if winning.get("verdict") or winning.get("signal") is not None:
+        evidence_block += (
+            f"\n\nWinning replay: verdict={winning.get('verdict')} "
+            f"signal={winning.get('signal')} methods={winning.get('methods')}"
+        )
+    if neg:
+        evidence_block += (
+            f"\nNegative control (unauth): status={neg.get('status') or neg.get('ok')}"
+        )
     return {
         "title": f"{fid} {title}".strip() if fid else title,
         "target": endpoint,
-        "preconditions": finding.get("preconditions") or "Two in-scope test accounts A and B",
+        "preconditions": finding.get("preconditions")
+        or "Authorized program; in-scope host; two test accounts A/B when authz",
         "steps": steps,
         "impact": impact,
-        "evidence": finding.get("evidence") or "See evidence/safe/ and FINDINGS.md",
+        "evidence": evidence_block,
         "vuln_type": class_name,
+        "vrt": vrt,
         "observed": observed,
         "severity_hint": sev.line(),
         "cvss_vector": sev.vector,
         "severity": sev.severity,
         "cvss_score": sev.score,
     }
+
+
+def _load_evidence_blob(path: str) -> dict[str, Any]:
+    if not path:
+        return {}
+    try:
+        p = Path(path)
+        if not p.is_file():
+            return {}
+        data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _minimal_poc_steps(
+    *,
+    class_name: str,
+    endpoint: str,
+    methods: str,
+    matrix: str,
+    param: str,
+    verdict: str,
+    fid: str,
+    winning: dict[str, Any],
+    negative: dict[str, Any],
+    observed: str,
+) -> str:
+    cls = (class_name or "").lower()
+    lines: list[str] = [
+        f"## Minimal PoC ({cls or 'issue'})",
+        f"1. Target: `{endpoint}`",
+        f"2. Method(s): `{methods}`  matrix=`{matrix}`"
+        + (f"  param=`{param}`" if param else ""),
+    ]
+    if cls in {"idor", "bola", "bac", "bfla", "authz", "browser_diff"}:
+        lines.extend(
+            [
+                "3. Authenticate as account **A**; capture a request to an object A owns.",
+                "4. Replay the **exact** request as account **B** (BOLA). "
+                "Also try privileged method/path as B (BFLA) and ID swap when applicable.",
+                "5. Confirm B receives A's object / succeeds on write (negative: unauth denied).",
+            ]
+        )
+    elif cls in {"ssrf", "xxe", "xss"}:
+        lines.extend(
+            [
+                "3. Inject the OOB/Interactsh (or marked) payload into the sink parameter.",
+                "4. Trigger the request; poll Collaborator/Interactsh for DNS/HTTP hit.",
+                "5. Negative control: same request without the payload shows no OOB hit.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "3. Send the proving request (see evidence JSON winning_replay).",
+                "4. Compare against negative control (unauthenticated / benign input).",
+                "5. Capture response diff that demonstrates impact.",
+            ]
+        )
+    lines.append(f"6. Finding id `{fid}` verdict=`{verdict}` — attach redacted evidence.")
+    if winning.get("reason"):
+        lines.append(f"\nWinning act reason: {winning.get('reason')}")
+    if negative:
+        lines.append(
+            f"Negative control note: status/ok={negative.get('status', negative.get('ok'))}"
+        )
+    if observed:
+        lines.append(f"\nObserved notes:\n{observed[:1200]}")
+    return "\n".join(lines)

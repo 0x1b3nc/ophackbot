@@ -93,7 +93,7 @@ def _persist_session(
     )
     if set_cookies:
         try:
-            merge_set_cookie(target_dir, set_cookies, url=url)
+            merge_set_cookie(target_dir, set_cookies, url=url, session=name)
         except Exception:  # noqa: BLE001
             pass
     return {"ok": True, "has_cookie": bool(cookie), "has_auth": bool(auth)}

@@ -30,10 +30,10 @@ setx DEEPSEEK_API_KEY "sk-..."      # then: /provider deepseek
 setx OPENROUTER_API_KEY "sk-or-..." # then: /provider openrouter
 setx HACKBOT_BASE_URL "http://localhost:11434/v1"  # then: /provider ollama
 
-# Cursor plan via Python SDK (optional):
+# Cursor plan via Python SDK (optional tool-loop):
 #   pip install 'hackbot-kit[cursor]'   # or: pip install cursor-sdk
 #   setx CURSOR_API_KEY "cursor_..."    # Dashboard → Integrations / API Keys
-#   /provider cursor
+#   /provider cursor   # CustomTools → hackbot httpx/probes under approve
 #   /model composer-2.5
 
 # ChatGPT plan via Codex CLI (optional, same weight as the others):

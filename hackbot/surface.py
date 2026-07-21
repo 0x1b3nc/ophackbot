@@ -79,22 +79,27 @@ def _absolutize(base: str, href: str) -> str | None:
     return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/", "", parsed.query, ""))
 
 
-def _fetch(url: str, *, timeout: float = 12.0) -> tuple[int, str, dict[str, str]]:
-    req = urllib.request.Request(
+def _fetch(
+    url: str,
+    *,
+    target_dir: Path,
+    force: bool = False,
+    timeout: float = 12.0,
+) -> tuple[int, str, dict[str, str]]:
+    from .scoped_http import scoped_fetch_bytes
+
+    resp = scoped_fetch_bytes(
         url,
-        method="GET",
+        target_dir=target_dir,
+        action="surface recon httpx",
+        force=force,
+        timeout=timeout,
         headers={"User-Agent": "hackbot-surface-recon"},
+        max_bytes=400_000,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            status = int(getattr(resp, "status", None) or resp.getcode())
-            body = resp.read(400_000).decode("utf-8", errors="replace")
-            headers = {k.lower(): v for k, v in resp.headers.items()}
-            return status, body, headers
-    except urllib.error.HTTPError as exc:
-        body = exc.read(200_000).decode("utf-8", errors="replace") if exc.fp else ""
-        headers = {k.lower(): v for k, v in (exc.headers.items() if exc.headers else [])}
-        return int(exc.code), body, headers
+    body = resp.body.decode("utf-8", errors="replace")
+    headers = {k.lower(): v for k, v in (resp.headers.items() if resp.headers else [])}
+    return resp.status, body, headers
 
 
 def _tech_from_body(body: str, headers: dict[str, str]) -> list[str]:
@@ -206,7 +211,7 @@ def map_surface(
     body = ""
 
     try:
-        status, body, headers = _fetch(seed_url)
+        status, body, headers = _fetch(seed_url, target_dir=target_dir, force=force)
         fetched += 1
         tech.extend(_tech_from_body(body, headers))
         html_preview = body[:4000]

@@ -144,13 +144,38 @@ def observe_v2(
             tags.add("openapi")
             if approve:
                 try:
-                    import urllib.request
+                    from .scoped_http import scoped_fetch_bytes
 
-                    req = urllib.request.Request(ep.url, headers={"User-Agent": "hackbot-observe-openapi"})
-                    with urllib.request.urlopen(req, timeout=12) as resp:
-                        text = resp.read(500_000).decode("utf-8", errors="replace")
+                    resp = scoped_fetch_bytes(
+                        ep.url,
+                        target_dir=target_dir,
+                        action="observe openapi fetch",
+                        force=force,
+                        timeout=12,
+                        headers={"User-Agent": "hackbot-observe-openapi"},
+                        max_bytes=500_000,
+                    )
+                    text = resp.body.decode("utf-8", errors="replace")
                     r = ingest_openapi_text(target_dir, text, base_url=origin_of(seed), host=host)
-                    steps.append({"step": "openapi_fetch", "url": ep.url, **r})
+                    steps.append(
+                        {
+                            "step": "openapi_fetch",
+                            "url": ep.url,
+                            "final_url": resp.url,
+                            "redirect_hops": resp.hops,
+                            **r,
+                        }
+                    )
+                except PermissionError as exc:
+                    steps.append(
+                        {
+                            "step": "openapi_fetch",
+                            "url": ep.url,
+                            "skipped": True,
+                            "error": f"scope_denied: {exc}",
+                        }
+                    )
+                    ui.warn(f"observe openapi skipped (scope): {exc}")
                 except Exception as exc:  # noqa: BLE001
                     steps.append({"step": "openapi_fetch", "url": ep.url, "error": type(exc).__name__})
 

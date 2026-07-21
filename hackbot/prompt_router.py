@@ -104,6 +104,47 @@ def model_usable_for_route() -> bool:
     return cfg.wire in {"openai", "anthropic"}
 
 
+# Intents that are concrete enough for offline execution without LLM routing.
+_HIGH_SIGNAL_INTENTS = frozenset(
+    {
+        "write_file",
+        "edit_file",
+        "set_session",
+        "show_identity",
+        "read_image",
+        "list_dir",
+        "analyze_jwt",
+        "analyze_js",
+        "import_har",
+        "import_burp",
+        "set_target",
+        "make_dir",
+        "delete_path",
+        "map_surface",
+        "http_request",
+        "scope",
+        "read",
+        "idor_probe",
+        "discover_paths",
+        "crt",
+        "wayback",
+        "session_bootstrap",
+        "hunt_checklist",
+        "browser",
+        "browser_session",
+        "browser_diff",
+        "mobsf",
+        "frida",
+        "burp_rest",
+        "burp_replay",
+        "learn_suggest",
+        "submit_ready",
+        "oob",
+        "oob_poll",
+    }
+)
+
+
 def offline_confidence(prompt: str, *, host: str | None, intents: list[str], classes: list[str]) -> float:
     """0..1 how sure the rule brain is about what to do."""
     norm = normalize_text(prompt)
@@ -125,10 +166,39 @@ def offline_confidence(prompt: str, *, host: str | None, intents: list[str], cla
     # File create/edit is a clear offline task — don't escalate to paid route
     if "write_file" in intents or "edit_file" in intents:
         score += 0.45
+    # Other concrete NL jobs (sessions, images, recon tools, …)
+    high = [i for i in intents if i in _HIGH_SIGNAL_INTENTS]
+    if high:
+        score += min(0.4, 0.12 * len(high))
     # Penalize very short / ambiguous prompts
     if len(norm.split()) < 4 and not host:
         score -= 0.2
+    # Vague campaign-only with default pack signals
+    if "campaign" in intents and not high and not mods and len(norm.split()) < 8:
+        score -= 0.15
     return max(0.0, min(1.0, score))
+
+
+def needs_soft_clarify(
+    *,
+    confidence: float,
+    intents: list[str],
+    used_default_pack: bool,
+    source: str,
+) -> bool:
+    """True when offline plan is too generic — ask instead of inventing a default hunt."""
+    if source not in {"offline", "offline+llm"}:
+        return False
+    threshold = float(os.environ.get("HACKBOT_CLARIFY_THRESHOLD", "0.55") or "0.55")
+    if confidence >= threshold:
+        return False
+    if any(i in _HIGH_SIGNAL_INTENTS for i in intents):
+        return False
+    if used_default_pack and "campaign" in intents:
+        return True
+    if not intents or intents in (["plan"], ["list"], ["knowledge"]):
+        return True
+    return confidence < 0.4
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:

@@ -39,6 +39,9 @@ targets/**/*token*.txt
 # Cross-program learning log (local operator memory)
 learning/
 
+# Local model catalog cache (live /models)
+.hackbot/
+
 *.sqlite
 *.db
 

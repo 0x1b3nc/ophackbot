@@ -87,7 +87,7 @@ PROVIDERS: dict[str, Provider] = {
             "claude-3-7-sonnet-latest",
             "claude-3-5-haiku-latest",
         ),
-        note="Effort maps to thinking budget. /model only accepts known Claude ids.",
+        note="Effort → thinking budget. /model: curated + live GET /v1/models (cached).",
     ),
     "codex": Provider(
         name="codex",
@@ -108,9 +108,8 @@ PROVIDERS: dict[str, Provider] = {
         effort_style="cursor",
         models=("composer-2.5", "grok-4.5", "auto"),
         note=(
-            "Local Cursor agent via cursor-sdk. "
-            "/model composer-2.5|grok-4.5|auto only. "
-            "/effort low|medium|high[ fast]."
+            "Local Cursor agent via cursor-sdk + hackbot CustomTools (SCOPE/approve). "
+            "/model composer-2.5|grok-4.5|auto. /effort low|medium|high[ fast]."
         ),
     ),
     "deepseek": Provider(

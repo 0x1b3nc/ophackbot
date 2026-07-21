@@ -27,11 +27,12 @@ switch the brain.
   local model). Same tool loop for all of them.
 - codex: optional ChatGPT-plan path via `codex exec` (same opt-in as the others).
 - cursor: optional Cursor-plan path via `cursor-sdk` local Agent (`CURSOR_API_KEY`).
-  Default `HACKBOT_CURSOR_MODE=plan` (brain / fileops); set `agent` to unlock
-  Cursor's own edit/shell tools. Active bounty traffic still needs hackbot approve.
-  Models are validated (`/models`, `/model grok-4.5|composer-2.5|auto`). Effort +
-  fast become real SDK params: `/effort high fast` or `/fast on`. Each turn prints
-  `used model …` from the SDK result so you can see what actually ran.
+  With `HACKBOT_CURSOR_TOOLS=1` (default), phase-filtered hackbot tools are registered
+  as SDK **CustomTools** so Cursor drives `http_request` / probes / `run_hunt` under
+  the same SCOPE / approve / caps rails as the HTTP agent. Mode defaults to `agent`
+  when tools are on (`HACKBOT_CURSOR_MODE=plan|agent` to override). Fileop JSON remains
+  a fallback. Models are validated (`/models`, `/model grok-4.5|composer-2.5|auto`).
+  Effort + fast: `/effort high fast` or `/fast on`. Each turn prints `used model …`.
 
 ### Providers
 
@@ -68,8 +69,10 @@ lmstudio, custom, offline.
 ### Model and reasoning effort
 
 `/model` is **strict for every provider**: only real catalog ids (curated in
-the kit + live `/models` from the API/server when available). Garbage strings
-are rejected. List with `/models`.
+the kit + live `/models` from the API/server when available — OpenAI-wire,
+OpenRouter, Ollama tags, LM Studio, Anthropic `GET /v1/models`, Cursor catalog).
+Live lists are TTL-cached (memory + `.hackbot/model_cache/`); refresh with
+`/models refresh`. Garbage strings are rejected. List with `/models`.
 
 ```powershell
 setx HACKBOT_MODEL "o4-mini"          # must be a real id for that provider
@@ -171,7 +174,8 @@ Import a program policy dump into YAML:
 
 `/force` is **operator responsibility**: it does not skip approve, and it cannot
 unlock explicitly OUT_OF_SCOPE hosts. Soft gates (missing level-3 / active
-wording, NOT_CONFIRMED hosts) can be overridden. See [SAFETY_MODEL.md](SAFETY_MODEL.md).
+wording, NOT_CONFIRMED hosts) can be overridden. Redirects and HAR/OpenAPI-derived
+fetches re-check the **effective destination** each hop. See [SAFETY_MODEL.md](SAFETY_MODEL.md).
 
 **Natural language first.** You do **not** need `/hunt` or `/session`. Just talk:
 
@@ -200,6 +204,14 @@ hard-blocked. Without `--approve`, the loop dry-runs / plans only.
 
 State lives under `targets/<name>/hunt/` (`surface.yaml`, `attempts.jsonl`,
 `candidates.yaml`, `state.yaml`). Budget default ~28 (`HACKBOT_HUNT_BUDGET`).
+Acts are split across phases **recon → authz → inject**
+(`HACKBOT_HUNT_PHASE_BUDGETS=recon:30,authz:35,inject:35`). Clean streaks ban
+a module and **pivot** to siblings. Validate replays the winning act (not just
+GET) and correlates Interactsh/OOB when a canary exists. Authz defaults to a
+BOLA/BFLA write matrix (`GET,PATCH,PUT,DELETE` / GraphQL mutation) when A/B
+ready. Findings auto-draft Bugcrowd/VRT submit-ready reports
+(`HACKBOT_REPORT_PLATFORM=bugcrowd`). Learning stores param/payload hints for
+the next host.
 
 Vague offline prompts (“explora o que der…”) also plan `run_hunt` instead of
 the older linear campaign pack.

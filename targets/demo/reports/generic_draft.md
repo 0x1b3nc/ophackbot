@@ -14,19 +14,24 @@
 C-001 Title
 
 ## Preconditions
-Two in-scope test accounts A and B
+Authorized program; in-scope host; two test accounts A/B when authz
 
 ## Steps to reproduce
-1. Authenticate as account A and fetch owned object at TBD
-2. Replay the same request as account B (ID swap only)
-3. Compare responses (verdict=draft)
-4. See FINDINGS.md C-001 and evidence/safe/
+## Minimal PoC (tbd)
+1. Target: `TBD`
+2. Method(s): `GET`  matrix=`bola`
+3. Send the proving request (see evidence JSON winning_replay).
+4. Compare against negative control (unauthenticated / benign input).
+5. Capture response diff that demonstrates impact.
+6. Finding id `C-001` verdict=`draft` — attach redacted evidence.
 
 ## Observed behavior
 (see steps / evidence)
 
 ## Impact
-Cross-account access to another user's object (BOLA/IDOR). Confirm data sensitivity and write paths before final severity.
+Potential TBD on TBD. Confirm data sensitivity and write/mutation impact before final severity.
+
+VRT hint: TBD
 
 ## Evidence / PoC material
 See evidence/safe/ and FINDINGS.md

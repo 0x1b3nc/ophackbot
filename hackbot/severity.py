@@ -1,4 +1,4 @@
-"""Severity / CVSS hints by bug class — triage aids, not final program severity."""
+"""Severity / CVSS / Bugcrowd VRT hints by bug class — triage aids, not final severity."""
 
 from __future__ import annotations
 
@@ -170,6 +170,24 @@ _HINTS: dict[str, SeverityHint] = {
         "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:N/A:N",
         "SSRF — raise to Critical if cloud metadata reachable.",
     ),
+    "mass_assignment": SeverityHint(
+        "High",
+        "7.1",
+        "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N",
+        "Mass assignment / privileged field injection.",
+    ),
+    "second_order_xss": SeverityHint(
+        "Medium",
+        "6.1",
+        "CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:C/C:L/I:L/A:N",
+        "Stored/second-order XSS.",
+    ),
+    "browser_diff": SeverityHint(
+        "High",
+        "7.1",
+        "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N",
+        "Soft IDOR via browser A/B diff — confirm ownership.",
+    ),
 }
 _DEFAULT = SeverityHint(
     "TBD",
@@ -177,6 +195,36 @@ _DEFAULT = SeverityHint(
     "",
     "No default mapping — triage against program severity guidelines.",
 )
+
+# Bugcrowd VRT-oriented category strings (operator still picks exact leaf).
+_VRT: dict[str, str] = {
+    "idor": "Broken Access Control (BAC) > Insecure Direct Object References (IDOR)",
+    "bola": "Broken Access Control (BAC) > Insecure Direct Object References (IDOR)",
+    "bac": "Broken Access Control (BAC)",
+    "bfla": "Broken Access Control (BAC) > Privilege Escalation",
+    "authz": "Broken Access Control (BAC)",
+    "auth-bypass": "Broken Authentication and Session Management > Authentication Bypass",
+    "secrets": "Sensitive Data Exposure > Externally Stored Credentials",
+    "sqli": "Server-Side Injection > SQL Injection",
+    "ssti": "Server-Side Injection > Other",
+    "xxe": "Server-Side Injection > XML External Entity Injection (XXE)",
+    "lfi": "Server Security Misconfiguration > Directory Listing Enabled / Path Traversal",
+    "xss": "Cross-Site Scripting (XSS) > Reflected",
+    "second_order_xss": "Cross-Site Scripting (XSS) > Stored",
+    "cors": "Server Security Misconfiguration > Misconfigured CORS",
+    "open_redirect": "Unvalidated Redirects and Forwards > Open Redirect",
+    "open-redirect": "Unvalidated Redirects and Forwards > Open Redirect",
+    "oauth": "Broken Authentication and Session Management > OAuth Misconfiguration",
+    "jwt": "Broken Authentication and Session Management > Weak Token Validation",
+    "jwt_active": "Broken Authentication and Session Management > Weak Token Validation",
+    "graphql": "Server Security Misconfiguration > GraphQL Misconfiguration",
+    "rate-limit": "Broken Authentication and Session Management > Weak Login Function",
+    "race": "Application-Level Denial-of-Service (DoS) > Race Condition",
+    "websocket": "Server Security Misconfiguration > Other",
+    "ssrf": "Server-Side Request Forgery (SSRF)",
+    "mass_assignment": "Broken Access Control (BAC) > Privilege Escalation",
+    "browser_diff": "Broken Access Control (BAC) > Insecure Direct Object References (IDOR)",
+}
 
 # Aliases
 _ALIASES = {
@@ -219,9 +267,20 @@ def severity_for_class(class_name: str) -> SeverityHint:
     return _DEFAULT
 
 
+def vrt_for_class(class_name: str) -> str:
+    """Bugcrowd-oriented VRT category hint for report drafts."""
+    key = normalize_class(class_name)
+    if key in _VRT:
+        return _VRT[key]
+    if key in _HINTS:
+        return f"Other > {key}"
+    return class_name or "Other"
+
+
 def severity_fields(class_name: str) -> dict[str, Any]:
     hint = severity_for_class(class_name)
     data = hint.as_dict()
     data["line"] = hint.line()
     data["class"] = normalize_class(class_name) or class_name
+    data["vrt"] = vrt_for_class(class_name)
     return data

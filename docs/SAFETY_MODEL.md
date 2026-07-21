@@ -37,6 +37,11 @@ SCOPE (default gates)  →  /force (soft override, my responsibility)
 OUT_OF_SCOPE. It only overrides soft gates: level-3 / active-testing wording
 missing from SCOPE, and hosts still `NOT_CONFIRMED`.
 
+HTTP redirects and derived fetches (HAR/OpenAPI/surface) re-gate each
+**effective destination**. An in-scope hop that lands on an OOS host is
+hard-blocked without force; intentional `/force` for soft-gated destinations
+stays operator responsibility.
+
 ### Session approve (`/hunt --approve`)
 
 Autonomous hunt uses **one session approve** for the whole OODA loop instead of

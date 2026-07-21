@@ -59,6 +59,11 @@ class HuntState:
     stopped: bool = False
     stop_reason: str = ""
     last_summary: str = ""
+    # Phase budgets (recon → authz → inject)
+    hunt_phase: str = "recon"
+    phase_budget_recon: int = 0
+    phase_budget_authz: int = 0
+    phase_budget_inject: int = 0
 
 
 def hunt_dir(target_dir: Path) -> Path:
@@ -241,6 +246,10 @@ class HuntMemory:
             stopped=bool(data.get("stopped")),
             stop_reason=str(data.get("stop_reason") or ""),
             last_summary=str(data.get("last_summary") or ""),
+            hunt_phase=str(data.get("hunt_phase") or "recon"),
+            phase_budget_recon=int(data.get("phase_budget_recon") or 0),
+            phase_budget_authz=int(data.get("phase_budget_authz") or 0),
+            phase_budget_inject=int(data.get("phase_budget_inject") or 0),
         )
 
     def save_state(self, state: HuntState) -> Path:
@@ -259,9 +268,15 @@ class HuntMemory:
         validated = [c for c in candidates if c.status == "validated"]
         return {
             "phase": state.phase,
+            "hunt_phase": state.hunt_phase,
             "host": state.host or surface.get("host") or "",
             "budget_remaining": state.budget_remaining,
             "budget_total": state.budget_total,
+            "phase_budgets": {
+                "recon": state.phase_budget_recon,
+                "authz": state.phase_budget_authz,
+                "inject": state.phase_budget_inject,
+            },
             "acts_done": state.acts_done,
             "failures": state.failures,
             "stopped": state.stopped,

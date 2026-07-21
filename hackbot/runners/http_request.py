@@ -5,15 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from urllib.request import Request
 
 from .. import ui
 from ..identity import load_identity
 from ..redaction import redact_text
+from ..scoped_http import scoped_urlopen
 from .base import RunnerResult, require_in_scope
 
 MAX_BODY_STORE = 200_000
@@ -43,7 +43,7 @@ def http_request(
         from ..hunt_jar import cookie_header
 
         host = urlparse(url if "://" in url else f"https://{url}").hostname or ""
-        jar_cookie = cookie_header(target_dir, host=host)
+        jar_cookie = cookie_header(target_dir, host=host, session=session or "")
         if jar_cookie:
             existing = headers.get("Cookie") or headers.get("cookie") or ""
             headers["Cookie"] = f"{existing}; {jar_cookie}".strip("; ").strip()
@@ -86,40 +86,38 @@ def http_request(
         )
 
     data = body.encode("utf-8") if body is not None else None
-    req = urllib.request.Request(full_url, data=data, method=method, headers=headers)
+    req = Request(full_url, data=data, method=method, headers=headers)
     started = time.perf_counter()
     status = 0
     resp_headers: dict[str, str] = {}
     resp_body = ""
     err_msg = ""
     set_cookies: list[str] = []
+    redirect_hops: list[dict[str, Any]] = []
+    final_url = full_url
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            status = int(getattr(resp, "status", None) or resp.getcode())
-            set_cookies = []
-            get_all = getattr(resp.headers, "get_all", None)
-            if callable(get_all):
-                set_cookies = list(get_all("Set-Cookie") or [])
-            elif resp.headers.get("Set-Cookie"):
-                set_cookies = [resp.headers.get("Set-Cookie")]
-            resp_headers = {k: v for k, v in resp.headers.items()}
-            raw = resp.read(MAX_BODY_STORE + 1)
-            truncated = len(raw) > MAX_BODY_STORE
-            if truncated:
-                raw = raw[:MAX_BODY_STORE]
-            resp_body = raw.decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        status = int(exc.code)
+        # Initial URL already gated above; still re-gate every redirect hop.
+        resp = scoped_urlopen(
+            req,
+            target_dir=target_dir,
+            action="http_request idor authz",
+            force=force,
+            timeout=timeout,
+            gate_initial=False,
+        )
+        status = resp.status
+        set_cookies = resp.get_all("Set-Cookie")
+        resp_headers = {k: v for k, v in (resp.headers.items() if resp.headers else [])}
+        raw = resp.body[: MAX_BODY_STORE + 1]
+        if len(raw) > MAX_BODY_STORE:
+            raw = raw[:MAX_BODY_STORE]
+        resp_body = raw.decode("utf-8", errors="replace")
+        redirect_hops = list(resp.hops)
+        final_url = resp.url or full_url
+    except PermissionError as exc:
+        err_msg = str(exc)
+        ui.error(err_msg)
         set_cookies = []
-        get_all = getattr(exc.headers, "get_all", None) if exc.headers else None
-        if callable(get_all):
-            set_cookies = list(get_all("Set-Cookie") or [])
-        resp_headers = {k: v for k, v in (exc.headers.items() if exc.headers else [])}
-        try:
-            raw = exc.read(MAX_BODY_STORE)
-            resp_body = raw.decode("utf-8", errors="replace")
-        except Exception:  # noqa: BLE001
-            resp_body = ""
     except Exception as exc:  # noqa: BLE001
         err_msg = f"{type(exc).__name__}: {exc}"
         ui.error(err_msg)
@@ -132,7 +130,12 @@ def http_request(
         from ..hunt_jar import merge_set_cookie
 
         try:
-            merge_set_cookie(target_dir, set_cookies, url=full_url)
+            merge_set_cookie(
+                target_dir,
+                set_cookies,
+                url=final_url,
+                session=session or "",
+            )
         except Exception:  # noqa: BLE001
             pass
 
@@ -140,6 +143,8 @@ def http_request(
         "ok": not err_msg,
         "method": method,
         "url": full_url,
+        "final_url": final_url,
+        "redirect_hops": redirect_hops,
         "session": session,
         "label": label or f"{session or 'anon'}",
         "status": status,

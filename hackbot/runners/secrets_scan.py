@@ -69,22 +69,29 @@ def secrets_scan(
         ui.dry_run_banner()
         return RunnerResult(cmd, False, None, json.dumps({"dry_run": True, **plan}), "", "dry-run")
 
+    from ..scoped_http import scoped_fetch_bytes
+
     findings: list[dict[str, Any]] = []
     fetched = 0
     applied_session = ""
     for rel in scan_paths[:20]:
         url = rel if rel.startswith("http") else root + (rel if rel.startswith("/") else "/" + rel)
         try:
-            req = urllib.request.Request(url, method="GET", headers={"User-Agent": "hackbot-secrets-scan"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                status = int(getattr(resp, "status", None) or resp.getcode())
-                body = resp.read(250_000).decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as exc:
-            status = int(exc.code)
-            try:
-                body = exc.read(100_000).decode("utf-8", errors="replace")
-            except Exception:  # noqa: BLE001
-                body = ""
+            # Per-URL gate (absolute paths must not bypass base-host check)
+            resp = scoped_fetch_bytes(
+                url,
+                target_dir=target_dir,
+                action="secrets scan recon",
+                force=force,
+                timeout=timeout,
+                headers={"User-Agent": "hackbot-secrets-scan"},
+                max_bytes=250_000,
+            )
+            status = resp.status
+            body = resp.body.decode("utf-8", errors="replace")
+        except PermissionError as exc:
+            findings.append({"url": url, "error": f"scope_denied: {exc}", "skipped": True})
+            continue
         except Exception as exc:  # noqa: BLE001
             findings.append({"url": url, "error": f"{type(exc).__name__}: {exc}"})
             continue

@@ -73,31 +73,20 @@ def validate_and_log(
     rehit_info: dict[str, Any] = {}
     if rehit and execute_tool and candidate.url and approve:
         try:
-            # Independent re-hit as anonymous (negative control) then with label
-            neg = execute_tool(
-                "http_request",
-                {
-                    "target_dir": str(target_dir),
-                    "url": candidate.url,
-                    "approve": True,
-                    "force": force,
-                    "label": "validate_neg",
-                },
+            rehit_info = _replay_winning_act(
+                execute_tool,
+                target_dir,
+                candidate,
+                force=force,
             )
-            rehit_info["negative"] = json.loads(neg) if isinstance(neg, str) else neg
-            pos = execute_tool(
-                "http_request",
-                {
-                    "target_dir": str(target_dir),
-                    "url": candidate.url,
-                    "session": "A",
-                    "approve": True,
-                    "force": force,
-                    "label": "validate_rehit",
-                },
-            )
-            rehit_info["rehit"] = json.loads(pos) if isinstance(pos, str) else pos
-            proof = proof + "\n\nrehit=" + json.dumps(rehit_info)[:1500]
+            # Blind classes: correlate stored OOB / Interactsh canary
+            if candidate.module in {"ssrf", "xxe", "xss"}:
+                oob = _correlate_oob(execute_tool, target_dir)
+                if oob is not None:
+                    rehit_info["oob"] = oob
+                    if oob.get("signal") or oob.get("hit") or oob.get("interactions"):
+                        proof = proof + "\n\noob_correlated=true"
+            proof = proof + "\n\nrehit=" + json.dumps(rehit_info, default=str)[:2000]
         except Exception as exc:  # noqa: BLE001
             rehit_info["error"] = f"{type(exc).__name__}: {exc}"
 
@@ -247,6 +236,137 @@ def validate_and_log(
         evidence=evidence_path,
         detail=proof[:300],
     )
+
+
+def _parse_tool_json(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else {"raw": raw[:500]}
+        except json.JSONDecodeError:
+            return {"raw": raw[:500]}
+    return {}
+
+
+def _replay_winning_act(
+    execute_tool: Any,
+    target_dir: Path,
+    candidate: Candidate,
+    *,
+    force: bool,
+) -> dict[str, Any]:
+    """Replay the winning act (class-aware) + anonymous negative control."""
+    params = dict(candidate.params or {})
+    info: dict[str, Any] = {"module": candidate.module, "url": candidate.url}
+
+    # Negative control: unauthenticated GET
+    neg = execute_tool(
+        "http_request",
+        {
+            "target_dir": str(target_dir),
+            "url": candidate.url,
+            "approve": True,
+            "force": force,
+            "label": "validate_neg",
+        },
+    )
+    info["negative"] = _parse_tool_json(neg)
+
+    mod = (candidate.module or "").lower()
+    if mod == "idor":
+        raw = execute_tool(
+            "idor_probe",
+            {
+                "target_dir": str(target_dir),
+                "url": candidate.url,
+                "param": params.get("param") or "",
+                "swap_value": params.get("swap_value") or "",
+                "methods": params.get("methods")
+                or params.get("_winning_method")
+                or "GET,PATCH",
+                "matrix": params.get("matrix") or "both",
+                "body": params.get("body") or "",
+                "approve": True,
+                "force": force,
+            },
+        )
+        info["winning_replay"] = _parse_tool_json(raw)
+        return info
+
+    probe_map = {
+        "ssrf": "ssrf_probe",
+        "sqli": "sqli_probe",
+        "xss": "xss_probe",
+        "lfi": "lfi_probe",
+        "ssti": "ssti_probe",
+        "xxe": "xxe_probe",
+        "cors": "cors_probe",
+        "open_redirect": "open_redirect_probe",
+        "graphql": "graphql_probe",
+        "race": "race_probe",
+        "mass_assignment": "mass_assignment_probe",
+    }
+    tool = probe_map.get(mod)
+    if tool:
+        args: dict[str, Any] = {
+            "target_dir": str(target_dir),
+            "url": candidate.url,
+            "approve": True,
+            "force": force,
+        }
+        if params.get("param"):
+            args["param"] = params["param"]
+        if params.get("payload"):
+            args["payload"] = params["payload"]
+        try:
+            raw = execute_tool(tool, args)
+            info["winning_replay"] = _parse_tool_json(raw)
+            return info
+        except Exception as exc:  # noqa: BLE001
+            info["winning_replay_error"] = f"{type(exc).__name__}: {exc}"
+
+    # Fallback: authenticated GET as session A
+    pos = execute_tool(
+        "http_request",
+        {
+            "target_dir": str(target_dir),
+            "url": candidate.url,
+            "session": "A",
+            "method": params.get("_winning_method") or params.get("_method") or "GET",
+            "approve": True,
+            "force": force,
+            "label": "validate_rehit",
+        },
+    )
+    info["rehit"] = _parse_tool_json(pos)
+    return info
+
+
+def _correlate_oob(execute_tool: Any, target_dir: Path) -> dict[str, Any] | None:
+    canary_path = Path(target_dir) / "hunt" / "last_canary.json"
+    if not canary_path.exists():
+        return None
+    try:
+        canary = json.loads(canary_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        canary = {}
+    if not isinstance(canary, dict):
+        canary = {}
+    try:
+        raw = execute_tool("interactsh_poll", {"wait": False, "canary": canary})
+        data = _parse_tool_json(raw)
+        data["canary_present"] = True
+        return data
+    except Exception:
+        try:
+            raw = execute_tool("oob_poll", {"canary": canary})
+            data = _parse_tool_json(raw)
+            data["canary_present"] = True
+            return data
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"{type(exc).__name__}: {exc}", "canary_present": True}
 
 
 def promote_browser_diff(

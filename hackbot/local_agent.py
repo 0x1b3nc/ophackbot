@@ -577,6 +577,85 @@ def interpret(text: str) -> Interpretation:
         intents.append("jwt_active")
     if _wants(text, "chain", "encadear", "exploit chain", "build chain", "cadeia"):
         intents.append("build_chains")
+    # Target folder / filesystem helpers (PT-BR + EN)
+    if _wants(
+        text,
+        "set target",
+        "usa o target",
+        "use o target",
+        "troca pro target",
+        "trocar target",
+        "ativa o target",
+        "ativar target",
+        "load target",
+        "carrega o target",
+        "carregar target",
+        "/target",
+    ) or (
+        _wants(text, "target")
+        and _wants(text, "demo", "targets/", "pasta do programa", "programa ")
+        and not _wants(text, "list target", "which target", "what target")
+    ):
+        intents.append("set_target")
+    if _wants(
+        text,
+        "cria uma pasta",
+        "criar pasta",
+        "create folder",
+        "create directory",
+        "mkdir",
+        "make dir",
+        "make folder",
+        "nova pasta",
+    ):
+        intents.append("make_dir")
+    if _wants(
+        text,
+        "apaga o arquivo",
+        "apagar arquivo",
+        "delete file",
+        "delete the file",
+        "remove o arquivo",
+        "remover arquivo",
+        "rm ",
+    ) and not _wants(text, "crie", "cria", "criar", "create"):
+        intents.append("delete_path")
+    if _wants(
+        text,
+        "edita o arquivo",
+        "editar arquivo",
+        "edit file",
+        "edit the file",
+        "altera o arquivo",
+        "patch the file",
+    ):
+        intents.append("edit_file")
+    if _wants(
+        text,
+        "map surface",
+        "mapear surface",
+        "mapeia a surface",
+        "map the surface",
+        "surface map",
+        "recon surface",
+        "mapa de superficie",
+        "mapa de superfície",
+    ):
+        intents.append("map_surface")
+    if _wants(
+        text,
+        "http request",
+        "faz um get",
+        "faz um post",
+        "mande um get",
+        "send a get",
+        "send a post",
+        "curl ",
+        "request http",
+    ):
+        intents.append("http_request")
+    if _wants(text, "burp replay", "replay burp", "burp send", "repeater", "replay history"):
+        intents.append("burp_replay")
     if _wants(text, "frida", "mobile", "apk", "objection", "mobsf", "adb"):
         intents.append("mobile")
     if _wants(
@@ -749,6 +828,104 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
                 )
             )
         return plan  # file create is a single-job turn
+
+    if "set_target" in intents:
+        tdir = interp.target_dir or ""
+        name = ""
+        if tdir and tdir not in {"targets", "targets/"}:
+            name = tdir.replace("\\", "/").rstrip("/").split("/")[-1]
+        if not name:
+            m = re.search(r"(?i)\btargets[/\\]([a-z0-9_-]+)\b", text)
+            if m:
+                name = m.group(1)
+        if not name:
+            m = re.search(
+                r"(?i)\b(?:target|programa)\s+([a-z0-9_-]+)\b",
+                text,
+            )
+            if m and m.group(1).lower() not in {"target", "targets", "set", "usa", "use", "load"}:
+                name = m.group(1)
+        if name:
+            plan.append(Action(f"Ativar target `{name}`.", "set_target", {"target": name}))
+        else:
+            plan.append(
+                Action(
+                    "Qual pasta de target?",
+                    "_note",
+                    {"message": "ex: usa o target demo   |   set target targets/demo"},
+                )
+            )
+
+    if "make_dir" in intents:
+        paths = extract_path_mentions(text)
+        folder = paths[0] if paths else _folder_from_text(text)
+        if folder:
+            plan.append(
+                Action(
+                    f"Criar pasta `{folder}` (approve).",
+                    "make_dir",
+                    {"path": str(folder)},
+                )
+            )
+        else:
+            plan.append(
+                Action(
+                    "Preciso do caminho da pasta.",
+                    "_note",
+                    {"message": "ex: cria uma pasta em Downloads/lab-notes"},
+                )
+            )
+
+    if "delete_path" in intents:
+        paths = extract_path_mentions(text)
+        if paths:
+            plan.append(
+                Action(
+                    f"Apagar `{paths[0]}` (approve).",
+                    "delete_path",
+                    {"path": paths[0]},
+                )
+            )
+        else:
+            plan.append(
+                Action(
+                    "Qual caminho apagar?",
+                    "_note",
+                    {"message": "ex: apaga o arquivo Downloads/old-scope.md"},
+                )
+            )
+
+    if "map_surface" in intents and host:
+        seed = target if target and "://" in str(target) else f"https://{host}/"
+        plan.append(
+            Action(
+                f"Mapear surface de {host} (dry-run unless approve).",
+                "map_surface",
+                {
+                    "target_dir": interp.target_dir,
+                    "seed": seed,
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+
+    if "http_request" in intents and (target or host):
+        url = target if target and "://" in str(target) else (f"https://{host}/" if host else "")
+        if url:
+            plan.append(
+                Action(
+                    f"HTTP request → {url} (dry-run unless approve).",
+                    "http_request",
+                    {
+                        "target_dir": interp.target_dir,
+                        "url": url,
+                        "method": "GET",
+                        "approve": interp.approve,
+                        "force": interp.force,
+                    },
+                )
+            )
 
     if "show_identity" in intents:
         plan.append(
@@ -1910,6 +2087,8 @@ def run_local_agent(
         )
         return
 
+    from .prompt_router import needs_soft_clarify
+
     interp = interpret(user_prompt)
     route = route_prompt(
         user_prompt,
@@ -1924,7 +2103,7 @@ def run_local_agent(
     plan = build_plan(user_prompt, interp)
     # If router says campaign with modules, ensure a campaign action exists
     if route.intent == "campaign" and route.modules and not any(
-        a.tool == "run_campaign" for a in plan
+        a.tool in {"run_campaign", "run_hunt"} for a in plan
     ):
         host = interp.host
         if host:
@@ -1942,6 +2121,42 @@ def run_local_agent(
                     },
                 )
             ]
+
+    # Ambiguous offline → clarify instead of inventing a default-pack hunt
+    if needs_soft_clarify(
+        confidence=route.confidence,
+        intents=interp.intents,
+        used_default_pack=route.used_default_pack,
+        source=route.source,
+    ):
+        lang = (route.language or "en").lower()
+        if lang.startswith("pt"):
+            msg = (
+                "Prompt ambíguo (confiança baixa). Diz o que quer, por exemplo:\n"
+                "- crie um arquivo na pasta Downloads chamado scope.md\n"
+                "- as credenciais estão no arquivo tokens.yaml; explora example.com\n"
+                "- mapeia a surface de example.com (targets/demo)\n"
+                "- testa idor em example.com approve\n"
+                "- leia a imagem Desktop/scope.png\n"
+                "Ou `/provider openai|anthropic|…` pra eu interpretar melhor."
+            )
+        else:
+            msg = (
+                "Ambiguous prompt (low confidence). Be concrete, e.g.:\n"
+                "- create a file in Downloads called scope.md\n"
+                "- credentials are in tokens.yaml; hunt example.com\n"
+                "- map the surface of example.com (targets/demo)\n"
+                "- test idor on example.com approve\n"
+                "- read the image Desktop/scope.png\n"
+                "Or `/provider openai|anthropic|…` so I can interpret better."
+            )
+        # Drop generic campaign/hunt when clarifying
+        plan = [
+            a
+            for a in plan
+            if a.tool not in {"run_campaign", "run_hunt", "run_playbook", "make_plan"}
+        ]
+        plan.insert(0, Action("Preciso de um pouco mais de detalhe.", "_note", {"message": msg}))
 
     understood = [
         f"- lang: `{route.language}`  route: `{route.source}`  confidence: `{route.confidence:.2f}`",

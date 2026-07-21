@@ -1,8 +1,10 @@
-"""Bridge to the Cursor Python SDK so hackbot can think on a Cursor plan.
+"""Bridge to the Cursor Python SDK so hackbot can think + drive tools.
 
-Local Agent (cursor-sdk) against the kit cwd. Default conversation mode is
-``plan`` — Cursor reasons/reads; file mutations go through hackbot-fileop +
-approve (same pattern as Codex). Active bounty traffic stays on hackbot tools.
+Local Agent (cursor-sdk) against the kit cwd. When ``HACKBOT_CURSOR_TOOLS=1``
+(default), phase-filtered hackbot tools are registered as SDK CustomTools so
+Cursor can call httpx/probes/fileops under SCOPE/approve (same rails as the
+HTTP agent). Default mode is ``agent`` with tools on, ``plan`` when tools off
+(override with ``HACKBOT_CURSOR_MODE``). Fileop JSON remains a fallback.
 
 Auth: ``CURSOR_API_KEY`` (Dashboard → Integrations / API Keys).
 Install: ``pip install 'hackbot-kit[cursor]'`` or ``pip install cursor-sdk``.
@@ -31,9 +33,17 @@ from .cursor_models import (
     resolve_cursor_model,
     set_last_resolved_label,
 )
+from .cursor_tools import (
+    build_cursor_custom_tools,
+    cursor_tools_enabled,
+    cursor_tools_fingerprint,
+    set_cursor_approve_fn,
+    tools_preamble_block,
+)
 from .intent import is_chat_prompt, resolve_effort_for_prompt
 from .llm import streaming_enabled
 from .session import get_active
+from .tool_packs import resolve_packs
 
 ApproveFn = Callable[[str], bool]
 
@@ -63,12 +73,13 @@ Hard rules:
 - Read local context only when the task needs it (SCOPE.md, notes). Skip for small talk.
 - Host is IN SCOPE only if it is in that program's SCOPE.md.
 - For hunt steps: falsifiable hypothesis, endpoint, aggression 0-3, policy quote,
-  concrete command, expected evidence, stop criteria, cleanup.
+  concrete tool call, expected evidence, stop criteria, cleanup.
 - Dry-run first. Label active work "ACTIVE - needs operator approve".
 - Be concise, technical, first person.
-- Do NOT send live traffic yourself. Propose commands; the operator runs them via hackbot.
+- Prefer calling the registered hackbot custom tools for recon/probes/traffic.
+  Do not invent out-of-band shell/curl against live targets.
 """ + _FILEOP_RULES + """
-Only emit a file-op block when a file change is actually needed.
+Only emit a file-op block when a file change is needed and you cannot use write_file.
 
 Task:
 """
@@ -108,8 +119,11 @@ def close_cursor_agent() -> None:
 
 
 def _cursor_mode() -> str:
-    raw = (os.environ.get("HACKBOT_CURSOR_MODE") or "plan").strip().lower()
-    return "agent" if raw == "agent" else "plan"
+    """Explicit HACKBOT_CURSOR_MODE wins; else agent when tools on, plan when off."""
+    raw = (os.environ.get("HACKBOT_CURSOR_MODE") or "").strip().lower()
+    if raw in {"agent", "plan"}:
+        return raw
+    return "agent" if cursor_tools_enabled() else "plan"
 
 
 def _api_key() -> str:
@@ -118,9 +132,12 @@ def _api_key() -> str:
     return _first_env(("CURSOR_API_KEY",)) or ""
 
 
-def _build_prompt(user_prompt: str, *, chat_mode: bool) -> str:
+def _build_prompt(user_prompt: str, *, chat_mode: bool, tools_on: bool, pack_label: str, tool_count: int) -> str:
     preamble = PREAMBLE_CHAT if chat_mode else PREAMBLE_HUNT
-    parts = [preamble, _file_create_hint(user_prompt)]
+    parts = [preamble]
+    if not chat_mode:
+        parts.append(tools_preamble_block(enabled=tools_on, pack_label=pack_label, tool_count=tool_count))
+    parts.append(_file_create_hint(user_prompt))
     active = get_active()
     if active and not chat_mode:
         parts.append("\nActive target session:\n" + active.context_block() + "\n")
@@ -128,14 +145,21 @@ def _build_prompt(user_prompt: str, *, chat_mode: bool) -> str:
     return "\n".join(parts)
 
 
-def _ensure_agent(selection: Any, fingerprint: str) -> Any:
-    """Return a live Agent handle, recreating when model/effort/fast/mode change."""
+def _ensure_agent(
+    selection: Any,
+    fingerprint: str,
+    *,
+    custom_tools: dict[str, Any] | None = None,
+) -> Any:
+    """Return a live Agent handle, recreating when model/effort/fast/mode/tools change."""
     global _AGENT, _AGENT_ID, _AGENT_FINGERPRINT
     from .cursor_bridge_win import apply_windows_bridge_patch
 
     apply_windows_bridge_patch()
     mode = _cursor_mode()
-    fp = f"{fingerprint}|mode={mode}"
+    tools = custom_tools or {}
+    tool_fp = f"n={len(tools)}"
+    fp = f"{fingerprint}|mode={mode}|{tool_fp}"
     if _AGENT is not None and _AGENT_FINGERPRINT == fp:
         return _AGENT
     if _AGENT is not None:
@@ -147,6 +171,10 @@ def _ensure_agent(selection: Any, fingerprint: str) -> Any:
     if not key:
         raise RuntimeError("CURSOR_API_KEY is not set")
 
+    local_kwargs: dict[str, Any] = {"cwd": str(ROOT)}
+    if tools:
+        local_kwargs["custom_tools"] = tools
+
     try:
         from cursor_sdk import AgentOptions
 
@@ -155,14 +183,14 @@ def _ensure_agent(selection: Any, fingerprint: str) -> Any:
                 model=selection,
                 api_key=key,
                 mode=mode,
-                local=LocalAgentOptions(cwd=str(ROOT)),
+                local=LocalAgentOptions(**local_kwargs),
             )
         )
     except TypeError:
         agent = Agent.create(
             model=selection,
             api_key=key,
-            local=LocalAgentOptions(cwd=str(ROOT)),
+            local=LocalAgentOptions(**local_kwargs),
         )
     enter = getattr(agent, "__enter__", None)
     if callable(enter):
@@ -322,15 +350,32 @@ def run_cursor_turn(
 
     selection = build_model_selection(resolved)
     mode = _cursor_mode()
+    tools_on = cursor_tools_enabled() and not chat_mode
+    packs = resolve_packs(user_prompt) if tools_on else []
+    pack_label = ",".join(packs) if packs else "off"
+    custom_tools = build_cursor_custom_tools(user_prompt) if tools_on else {}
+    set_cursor_approve_fn(approve_fn)
     ui.info(
-        f"cursor  requested={resolved.display()}  mode={mode}  catalog={resolved.source}"
+        f"cursor  requested={resolved.display()}  mode={mode}  "
+        f"catalog={resolved.source}  tools={len(custom_tools)} ({pack_label})"
     )
 
-    prompt = _build_prompt(user_prompt, chat_mode=chat_mode)
+    prompt = _build_prompt(
+        user_prompt,
+        chat_mode=chat_mode,
+        tools_on=bool(custom_tools),
+        pack_label=pack_label,
+        tool_count=len(custom_tools),
+    )
     started = time.perf_counter()
+    tool_fp = cursor_tools_fingerprint(user_prompt if tools_on else "")
 
     try:
-        agent = _ensure_agent(selection, resolved.fingerprint())
+        agent = _ensure_agent(
+            selection,
+            f"{resolved.fingerprint()}|{tool_fp}",
+            custom_tools=custom_tools,
+        )
         answer, used_label = _run_send(agent, prompt, selection=selection)
     except KeyboardInterrupt:
         ui.warn("cancelled")
@@ -353,6 +398,8 @@ def run_cursor_turn(
         ui.markdown_panel(msg, title="hackbot (cursor)")
         ui.turn_timing(time.perf_counter() - started, 0)
         return msg
+    finally:
+        set_cursor_approve_fn(None)
 
     set_last_resolved_label(used_label)
     ui.success(f"used model  {used_label}")
