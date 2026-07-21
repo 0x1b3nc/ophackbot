@@ -311,3 +311,63 @@ def load_observe_tags(target_dir: Path) -> set[str]:
         return set(data.get("tags") or [])
     except Exception:  # noqa: BLE001
         return set()
+
+
+def observe_refresh_lite(target_dir: Path, *, host: str = "") -> dict[str, Any]:
+    """Re-tag surface from existing endpoints (no full crawl). Cheap mid-hunt refresh."""
+    target_dir = Path(target_dir)
+    memory = HuntMemory(target_dir)
+    tags = load_observe_tags(target_dir)
+    before = len(memory.endpoints())
+    for ep in memory.endpoints():
+        low = ep.url.lower()
+        if "login" in low or "auth" in low or "oauth" in low:
+            tags.add("login")
+        if "graphql" in low:
+            tags.add("graphql")
+        if any(x in low for x in ("api/", "/v1/", "/v2/")):
+            tags.add("api")
+        if ep.has_id_param() or re.search(r"/\d+(?:/|$)", ep.url):
+            tags.add("id_param")
+        if _WS_RE.search(ep.url):
+            tags.add("websocket")
+        if _XML_HINT.search(ep.url) or _XML_HINT.search(ep.notes or ""):
+            tags.add("xml")
+        for p in ep.params:
+            pl = p.lower()
+            if pl in {"url", "uri", "redirect", "next", "callback"}:
+                tags.add("ssrf_param")
+            if pl in {"q", "query", "search", "id"}:
+                tags.add("inject_param")
+
+    tags_path = target_dir / "hunt" / "observe_tags.json"
+    tags_path.parent.mkdir(parents=True, exist_ok=True)
+    tag_list = sorted(tags)
+    prev_steps = 0
+    if tags_path.exists():
+        try:
+            prev_steps = int(json.loads(tags_path.read_text(encoding="utf-8")).get("steps") or 0)
+        except Exception:  # noqa: BLE001
+            prev_steps = 0
+    tags_path.write_text(
+        json.dumps(
+            {"tags": tag_list, "steps": prev_steps, "refresh": "lite", "host": host},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    try:
+        from .sink_registry import build_sink_registry
+
+        build_sink_registry(target_dir)
+    except Exception:  # noqa: BLE001
+        pass
+    out = {
+        "ok": True,
+        "refresh": "lite",
+        "host": host,
+        "tags": tag_list,
+        "endpoint_count": before,
+    }
+    ui.info(f"observe_refresh_lite: endpoints={before} tags={tag_list}")
+    return out

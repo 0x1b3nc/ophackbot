@@ -110,22 +110,23 @@ def sso_needs_setup_payload(
 ) -> dict[str, Any]:
     urls = list(sso_urls or [])[:6]
     steps = [
-        "Complete SSO/IdP login in a browser for the test account (Hackbot will not automate IdP)",
-        "Copy Cookie / Authorization into secrets/sessions.yaml under A/B",
-        "Or: set_session / /session set A --cookie '...' then resume hunt",
+        "Run browser_capture_session (headed) and finish IdP/MFA in the window — Hackbot will not type passwords",
+        "Or paste Cookie / Authorization via set_session into secrets/sessions.yaml",
+        "Then: resume hunt",
     ]
     if urls:
-        steps.insert(0, f"Open IdP: {urls[0]}")
+        steps.insert(0, f"IdP URL: {urls[0]}")
     return {
         "ok": False,
         "needs_setup": True,
+        "capture_recommended": True,
         "reason": "sso_detected",
         "session": session,
         "login_url": login_url,
         "sso_urls": urls,
         "hint": (
-            "SSO/IdP login surface detected (OAuth/OIDC/SAML). Complete login manually, "
-            "persist the session, then resume. Hackbot will not bypass SSO/MFA."
+            "SSO/IdP login surface detected (OAuth/OIDC/SAML). Use browser_capture_session "
+            "or set_session, then resume hunt. Hackbot will not bypass SSO/MFA."
         ),
         "next_steps": steps,
     }

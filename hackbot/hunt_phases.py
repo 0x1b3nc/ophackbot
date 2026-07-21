@@ -25,6 +25,7 @@ PHASE_MODULES: dict[str, frozenset[str]] = {
         {
             "idor",
             "session_bootstrap",
+            "idp_capture",
             "browser_diff",
             "auth-bypass",
             "oauth",

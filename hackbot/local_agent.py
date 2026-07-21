@@ -687,6 +687,21 @@ def interpret(text: str) -> Interpretation:
         "test session",
     ):
         intents.append("session_smoke")
+    if _wants(
+        text,
+        "captura sessao",
+        "captura sessão",
+        "capturar sessao",
+        "capturar sessão",
+        "capture session",
+        "browser capture",
+        "abre o browser pro login",
+        "abre browser pro login",
+        "idp capture",
+        "sso capture",
+        "login no browser",
+    ):
+        intents.append("idp_capture")
     if _wants(text, "ssrf", "server-side request", "metadata.google", "169.254.169.254"):
         intents.append("ssrf")
     if _wants(
@@ -738,7 +753,16 @@ def interpret(text: str) -> Interpretation:
         intents.append("hunt_checklist")
     if _wants(text, "pause hunt", "pausar hunt", "hunt pause"):
         intents.append("hunt_pause")
-    if _wants(text, "resume hunt", "retomar hunt", "unpause hunt"):
+    if _wants(
+        text,
+        "resume hunt",
+        "retomar hunt",
+        "unpause hunt",
+        "retoma o hunt",
+        "continua o hunt",
+        "continuar hunt",
+        "resume the hunt",
+    ):
         intents.append("hunt_resume")
     if _wants(text, "hunt telemetry", "telemetria hunt", "hunt stats"):
         intents.append("hunt_telemetry")
@@ -1546,6 +1570,42 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
         plan.append(
             Action("Clear hunt pause flag.", "hunt_resume_flag", {"target_dir": interp.target_dir})
         )
+        if target or host:
+            plan.append(
+                Action(
+                    "Resume autonomous hunt from saved state.",
+                    "run_hunt",
+                    {
+                        "target_dir": interp.target_dir,
+                        "prompt": text[:400],
+                        "host": host or "",
+                        "approve": interp.approve,
+                        "force": interp.force,
+                        "resume": True,
+                    },
+                )
+            )
+        return plan
+
+    if "idp_capture" in intents and (target or host):
+        sess = "A"
+        m_sess = re.search(r"(?i)\b(?:sess[aã]o|session)\s*([AB])\b", text)
+        if m_sess:
+            sess = m_sess.group(1).upper()
+        plan.append(
+            Action(
+                f"Headed IdP capture → session {sess}.",
+                "browser_capture_session",
+                {
+                    "target_dir": interp.target_dir,
+                    "url": target or (host if "://" in (host or "") else f"https://{host}"),
+                    "session": sess,
+                    "approve": interp.approve,
+                    "force": interp.force,
+                },
+            )
+        )
+        return plan
     if "hunt_telemetry" in intents:
         plan.append(
             Action("Hunt telemetry stats.", "hunt_telemetry", {"target_dir": interp.target_dir})

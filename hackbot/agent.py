@@ -28,9 +28,9 @@ CRITICAL UX — natural language first:
   to type `/session`.
 - If they give a test email/password for account A/B (or say update accounts.yaml):
   call `set_account`. Do NOT ask them to edit YAML by hand.
-- Login surface: `detect_login` (form/JSON/SSO). SSO or MFA → `needs_setup`; tell them
-  to finish IdP/MFA manually and `set_session` — never bypass. After sessions:
-  `session_smoke` (whoami) before assuming authz works.
+- Login surface: `detect_login` (form/JSON/SSO). SSO or MFA → `needs_setup`; use
+  `browser_capture_session` (headed; operator finishes IdP — never type IdP passwords)
+  or `set_session`, then `run_hunt` with `resume=true`. After sessions: `session_smoke`.
 - If they say "explora o que der" / "go hunt" / open-ended attack: call `run_hunt`
   (or `run_campaign` when they name specific classes). Do not tell them to type `/hunt`.
 - If they name an image/screenshot: call `read_image`. After OCR, if they asked to

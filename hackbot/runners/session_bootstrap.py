@@ -177,9 +177,11 @@ def session_bootstrap(
             "ok": False,
             "signal": False,
             "needs_setup": True,
+            "capture_recommended": True,
             "reason": "sso_detected",
             "results": [],
             "login_url": login_url,
+            "capture_url": (sso.get("sso_urls") or [login_url] or [""])[0],
             "detect": detected,
             **sso,
         }
@@ -377,8 +379,12 @@ def session_bootstrap(
                     sso_urls=list(detected.get("sso_urls") or []),
                 )
             )
+            out["capture_recommended"] = True
+            out["capture_url"] = (out.get("sso_urls") or [login_url] or [""])[0]
         else:
             out.update(mfa_needs_setup_payload(login_url=login_url))
+            out["capture_recommended"] = True
+            out["capture_url"] = login_url
         out["results"] = results
         ui.warn(f"session_bootstrap: {setup_reason} — needs_setup (operator must finish login)")
         for step in out.get("next_steps") or []:

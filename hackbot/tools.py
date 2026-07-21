@@ -622,6 +622,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 },
                 "force": {"type": "boolean", "default": False},
                 "budget": {"type": "integer", "description": "Max acts (default ~28)"},
+                "resume": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Resume from hunt/state.yaml (after needs_setup / pause)",
+                },
             },
             "required": ["target_dir", "prompt"],
             "additionalProperties": False,
@@ -1046,6 +1051,46 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "approve": {"type": "boolean", "default": False},
                 "force": {"type": "boolean", "default": False},
                 "seed_surface": {"type": "boolean", "default": True},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "browser_capture_session",
+        "description": (
+            "Open headed Chromium for operator IdP/MFA login, then save cookies/token into "
+            "sessions.yaml for session A/B. Never types IdP passwords. Dry-run unless approve."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string", "description": "Login or SSO start URL"},
+                "session": {"type": "string", "default": "A"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+                "timeout_s": {"type": "number", "description": "Seconds to wait for operator login"},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "browser_capture_session",
+        "description": (
+            "Open headed Chromium for operator IdP/MFA login, then save cookies/token into "
+            "sessions.yaml for session A/B. Never types IdP passwords. Dry-run unless approve."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string", "description": "Login or SSO start URL"},
+                "session": {"type": "string", "default": "A"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+                "timeout_s": {"type": "number"},
             },
             "required": ["target_dir", "url"],
             "additionalProperties": False,
@@ -2453,6 +2498,8 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
                 ),
             }
         )
+    if name == "browser_capture_session":
+        return _tool_browser_capture_session(args, approve_fn=approve_fn)
     if name == "browser_navigate":
         return _tool_browser("navigate", args, approve_fn=approve_fn)
     if name == "browser_screenshot":
@@ -4055,6 +4102,46 @@ def _tool_objection_explore(args: dict[str, Any], *, approve_fn: ApproveFn | Non
     return json.dumps({"ok": payload.get("ok", True), "executed": result.executed, **payload})
 
 
+def _tool_browser_capture_session(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
+    target = _target_path(args["target_dir"])
+    url = str(args["url"])
+    approve = parse_bool(args.get("approve"))
+    force = _resolve_force_arg(args)
+    session = str(args.get("session") or "A")
+    if approve:
+        refusal = _require_approval(
+            approve_fn,
+            (
+                f"Approve ACTIVE browser_capture_session (headed IdP)?\n"
+                f"  url={url}\n  session={session}\n  force={force}\n"
+                f"  Operator must finish login; Hackbot will not type IdP passwords."
+            ),
+            kind="active_traffic",
+            tool="browser_capture_session",
+            host=host_from_target(url),
+            force_override=force,
+            aggression=2,
+        )
+        if refusal:
+            return refusal
+    timeout = args.get("timeout_s")
+    result = browser_runner.browser_capture_session(
+        target,
+        url,
+        session=session,
+        approve=approve,
+        force=force,
+        timeout_s=float(timeout) if timeout is not None else None,
+    )
+    try:
+        payload = json.loads(result.stdout) if result.stdout else {}
+    except json.JSONDecodeError:
+        payload = {"raw": result.stdout}
+    if isinstance(payload, dict):
+        return json.dumps({"ok": payload.get("ok", True), "executed": result.executed, **payload})
+    return json.dumps({"ok": True, "executed": result.executed, "detail": payload})
+
+
 def _tool_browser(
     kind: str, args: dict[str, Any], *, approve_fn: ApproveFn | None
 ) -> str:
@@ -4777,6 +4864,7 @@ def _tool_run_hunt(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str
     prompt = args["prompt"]
     approve = parse_bool(args.get("approve"))
     force = _resolve_force_arg(args)
+    resume = parse_bool(args.get("resume"))
     budget = args.get("budget")
     budget_i = int(budget) if budget is not None else None
     result = run_hunt(
@@ -4787,6 +4875,7 @@ def _tool_run_hunt(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str
         budget=budget_i,
         approve_fn=approve_fn,
         force=force,
+        resume=resume,
     )
     return json.dumps(result)
 

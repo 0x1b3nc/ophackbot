@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -13,6 +15,21 @@ from ..hunt_memory import Endpoint, HuntMemory
 from ..redaction import redact_text
 from ..scoped_http import attach_playwright_scope_guard
 from .base import RunnerResult, require_in_scope
+
+_AUTH_COOKIE_HINTS = (
+    "session",
+    "sid",
+    "ssid",
+    "auth",
+    "token",
+    "jwt",
+    "access",
+    "refresh",
+    "connect.sid",
+    "csrf",
+    "remember",
+    "id_token",
+)
 
 
 def playwright_available() -> bool:
@@ -1145,6 +1162,245 @@ def browser_set_cookie(
             browser.close()
 
     payload = {"ok": True, "url": url, "title": title, "cookie_name": name, "cookies": cookies}
+    return RunnerResult(cmd, True, 0, json.dumps(payload), "", "executed")
+
+
+def _cookie_header_from_playwright(cookies: list[dict[str, Any]]) -> str:
+    parts = []
+    for c in cookies:
+        name = str(c.get("name") or "").strip()
+        value = str(c.get("value") or "")
+        if name:
+            parts.append(f"{name}={value}")
+    return "; ".join(parts)
+
+
+def _looks_authed_url(url: str) -> bool:
+    low = (url or "").lower()
+    loginish = ("login", "signin", "sign-in", "oauth", "authorize", "sso", "auth0", "okta")
+    return not any(x in low for x in loginish)
+
+
+def _auth_cookie_signal(cookies: list[dict[str, Any]]) -> bool:
+    for c in cookies:
+        name = str(c.get("name") or "").lower()
+        if any(h in name for h in _AUTH_COOKIE_HINTS) and str(c.get("value") or ""):
+            return True
+    return len(cookies) >= 3
+
+
+def browser_capture_session(
+    target_dir: Path,
+    url: str,
+    *,
+    session: str = "A",
+    approve: bool = False,
+    force: bool = False,
+    timeout_s: float | None = None,
+    poll_s: float = 2.0,
+) -> RunnerResult:
+    """
+    Open a headed browser for operator IdP/MFA login, then persist cookies/token.
+
+    Never types credentials into the IdP. Operator completes login; we poll until
+    auth cookies appear or timeout.
+    """
+    full = url if "://" in url else f"https://{url}"
+    require_in_scope(target_dir, full, action="browser capture session idp", force=force)
+    timeout = float(
+        timeout_s
+        if timeout_s is not None
+        else os.environ.get("HACKBOT_IDP_CAPTURE_TIMEOUT", "180")
+    )
+    headed_env = os.environ.get("HACKBOT_BROWSER_HEADED", "1").strip().lower()
+    headed = headed_env not in {"0", "false", "no", "off"}
+    plan = {
+        "url": full,
+        "session": session,
+        "approve": approve,
+        "timeout_s": timeout,
+        "headed": headed,
+    }
+    cmd = ["browser_capture_session", full, session]
+    ui.code_panel(json.dumps(plan, indent=2), title="browser_capture_session", lexer="json")
+    if not playwright_available():
+        return _missing_result(cmd)
+    if not approve:
+        ui.dry_run_banner()
+        return RunnerResult(
+            cmd,
+            False,
+            None,
+            json.dumps(
+                {
+                    "dry_run": True,
+                    **plan,
+                    "hint": "Approve to open headed Chromium; finish IdP login, then cookies are saved.",
+                }
+            ),
+            "",
+            "dry-run",
+        )
+
+    from ..auth_continuity import session_smoke, sso_needs_setup_payload
+    from ..hunt_jar import merge_set_cookie
+    from ..identity import save_session
+    from playwright.sync_api import sync_playwright
+
+    ui.warn(
+        f"browser_capture_session: complete IdP/MFA for session {session} in the browser window "
+        f"(timeout {int(timeout)}s). Hackbot will not type passwords."
+    )
+
+    captured_cookie = ""
+    captured_auth = ""
+    final_url = full
+    cookie_count = 0
+    reason = "timeout"
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=not headed)
+        try:
+            context, page, blocked = _guarded_page(
+                browser,
+                target_dir,
+                action="browser capture session idp",
+                force=force,
+            )
+            try:
+                page.goto(full, wait_until="domcontentloaded", timeout=min(60_000, int(timeout * 1000)))
+            except Exception as exc:  # noqa: BLE001
+                if blocked:
+                    return RunnerResult(
+                        cmd,
+                        True,
+                        1,
+                        json.dumps(
+                            {
+                                "ok": False,
+                                "error": "scope_blocked",
+                                "blocked": blocked[:20],
+                                "detail": str(exc)[:200],
+                            }
+                        ),
+                        "",
+                        "scope_blocked",
+                    )
+                # Keep going — operator may navigate manually
+                ui.warn(f"initial navigation issue: {type(exc).__name__}")
+
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    final_url = page.url or final_url
+                except Exception:  # noqa: BLE001
+                    pass
+                cookies = context.cookies()
+                cookie_count = len(cookies)
+                storage_token = ""
+                try:
+                    storage_token = page.evaluate(
+                        """() => {
+                          try {
+                            return localStorage.getItem('access_token')
+                              || localStorage.getItem('token')
+                              || localStorage.getItem('id_token')
+                              || sessionStorage.getItem('access_token')
+                              || '';
+                          } catch (e) { return ''; }
+                        }"""
+                    ) or ""
+                except Exception:  # noqa: BLE001
+                    storage_token = ""
+
+                if _auth_cookie_signal(cookies) or (
+                    storage_token and _looks_authed_url(final_url)
+                ) or (_looks_authed_url(final_url) and cookie_count >= 2):
+                    captured_cookie = _cookie_header_from_playwright(cookies)
+                    if storage_token:
+                        captured_auth = (
+                            storage_token
+                            if str(storage_token).lower().startswith("bearer ")
+                            else f"Bearer {storage_token}"
+                        )
+                    reason = "captured"
+                    break
+                time.sleep(max(0.5, poll_s))
+        finally:
+            try:
+                browser.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    if reason != "captured" or (not captured_cookie and not captured_auth):
+        setup = sso_needs_setup_payload(session=session, login_url=full, sso_urls=[full])
+        setup.update(
+            {
+                "ok": False,
+                "needs_setup": True,
+                "capture_recommended": True,
+                "reason": "capture_timeout",
+                "final_url": final_url,
+                "cookie_count": cookie_count,
+                "next_steps": [
+                    "Re-run browser_capture_session and finish IdP login before timeout",
+                    "Or paste Cookie / Authorization via set_session",
+                    "Then: resume hunt",
+                ],
+            }
+        )
+        ui.warn("browser_capture_session: timeout — needs_setup")
+        return RunnerResult(cmd, True, 0, json.dumps(setup), "", "executed")
+
+    save_session(
+        target_dir,
+        session,
+        authorization=captured_auth or None,
+        cookie=captured_cookie or None,
+    )
+    if captured_cookie:
+        # Reconstruct Set-Cookie-ish list for jar merge
+        try:
+            merge_set_cookie(
+                target_dir,
+                [p.strip() for p in captured_cookie.split(";") if "=" in p],
+                url=final_url or full,
+                session=session,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    smoke = session_smoke(
+        target_dir,
+        final_url or full,
+        session=session,
+        approve=True,
+        force=force,
+    )
+    payload = {
+        "ok": True if smoke.get("ok") is not False else bool(smoke.get("skipped")),
+        "session": session,
+        "url": full,
+        "final_url": final_url,
+        "cookie_count": cookie_count,
+        "has_cookie": bool(captured_cookie),
+        "has_auth": bool(captured_auth),
+        "smoke": {
+            "ok": smoke.get("ok"),
+            "skipped": smoke.get("skipped"),
+            "reason": smoke.get("reason"),
+        },
+        "reason": "captured",
+        "signal": False,
+        "chain": True,
+    }
+    if smoke.get("ok") is False and not smoke.get("skipped"):
+        payload["ok"] = False
+        payload["chain"] = False
+        payload["hint"] = smoke.get("hint") or "Session saved but whoami smoke failed"
+        ui.warn("browser_capture_session: saved but smoke failed")
+    else:
+        ui.success(f"browser_capture_session: session {session} saved ({cookie_count} cookies)")
     return RunnerResult(cmd, True, 0, json.dumps(payload), "", "executed")
 
 

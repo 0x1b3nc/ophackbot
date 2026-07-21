@@ -307,6 +307,7 @@ Uses `read_image` (tesseract OCR if installed; optional vision via
 | Session bootstrap | `session_bootstrap` + `secrets/accounts.yaml` |
 | Auth continuity | Mid-hunt 401 → refresh + smoke + one retry; CSRF on IDOR writes; MFA/SSO → clear `needs_setup` (no bypass) |
 | Detect login / whoami | `detect_login` (form/JSON/SSO) · `session_smoke` · smarter `session_bootstrap` |
+| IdP capture / resume hunt | `browser_capture_session` (headed, operator finishes login) · `run_hunt resume=true` |
 | Content discovery (capped) | `discover_paths` (soft-404 baseline) |
 | OOB / Interactsh | `oob_mint` / `interactsh_*` (`HACKBOT_OOB_BASE`) |
 | Cookie jar across acts | `http_request` → `secrets/cookie_jar.json` |
@@ -340,6 +341,12 @@ Autonomous `run_hunt` already chains content discovery, headers, CORS, params,
 GraphQL, redirect, LFI/SSTI/SSRF (with OOB when `HACKBOT_OOB_BASE` is set), and
 systematic `idor_probe` A/B when sessions are loaded — then `build_chains` and
 learning ingest. Cookie jar persists under `secrets/cookie_jar.json`.
+
+**SSO / IdP:** Hackbot never types IdP credentials or bypasses MFA. When bootstrap
+detects SSO, use headed `browser_capture_session` (operator finishes login in the
+browser); cookies are saved + `session_smoke`d. Hunt pauses on unresolved
+`needs_setup` — after capture, resume with NL “resume hunt” / `run_hunt resume=true`
+or `HACKBOT_HUNT_RESUME=1` (loads `hunt/state.yaml`, skips full observe when surface exists).
 
 OOB / Interactsh (blind SSRF/XSS/XXE):
 

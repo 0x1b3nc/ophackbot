@@ -71,6 +71,7 @@ MODULE_AGGRESSION: dict[str, int] = {
     "sqli": 2,
     "idor": 2,
     "session_bootstrap": 2,
+    "idp_capture": 2,
     "auth-bypass": 2,
     "oauth": 2,
     "jwt_active": 2,
@@ -124,6 +125,42 @@ CHAIN_MODULE_MAP: dict[str, str] = {
     "ssti": "ssti",
     "xxe": "xxe",
 }
+
+# Modules with a real `_act` handler — drop others so Decide doesn't burn budget.
+ACTABLE_MODULES: frozenset[str] = frozenset(
+    {
+        "session_bootstrap",
+        "idp_capture",
+        "secrets",
+        "idor",
+        "discover_paths",
+        "ssrf",
+        "race",
+        "auth-bypass",
+        "browser_diff",
+        "oauth",
+        "jwt_active",
+        "oob_poll",
+        "brute",
+        "sqli",
+        "xss",
+        "analyze_headers",
+        "cors",
+        "mine_params",
+        "graphql",
+        "open_redirect",
+        "lfi",
+        "ssti",
+        "xxe",
+        "analyze_js",
+        "openapi_ingest",
+        "second_order_xss",
+    }
+)
+
+_REFRESH_LITE_MODULES: frozenset[str] = frozenset(
+    {"discover_paths", "mine_params", "openapi_ingest", "analyze_js", "map_surface"}
+)
 
 
 def keep_pause() -> bool:
@@ -242,6 +279,7 @@ def run_hunt(
     budget: int | None = None,
     approve_fn: ApproveFn | None = None,
     force: bool | None = None,
+    resume: bool = False,
 ) -> dict[str, Any]:
     """Run the OODA hunt loop until budget/stop/no work."""
     from .tools import execute_tool  # local import avoids cycle
@@ -251,6 +289,12 @@ def run_hunt(
     memory = HuntMemory(target_dir)
     force_flag = is_forced() if force is None else force
     budget_total = budget if budget is not None else _budget_default()
+    resume_flag = resume or os.environ.get("HACKBOT_HUNT_RESUME", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
     policy = ScopePolicy.load(target_dir)
     seed = ""
@@ -275,7 +319,19 @@ def run_hunt(
     except PermissionError as exc:
         return {"ok": False, "error": str(exc), "kind": "scope_denied"}
 
-    if approve_session:
+    prior = memory.load_state() if resume_flag else None
+    resumable = bool(
+        prior
+        and prior.budget_remaining > 0
+        and (prior.host or "") in {host, ""}
+        and (
+            prior.stop_reason in {"needs_setup", "paused", ""}
+            or (prior.stopped and prior.stop_reason == "needs_setup")
+            or not prior.stopped
+        )
+    )
+
+    if approve_session and not (resumable and prior and prior.acts_done > 0):
         if approve_fn is None:
             log_decision(
                 "DENY",
@@ -288,6 +344,7 @@ def run_hunt(
         desc = (
             f"Approve AUTONOMOUS HUNT session?\n"
             f"  host={host}\n  budget={budget_total}\n  force={force_flag}\n"
+            f"  resume={resume_flag and resumable}\n"
             f"  unauth_only={unauth_only()}\n"
             f"  plan=observe_v2 → secrets/discover → authz/inject (SCOPE-gated)\n"
             f"  prompt={prompt[:120]}"
@@ -310,21 +367,34 @@ def run_hunt(
             extra={"force_override": force_flag, "budget": budget_total},
         )
 
-    phase_budgets = allocate_phase_budgets(budget_total)
-    state = HuntState(
-        phase="observe",
-        prompt=prompt,
-        host=host,
-        budget_remaining=budget_total,
-        budget_total=budget_total,
-        acts_done=0,
-        failures=0,
-        stopped=False,
-        hunt_phase="recon",
-        phase_budget_recon=phase_budgets.get("recon", 0),
-        phase_budget_authz=phase_budgets.get("authz", 0),
-        phase_budget_inject=phase_budgets.get("inject", 0),
-    )
+    if resumable and prior:
+        state = prior
+        state.stopped = False
+        if state.stop_reason in {"needs_setup", "paused"}:
+            state.stop_reason = ""
+        state.host = host or state.host
+        if prompt:
+            state.prompt = prompt
+        ui.rule("hunt resume")
+        ui.kv("budget_remaining", str(state.budget_remaining))
+        ui.kv("acts_done", str(state.acts_done))
+        ui.kv("hunt_phase", state.hunt_phase)
+    else:
+        phase_budgets = allocate_phase_budgets(budget_total)
+        state = HuntState(
+            phase="observe",
+            prompt=prompt,
+            host=host,
+            budget_remaining=budget_total,
+            budget_total=budget_total,
+            acts_done=0,
+            failures=0,
+            stopped=False,
+            hunt_phase="recon",
+            phase_budget_recon=phase_budgets.get("recon", 0),
+            phase_budget_authz=phase_budgets.get("authz", 0),
+            phase_budget_inject=phase_budgets.get("inject", 0),
+        )
     memory.save_state(state)
 
     auto_approve: ApproveFn = lambda _d: True
@@ -333,18 +403,20 @@ def run_hunt(
     findings_logged: list[str] = []
     acts: list[dict[str, Any]] = []
 
-    ui.rule("hunt start")
+    if not (resumable and prior):
+        ui.rule("hunt start")
     ui.kv("host", host)
-    ui.kv("budget", str(budget_total))
+    ui.kv("budget", str(state.budget_remaining if resumable and prior else budget_total))
     ui.kv(
         "phase_budgets",
         f"recon={state.phase_budget_recon} authz={state.phase_budget_authz} "
         f"inject={state.phase_budget_inject}",
     )
     ui.kv("approve_session", str(approve_session))
+    ui.kv("resume", str(bool(resumable and prior)))
 
     # Default: clear sticky pause so a new hunt session can run
-    if not keep_pause():
+    if not keep_pause() or (resumable and prior):
         try:
             from .hunt_telemetry import clear_pause
 
@@ -352,34 +424,47 @@ def run_hunt(
         except Exception:  # noqa: BLE001
             pass
 
-    # --- Observe v2: deepen surface before Decide ---
-    state.phase = "observe"
-    memory.save_state(state)
-    from .observe import observe_v2
+    surface_exists = bool(memory.endpoints())
+    skip_observe = bool(resumable and prior and surface_exists)
+    if skip_observe:
+        from .observe import observe_refresh_lite
 
-    surface_raw = observe_v2(
-        target_dir,
-        seed,
-        approve=approve_session,
-        force=force_flag,
-        execute_tool=execute_tool if approve_session else None,
-    )
-    memory.append_attempt(
-        {
-            "phase": "observe",
-            "module": "observe_v2",
-            "url": seed,
-            "outcome": "ok" if surface_raw.get("ok") else "error",
-            "detail": {"tags": surface_raw.get("tags"), "endpoints": surface_raw.get("endpoint_count")},
-        }
-    )
-    if approve_session:
-        state.budget_remaining -= 1
-        state.acts_done += 1
-    acts.append({"module": "observe_v2", "result": surface_raw})
+        surface_raw = observe_refresh_lite(target_dir, host=host)
+        acts.append({"module": "observe_refresh_lite", "result": surface_raw})
+        ui.info("resume: skipped full observe_v2 (surface present)")
+    else:
+        # --- Observe v2: deepen surface before Decide ---
+        state.phase = "observe"
+        memory.save_state(state)
+        from .observe import observe_v2
+
+        surface_raw = observe_v2(
+            target_dir,
+            seed,
+            approve=approve_session,
+            force=force_flag,
+            execute_tool=execute_tool if approve_session else None,
+        )
+        memory.append_attempt(
+            {
+                "phase": "observe",
+                "module": "observe_v2",
+                "url": seed,
+                "outcome": "ok" if surface_raw.get("ok") else "error",
+                "detail": {
+                    "tags": surface_raw.get("tags"),
+                    "endpoints": surface_raw.get("endpoint_count"),
+                },
+            }
+        )
+        if approve_session:
+            state.budget_remaining -= 1
+            state.acts_done += 1
+        acts.append({"module": "observe_v2", "result": surface_raw})
 
     # Seed baseline candidates from surface + always-on modules
-    _seed_queue(memory, host, seed)
+    if not skip_observe:
+        _seed_queue(memory, host, seed)
 
     # Always try secrets early (chaining source)
     queue = _decide(memory, host, seed, target_dir=target_dir)
@@ -410,7 +495,13 @@ def run_hunt(
             continue
 
         # Skip authz modules in unauth-only mode
-        if unauth_only() and hyp.module in {"idor", "session_bootstrap", "browser_diff", "auth-bypass"}:
+        if unauth_only() and hyp.module in {
+            "idor",
+            "session_bootstrap",
+            "idp_capture",
+            "browser_diff",
+            "auth-bypass",
+        }:
             continue
 
         from .hunt_telemetry import is_paused, record_telemetry
@@ -602,6 +693,17 @@ def run_hunt(
                 queue.append(follow)
         queue = _rerank(queue, act_result)
 
+        # Lite re-observe after surface-enriching acts
+        if hyp.module in _REFRESH_LITE_MODULES:
+            try:
+                from .observe import observe_refresh_lite
+
+                observe_refresh_lite(target_dir, host=host)
+                queue = _decide(memory, host, seed, target_dir=target_dir)
+                queue = prefer_phase(queue, state.hunt_phase)
+            except Exception:  # noqa: BLE001
+                pass
+
         try:
             from .hunt_telemetry import record_telemetry
 
@@ -617,6 +719,57 @@ def run_hunt(
             )
         except Exception:  # noqa: BLE001
             pass
+
+        # needs_setup: try one IdP capture if recommended; otherwise pause for operator
+        if outcome == "needs_setup":
+            want_capture = bool(
+                act_result.get("capture_recommended")
+                or act_result.get("sso_urls")
+                or "sso" in str(act_result.get("summary") or "").lower()
+            )
+            has_capture_queued = any(h.module == "idp_capture" for h in queue)
+            if (
+                hyp.module == "session_bootstrap"
+                and want_capture
+                and approve_session
+                and not has_capture_queued
+            ):
+                cap_url = str(
+                    act_result.get("capture_url")
+                    or (act_result.get("sso_urls") or [None])[0]
+                    or hyp.url
+                    or seed
+                )
+                queue.insert(
+                    0,
+                    Hypothesis(
+                        module="idp_capture",
+                        url=cap_url,
+                        title="Browser IdP capture for session A",
+                        priority=99,
+                        params={"session": "A"},
+                        aggression=2,
+                    ),
+                )
+                ui.warn("needs_setup: queued browser IdP capture before pause")
+            elif hyp.module == "session_bootstrap" and has_capture_queued:
+                ui.warn("needs_setup: IdP capture already queued")
+            else:
+                state.stopped = True
+                state.stop_reason = "needs_setup"
+                state.last_summary = str(act_result.get("summary") or "needs_setup")
+                memory.save_state(state)
+                try:
+                    from .hunt_telemetry import request_pause
+
+                    request_pause(target_dir)
+                except Exception:  # noqa: BLE001
+                    pass
+                ui.warn(
+                    "hunt paused: needs_setup — browser_capture_session / set_session, "
+                    "then resume hunt"
+                )
+                break
 
         # Validate if signal — setup/recon modules never auto-FINDINGS
         if act_result.get("signal") and hyp.module in FINDING_MODULES:
@@ -1263,6 +1416,8 @@ def _decide(
     for hyp in ideas:
         if hyp.module == "recon" or hyp.module in banned:
             continue
+        if hyp.module not in ACTABLE_MODULES:
+            continue
         key = hyp.dedupe_key()
         if key in seen:
             continue
@@ -1375,6 +1530,41 @@ def _act(
     """Execute one specialist module; return normalized result with optional signal."""
     target_s = str(target_dir)
 
+    if hyp.module == "idp_capture":
+        url = hyp.url or host
+        sess = (hyp.params or {}).get("session") or "A"
+        raw = execute_tool(
+            "browser_capture_session",
+            {
+                "target_dir": target_s,
+                "url": url,
+                "session": sess,
+                "approve": approve,
+                "force": force,
+            },
+            approve_fn=approve_fn,
+        )
+        data = json.loads(raw)
+        if data.get("needs_setup") or data.get("reason") == "capture_timeout":
+            return {
+                "outcome": "needs_setup",
+                "signal": False,
+                "summary": "IdP capture timeout/needs_setup — finish login then resume",
+                "detail": data,
+                "capture_recommended": True,
+            }
+        ok = bool(data.get("ok") or data.get("chain"))
+        smoke = data.get("smoke") if isinstance(data.get("smoke"), dict) else {}
+        smoke_fail = smoke.get("ok") is False and not smoke.get("skipped")
+        return {
+            "outcome": "ok" if ok and not smoke_fail else "failed",
+            "signal": False,
+            "chain": ok and not smoke_fail,
+            "smoke_ok": False if smoke_fail else (True if smoke else None),
+            "summary": f"idp_capture session={sess} ok={ok}",
+            "detail": data,
+        }
+
     if hyp.module == "session_bootstrap":
         raw = execute_tool(
             "session_bootstrap",
@@ -1398,7 +1588,12 @@ def _act(
                 "signal": False,
                 "summary": summary,
                 "detail": data,
-                "sso_urls": list((data.get("detect") or {}).get("sso_urls") or data.get("sso_urls") or []),
+                "capture_recommended": bool(data.get("capture_recommended")),
+                "capture_url": data.get("capture_url")
+                or ((data.get("sso_urls") or [None])[0]),
+                "sso_urls": list(
+                    (data.get("detect") or {}).get("sso_urls") or data.get("sso_urls") or []
+                ),
             }
         # Real success = sessions ready (chainable, NEVER a FINDINGS signal)
         ident = load_identity(target_dir)
@@ -2074,6 +2269,27 @@ def _chain_from_result(
                 or blob.get("sso_urls")
                 or []
             )
+        capture_url = str(
+            result.get("capture_url")
+            or blob.get("capture_url")
+            or (sso_urls[0] if sso_urls else "")
+            or hyp.url
+            or f"https://{host}/login"
+        )
+        if result.get("capture_recommended") or blob.get("capture_recommended") or (
+            result.get("outcome") == "needs_setup"
+            and "sso" in str(result.get("summary") or "").lower()
+        ):
+            follows.append(
+                Hypothesis(
+                    module="idp_capture",
+                    url=capture_url,
+                    title="Browser IdP capture for session A",
+                    priority=97,
+                    params={"session": "A"},
+                    aggression=2,
+                )
+            )
         if sso_urls or (
             result.get("outcome") == "needs_setup"
             and "sso" in str(result.get("summary") or "").lower()
@@ -2087,6 +2303,21 @@ def _chain_from_result(
                     priority=88,
                 )
             )
+
+    if hyp.module == "idp_capture" and (result.get("chain") or result.get("outcome") == "ok"):
+        if result.get("smoke_ok") is not False:
+            for ep in memory.endpoints():
+                if ep.has_id_param() or re.search(r"/\d+(?:/|$)", ep.url):
+                    follows.append(
+                        Hypothesis(
+                            module="idor",
+                            url=ep.url,
+                            title=f"IDOR after IdP capture — {ep.url}",
+                            priority=94,
+                            params={"methods": "GET,PATCH", "matrix": "both"},
+                            method="GET",
+                        )
+                    )
 
     if hyp.module == "graphql" and result.get("signal"):
         # Queue mutation authz if schema exposed
@@ -2229,9 +2460,12 @@ def _chain_from_result(
                     priority=96,
                 )
             )
-    if result.get("outcome") == "needs_setup" and hyp.module == "session_bootstrap":
-        # Keep MFA/SSO visible; do not invent IDOR follow-ups (oauth probe allowed)
-        follows = [f for f in follows if f.module != "idor"]
+    if result.get("outcome") == "needs_setup" and hyp.module in {
+        "session_bootstrap",
+        "idp_capture",
+    }:
+        # Keep MFA/SSO visible; allow idp_capture + oauth, not IDOR
+        follows = [f for f in follows if f.module not in {"idor"}]
     return follows
 
 
