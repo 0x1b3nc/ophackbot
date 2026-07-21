@@ -2736,8 +2736,20 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         domain = _domain_arg(args)
         if not domain:
             return json.dumps({"ok": False, "error": "domain required"})
+        save_dir: Path | None = None
+        tdir = args.get("target_dir") or ""
+        if tdir:
+            save_dir = _target_path(str(tdir))
+        else:
+            active = get_active()
+            if active:
+                save_dir = active.target_dir
         return json.dumps(
-            web_probes_runner.wayback_urls(domain, limit=int(args.get("limit") or 100))
+            web_probes_runner.wayback_urls(
+                domain,
+                limit=int(args.get("limit") or 100),
+                save_dir=save_dir,
+            )
         )
     if name == "list_dir":
         return _tool_list_dir(args)

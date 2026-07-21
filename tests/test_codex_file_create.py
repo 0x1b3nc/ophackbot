@@ -22,14 +22,15 @@ class CodexFileCreateTests(unittest.TestCase):
     def test_sandbox_default_allows_network_writes(self) -> None:
         with mock.patch.dict(os.environ, {"HACKBOT_CODEX_SANDBOX": ""}, clear=False):
             os.environ.pop("HACKBOT_CODEX_SANDBOX", None)
-            with mock.patch("hackbot.yolo.is_yolo", return_value=False):
-                self.assertEqual(codex_sandbox_mode(), "workspace-write")
-            with mock.patch("hackbot.yolo.is_yolo", return_value=True):
-                self.assertEqual(codex_sandbox_mode(), "danger-full-access")
+            self.assertEqual(codex_sandbox_mode(), "danger-full-access")
         with mock.patch.dict(
             os.environ, {"HACKBOT_CODEX_SANDBOX": "read-only"}, clear=False
         ):
             self.assertEqual(codex_sandbox_mode(), "read-only")
+        with mock.patch.dict(
+            os.environ, {"HACKBOT_CODEX_SANDBOX": "workspace-write"}, clear=False
+        ):
+            self.assertEqual(codex_sandbox_mode(), "workspace-write")
 
     def test_resume_prompt_restates_fileop_rules(self) -> None:
         prompt = _build_prompt(

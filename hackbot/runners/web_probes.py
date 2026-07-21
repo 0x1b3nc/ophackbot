@@ -230,8 +230,14 @@ def crt_subdomains(domain: str, *, timeout: float = 25.0) -> dict[str, Any]:
     }
 
 
-def wayback_urls(domain: str, *, limit: int = 100, timeout: float = 30.0) -> dict[str, Any]:
-    """Passive URL discovery via Wayback CDX API."""
+def wayback_urls(
+    domain: str,
+    *,
+    limit: int = 100,
+    timeout: float = 30.0,
+    save_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Passive URL discovery via Wayback CDX API. Optionally persist under recon/."""
     domain = domain.strip().lower()
     api = (
         "https://web.archive.org/cdx/search/cdx"
@@ -251,10 +257,23 @@ def wayback_urls(domain: str, *, limit: int = 100, timeout: float = 30.0) -> dic
             urls.append(str(row[0]))
         elif isinstance(row, str):
             urls.append(row)
+    urls = urls[:limit]
+    saved = ""
+    if save_dir is not None and urls:
+        try:
+            recon = Path(save_dir) / "recon"
+            recon.mkdir(parents=True, exist_ok=True)
+            safe = domain.replace("/", "_").replace("\\", "_")
+            out = recon / f"wayback_{safe}.txt"
+            out.write_text("\n".join(urls) + "\n", encoding="utf-8")
+            saved = str(out)
+        except OSError as exc:
+            saved = f"(save failed: {exc})"
     return {
         "ok": True,
         "domain": domain,
         "count": len(urls),
-        "urls": urls[:limit],
+        "urls": urls,
         "source": "wayback-cdx",
+        "saved": saved,
     }

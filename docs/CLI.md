@@ -27,9 +27,9 @@ Boot already in YOLO: `HACKBOT_YOLO=1`.
 Codex sandbox (curl/httpx need this — old default was read-only and broke hunt):
 
 ```text
-# default: workspace-write + network
-# /yolo on  →  danger-full-access
-export HACKBOT_CODEX_SANDBOX=danger-full-access   # or workspace-write | read-only
+# default: danger-full-access  (look for: sandbox=danger-full-access + green unlock line)
+export HACKBOT_CODEX_SANDBOX=workspace-write   # tighter, if you want
+export HACKBOT_CODEX_SANDBOX=read-only         # will break live hunt again
 ```
 
 ## Pinning a provider (optional)

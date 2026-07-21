@@ -46,19 +46,17 @@ def ui_text(text: str, style: str) -> _Text:
 
 
 def codex_sandbox_mode() -> str:
-    """Pick Codex OS sandbox. read-only breaks live hunt (no net, no /tmp)."""
+    """Pick Codex OS sandbox. read-only breaks live hunt (no net, no /tmp).
+
+    Default is ``danger-full-access`` on this bounty kit (operator Kali).
+    Override with ``HACKBOT_CODEX_SANDBOX=workspace-write|read-only``.
+    """
     raw = (os.environ.get("HACKBOT_CODEX_SANDBOX") or "").strip().lower()
     if raw in _SANDBOX_OK:
         return raw
-    try:
-        from .yolo import is_yolo
-
-        if is_yolo():
-            return "danger-full-access"
-    except Exception:  # noqa: BLE001
-        pass
-    # Default: write workspace + /tmp, and enable network (see cmd builder).
-    return "workspace-write"
+    # Operator-owned box: hunt needs DNS, curl, /tmp caches (httpx). SCOPE still
+    # gates what hackbot tools may hit; Codex shell sandbox must not fake "no DNS".
+    return "danger-full-access"
 
 
 # Prefer hackbot-fileop for disk mutations (approve/YOLO audit). Shell may have
@@ -479,6 +477,10 @@ def run_codex_turn(
         + ("  resume" if resume else "")
         + (f"  after-fileop-{_fileop_depth}" if _fileop_depth else "")
     )
+    if sandbox == "read-only":
+        ui.warn("codex sandbox=read-only — curl/DNS will fail; unset HACKBOT_CODEX_SANDBOX")
+    elif sandbox == "danger-full-access":
+        ui.success("codex sandbox unlocked (network + /tmp)")
     started = time.perf_counter()
 
     with tempfile.NamedTemporaryFile(
