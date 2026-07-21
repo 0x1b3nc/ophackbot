@@ -24,12 +24,23 @@ Recompute after any edit:
 python -c "import hashlib; from pathlib import Path; print(hashlib.sha256(Path('hexstrike_server.py').read_bytes()).hexdigest())"
 ```
 
-## How I run it safely
+## How I run it safely (preferred: Docker)
+
+```powershell
+cd integrations\hexstrike
+docker compose up -d --build
+curl http://127.0.0.1:8888/health
+```
+
+Compose publishes **only** `127.0.0.1:8888` and does **not** mount `targets/`.
+Inside the container the app listens on `0.0.0.0` so the publish works; the host
+side stays loopback-only.
+
+## How I run it with a local venv
 
 1. Separate venv under `integrations/hexstrike/` (never mix with the kit venv).
-2. Keep it on `127.0.0.1` only. Prefer Docker without mounting `targets/`.
-3. Do not put cookies, session dumps, or `targets/*/evidence` inside the
-   HexStrike container filesystem if you can avoid it.
+2. Keep `HEXSTRIKE_HOST=127.0.0.1` (default). Never expose publicly.
+3. Do not put cookies, session dumps, or `targets/*/evidence` next to the server.
 4. Pin deps when you install:
 
 ```powershell

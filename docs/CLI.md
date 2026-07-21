@@ -130,6 +130,41 @@ Prefer a YAML front-matter block at the top of `SCOPE.md` for `in_scope`,
 `out_of_scope`, `allowed`, `prohibited`. That is the source of truth. Markdown
 below is for notes. Old Markdown-only scopes still work as a fallback.
 
+Import a program policy dump into YAML:
+
+```powershell
+.\.venv\Scripts\python.exe -m hackbot policy-import targets/demo --file policy.md --write
+```
+
+### Hunt mode
+
+```text
+/target demo          load SCOPE + RESUME + FINDINGS into the session
+/target clear
+/status               shows brain + active target + next step
+```
+
+Open a class playbook (falsifiable steps, not just notes):
+
+```powershell
+.\.venv\Scripts\python.exe -m hackbot playbook idor --endpoint https://example.com/api/orders/1
+```
+
+In the agent: `open_playbook` / `set_target` tools do the same thing.
+
+### HexStrike containment
+
+Prefer Docker (host loopback only, no `targets/` mount):
+
+```powershell
+cd integrations\hexstrike
+docker compose up -d --build
+# or
+.\.venv\Scripts\python.exe -m hackbot run targets/demo --tool hexstrike --docker --approve
+```
+
+See `integrations/hexstrike/PROVENANCE.md`.
+
 ## Low-level commands (optional)
 
 Still here if you want to script things:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Callable
@@ -12,10 +13,13 @@ from .audit import log_decision
 from .evidence import EvidenceStore
 from .knowledge import open_notes, required_bundle
 from .planner import plan_step
+from .playbooks import list_playbooks, playbook_for, playbook_markdown
 from .policy_guard import ScopePolicy, host_from_target, policy_quote_for
+from .policy_import import import_policy_to_target
 from .redaction import StrictRedactError, redact_text, strict_check, strict_enabled
 from .reporting import render_bugcrowd, render_hackerone, render_intigriti
 from .runners import burp, hexstrike, projectdiscovery, reconftw
+from .session import get_active, set_active
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = ROOT / "targets"
@@ -28,6 +32,57 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "list_targets",
         "description": "List target folders under targets/.",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "set_target",
+        "description": (
+            "Set the active hunt target (loads SCOPE.md, RESUME.md, FINDINGS.md into session). "
+            "Pass name like 'demo' or 'targets/demo'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"target": {"type": "string"}},
+            "required": ["target"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "session_status",
+        "description": "Show the active target session (hosts, next step, loaded files).",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "open_playbook",
+        "description": (
+            "Open a falsifiable playbook for a bug class (idor, ssrf, xss, sqli, race, recon, ...). "
+            "Returns ordered steps with hypothesis, aggression, command, expected evidence, stop."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "description": "bug class or free-text task"},
+                "endpoint": {"type": "string", "description": "optional endpoint to fill into commands"},
+            },
+            "required": ["task"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "import_policy",
+        "description": (
+            "Parse program policy text into SCOPE.md YAML front-matter for a target. "
+            "write=true overwrites SCOPE.md (asks approval)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string"},
+                "policy_text": {"type": "string"},
+                "write": {"type": "boolean", "default": False},
+            },
+            "required": ["target", "policy_text"],
+            "additionalProperties": False,
+        },
     },
     {
         "name": "read_file",
@@ -275,8 +330,37 @@ def _sensitive_roots() -> list[Path]:
     return roots
 
 
+def _writable_roots() -> list[Path]:
+    """Dirs where file mutations are allowed (kit + home defaults + HACKBOT_WRITE_DIRS)."""
+    import tempfile
+
+    roots = [ROOT.resolve(), Path.home().resolve(), Path(tempfile.gettempdir()).resolve()]
+    for downloads in (Path.home() / "Downloads", Path.home() / "Desktop"):
+        if downloads.exists():
+            roots.append(downloads.resolve())
+    extra = os.environ.get("HACKBOT_WRITE_DIRS", "")
+    for raw in extra.split(os.pathsep):
+        raw = raw.strip()
+        if not raw:
+            continue
+        p = Path(raw).expanduser()
+        try:
+            roots.append(p.resolve())
+        except OSError:
+            continue
+    # Dedup
+    out: list[Path] = []
+    seen: set[str] = set()
+    for r in roots:
+        key = str(r).lower()
+        if key not in seen:
+            out.append(r)
+            seen.add(key)
+    return out
+
+
 def _path_blocked(path: Path) -> str | None:
-    """Return a reason if path sits under a sensitive root, else None."""
+    """Return a reason if path is sensitive or outside writable roots."""
     try:
         resolved = path.resolve()
     except OSError:
@@ -288,17 +372,38 @@ def _path_blocked(path: Path) -> str | None:
             root_r = root
         if resolved == root_r or root_r in resolved.parents:
             return f"path under sensitive root: {root_r}"
-        # Also catch paths that would create under a sensitive dir that may not exist yet
         try:
             if resolved.is_relative_to(root_r):
                 return f"path under sensitive root: {root_r}"
         except (AttributeError, TypeError, ValueError):
             pass
-    # String fallback for ~/.ssh style when home/.ssh does not exist yet
     lowered = str(resolved).replace("\\", "/").lower()
     for marker in ("/.ssh/", "/.aws/", "/.gnupg/", "/etc/"):
         if marker in lowered or lowered.endswith(marker.rstrip("/")):
             return f"path looks sensitive ({marker.strip('/')})"
+
+    # Optional hard allowlist (on by default). Set HACKBOT_WRITE_ALLOWLIST=0 to disable.
+    if os.environ.get("HACKBOT_WRITE_ALLOWLIST", "1").strip().lower() not in {
+        "0",
+        "false",
+        "off",
+        "no",
+    }:
+        allowed = False
+        for root in _writable_roots():
+            try:
+                if resolved == root or resolved.is_relative_to(root):
+                    allowed = True
+                    break
+            except (AttributeError, TypeError, ValueError):
+                if root in resolved.parents or resolved == root:
+                    allowed = True
+                    break
+        if not allowed:
+            return (
+                f"path outside writable roots (kit, home, Downloads/Desktop, "
+                f"HACKBOT_WRITE_DIRS): {resolved}"
+            )
     return None
 
 
@@ -307,7 +412,7 @@ def _guard_mutate_path(path: Path) -> str | None:
     reason = _path_blocked(path)
     if reason is None:
         return None
-    log_decision("DENY", f"path_blocked {path} ({reason})")
+    log_decision("DENY", f"path_blocked {path} ({reason})", kind="path_blocked", tool="fs")
     return json.dumps({"ok": False, "error": reason, "kind": "path_blocked"})
 
 
@@ -318,10 +423,30 @@ def _preview(text: str, limit: int = 500) -> str:
     return text[:limit] + f"\n... (+{len(text) - limit} more chars)"
 
 
-def _require_approval(approve_fn: ApproveFn | None, description: str) -> str | None:
+def _active_target_name() -> str:
+    s = get_active()
+    return s.name if s else ""
+
+
+def _require_approval(
+    approve_fn: ApproveFn | None,
+    description: str,
+    *,
+    kind: str = "approve",
+    tool: str = "",
+    host: str = "",
+) -> str | None:
     """Ask the operator. Return a refusal JSON string if denied, else None."""
+    target = _active_target_name()
     if approve_fn is None:
-        log_decision("DENY", f"(no approver) {description}")
+        log_decision(
+            "DENY",
+            f"(no approver) {description}",
+            kind=kind,
+            target=target,
+            tool=tool,
+            host=host,
+        )
         return json.dumps(
             {
                 "ok": False,
@@ -330,10 +455,29 @@ def _require_approval(approve_fn: ApproveFn | None, description: str) -> str | N
             }
         )
     if not approve_fn(description):
-        log_decision("DENY", description)
+        log_decision("DENY", description, kind=kind, target=target, tool=tool, host=host)
         return json.dumps({"ok": False, "error": "operator denied this action.", "kind": "denied"})
-    log_decision("ALLOW", description)
+    log_decision("ALLOW", description, kind=kind, target=target, tool=tool, host=host)
     return None
+
+
+def _unified_diff(old: str, new: str, path: Path, limit: int = 40) -> str:
+    import difflib
+
+    lines = list(
+        difflib.unified_diff(
+            old.splitlines(),
+            new.splitlines(),
+            fromfile=f"a/{path.name}",
+            tofile=f"b/{path.name}",
+            lineterm="",
+        )
+    )
+    if not lines:
+        return "(no textual diff)"
+    if len(lines) > limit:
+        return "\n".join(lines[:limit]) + f"\n... (+{len(lines) - limit} diff lines)"
+    return "\n".join(lines)
 
 
 def execute_tool(
@@ -360,6 +504,83 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
             return json.dumps({"targets": []})
         names = sorted(p.name for p in TARGETS.iterdir() if p.is_dir() and p.name != "__pycache__")
         return json.dumps({"targets": names})
+
+    if name == "set_target":
+        from . import session as sess
+
+        session = set_active(args["target"])
+        ui.success(f"active target -> {session.name}")
+        ui.info(sess.status_line())
+        return json.dumps(
+            {
+                "ok": True,
+                "target": session.name,
+                "path": str(session.target_dir),
+                "hosts": list(session.in_scope_hosts),
+                "next_step": session.next_step,
+                "loaded": session.loaded_files,
+            }
+        )
+
+    if name == "session_status":
+        from . import session as sess
+
+        active = get_active()
+        if active is None:
+            return json.dumps({"ok": True, "active": None, "status": sess.status_line()})
+        return json.dumps(
+            {
+                "ok": True,
+                "active": active.name,
+                "path": str(active.target_dir),
+                "hosts": list(active.in_scope_hosts),
+                "next_step": active.next_step,
+                "status": sess.status_line(),
+                "context": active.context_block()[:4000],
+            }
+        )
+
+    if name == "open_playbook":
+        pb = playbook_for(args["task"])
+        md = playbook_markdown(pb, endpoint=args.get("endpoint") or "")
+        return json.dumps(
+            {
+                "ok": True,
+                "class": pb.class_name,
+                "playbooks_available": list_playbooks(),
+                "playbook": md,
+            }
+        )
+
+    if name == "import_policy":
+        write = bool(args.get("write"))
+        meta, rendered, scope_path = import_policy_to_target(
+            args["target"], args["policy_text"], write=False
+        )
+        if write:
+            refusal = _require_approval(
+                approve_fn,
+                f"WRITE imported SCOPE.md to\n  {scope_path}\n--- preview ---\n{_preview(rendered, 800)}",
+                kind="fs",
+                tool="import_policy",
+            )
+            if refusal:
+                return refusal
+            scope_path.parent.mkdir(parents=True, exist_ok=True)
+            scope_path.write_text(rendered, encoding="utf-8")
+            try:
+                set_active(args["target"])
+            except FileNotFoundError:
+                pass
+        return json.dumps(
+            {
+                "ok": True,
+                "written": write,
+                "path": str(scope_path),
+                "meta": meta,
+                "preview": rendered[:3000],
+            }
+        )
 
     if name == "read_file":
         path = _safe_path(args["path"])
@@ -548,16 +769,16 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
             return json.dumps(
                 {"ok": False, "error": f"old_string found {count}x; pass replace_all=true or add context"}
             )
+        updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+        diff = _unified_diff(text, updated, path)
         desc = (
             f"EDIT file\n  {path}\n"
-            f"- remove:\n{_preview(old, 300)}\n"
-            f"+ insert:\n{_preview(new, 300)}"
-            + (f"\n(applies to {count} occurrences)" if replace_all else "")
+            + (f"(applies to {count} occurrences)\n" if replace_all else "")
+            + f"--- diff ---\n{diff}"
         )
-        refusal = _require_approval(approve_fn, desc)
+        refusal = _require_approval(approve_fn, desc, kind="fs", tool="edit_file")
         if refusal:
             return refusal
-        updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
         path.write_text(updated, encoding="utf-8")
         return json.dumps({"ok": True, "path": str(path), "replacements": count if replace_all else 1})
 
@@ -616,16 +837,11 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         approve = bool(args.get("approve"))
         if approve:
             prompt = f"Approve ACTIVE traffic?\n  tool={tool}\n  host={host}\n  target={target}"
-            if approve_fn is None or not approve_fn(prompt):
-                log_decision("DENY", prompt)
-                return json.dumps(
-                    {
-                        "ok": False,
-                        "error": "operator refused approve (or dry-run only). Re-run with approve=false to preview.",
-                        "kind": "denied",
-                    }
-                )
-            log_decision("ALLOW", prompt)
+            refusal = _require_approval(
+                approve_fn, prompt, kind="active_traffic", tool=tool, host=host
+            )
+            if refusal:
+                return refusal
         if tool == "httpx":
             result = projectdiscovery.httpx_probe(target, host, approve=approve)
         elif tool == "katana":

@@ -27,6 +27,7 @@ from rich.text import Text as _Text
 from . import ui
 from .intent import is_chat_prompt, resolve_effort_for_prompt
 from .llm import streaming_enabled
+from .session import get_active
 
 ApproveFn = Callable[[str], bool]
 
@@ -205,6 +206,9 @@ def _build_prompt(
         recent = history[-4:]
         convo = "\n".join(f"{role}: {text}" for role, text in recent)
         parts.append("\nRecent conversation:\n" + convo + "\n")
+    active = get_active()
+    if active and not chat_mode:
+        parts.append("\nActive target session:\n" + active.context_block() + "\n")
     parts.append("\n" + user_prompt.strip() + "\n")
     return "\n".join(parts)
 

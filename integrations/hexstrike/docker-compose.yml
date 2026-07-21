@@ -1,0 +1,14 @@
+# HexStrike containment: no targets/ mount, host loopback only.
+services:
+  hexstrike:
+    build: .
+    container_name: hackbot-hexstrike
+    ports:
+      - "127.0.0.1:8888:8888"
+    # Intentionally no volumes for targets/, secrets/, or home dirs.
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    tmpfs:
+      - /tmp

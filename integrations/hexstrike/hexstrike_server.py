@@ -17286,5 +17286,8 @@ if __name__ == "__main__":
         if line.strip():
             logger.info(line)
 
-    # Loopback only. Do not bind 0.0.0.0; this server executes shell commands.
-    app.run(host="127.0.0.1", port=API_PORT, debug=DEBUG_MODE)
+    # Default loopback. In Docker set HEXSTRIKE_HOST=0.0.0.0 and publish only
+    # 127.0.0.1:port on the host (see docker-compose.yml). Never expose publicly.
+    import os as _os
+    _bind = _os.environ.get("HEXSTRIKE_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    app.run(host=_bind, port=API_PORT, debug=DEBUG_MODE)

@@ -68,18 +68,30 @@ I can create, edit, append, move, and delete files anywhere, not just this repo.
 Every change pops an approval panel with the path and a preview first. Deny it
 and I back off. Reasoning streams live as I think (toggle with `/stream`).
 
+## Hunt workflow
+
+```text
+/target demo
+open IDOR playbook for https://example.com/api/orders/1
+```
+
+Playbooks turn study notes into falsifiable steps. `/target` loads SCOPE,
+RESUME, and FINDINGS into the session so the agent remembers where you left off.
+Import program policy text into SCOPE YAML with `hackbot policy-import`.
+
 ## Safety
 
 - Every target needs `SCOPE.md` (YAML front-matter preferred; Markdown fallback)
 - Tools refuse hosts I haven't confirmed in scope
 - `run_tool` defaults to dry-run; approve asks you first
-- Every file change asks approval (path + preview) before it happens
+- Every file change asks approval (path + preview/diff) before it happens
+- Writable paths default to kit + home + Downloads/Desktop (see `HACKBOT_WRITE_DIRS`)
 - Sensitive paths like `~/.ssh` / `~/.aws` are hard blocked
-- Approvals append to local `audit.log` (gitignored)
+- Approvals append to local `audit.log` (gitignored) with target/tool/host
 - Evidence redacts cookies, tokens, emails, common secrets (regex is best effort;
   set `HACKBOT_STRICT_REDACT=1` for a harder refuse-to-save gate)
 - Default brain is offline; I never auto-switch to a paid/cloud model
-- HexStrike is optional third party: loopback only, see
+- HexStrike: prefer Docker compose (host loopback, no targets mount). See
   [integrations/hexstrike/PROVENANCE.md](integrations/hexstrike/PROVENANCE.md)
 - Read `docs/OPERATING_RULES.md` before real hunting
 

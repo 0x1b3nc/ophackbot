@@ -25,6 +25,8 @@ SUBCOMMANDS = frozenset(
         "scope-check",
         "context",
         "knowledge",
+        "playbook",
+        "policy-import",
         "plan",
         "evidence",
         "redact",
@@ -225,7 +227,9 @@ def run_cmd(args: argparse.Namespace) -> int:
         elif tool == "reconftw":
             result = reconftw.run_recon(target, host, mode=args.mode, approve=approve)
         elif tool == "hexstrike":
-            result = hexstrike.start_server(port=args.port, approve=approve)
+            result = hexstrike.start_server(
+                port=args.port, approve=approve, docker=bool(getattr(args, "docker", False))
+            )
         elif tool == "burp":
             if not args.burp_xml:
                 ui.error("--burp-xml required for burp")
@@ -264,6 +268,16 @@ def build_parser() -> argparse.ArgumentParser:
     know_p = sub.add_parser("knowledge", help="Open study notes for a bug class")
     know_p.add_argument("task", nargs="?", default="recon")
     know_p.add_argument("--routes", action="store_true")
+
+    pb_p = sub.add_parser("playbook", help="Print a falsifiable class playbook")
+    pb_p.add_argument("task", nargs="?", default="recon")
+    pb_p.add_argument("--endpoint", default="")
+
+    pol_p = sub.add_parser("policy-import", help="Import policy text into SCOPE.md YAML")
+    pol_p.add_argument("target_dir")
+    pol_p.add_argument("--file", help="Policy markdown/text file")
+    pol_p.add_argument("--text", help="Policy text inline")
+    pol_p.add_argument("--write", action="store_true", help="Write SCOPE.md")
 
     plan_p = sub.add_parser("plan", help="Emit a falsifiable hunt step")
     plan_p.add_argument("target_dir")
@@ -315,6 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--concurrency", type=int, default=5)
     run_p.add_argument("--mode", default="recon", help="reconftw mode flag body")
     run_p.add_argument("--port", type=int, default=8888)
+    run_p.add_argument("--docker", action="store_true", help="hexstrike via docker compose")
     run_p.add_argument("--burp-xml")
     run_p.add_argument("--limit", type=int, default=20)
 
@@ -338,6 +353,33 @@ def _dispatch(args: argparse.Namespace) -> int:
         return context(args.target_dir)
     if args.subcommand == "knowledge":
         return knowledge_cmd(args.task, args.routes)
+    if args.subcommand == "playbook":
+        from .playbooks import playbook_for, playbook_markdown
+
+        pb = playbook_for(args.task)
+        ui.markdown_panel(playbook_markdown(pb, endpoint=args.endpoint), title=f"playbook:{pb.class_name}")
+        return 0
+    if args.subcommand == "policy-import":
+        from .policy_import import import_policy_to_target
+
+        if args.file:
+            policy_text = Path(args.file).read_text(encoding="utf-8", errors="replace")
+        elif args.text:
+            policy_text = args.text
+        else:
+            ui.error("pass --file or --text")
+            return 2
+        meta, rendered, path = import_policy_to_target(
+            args.target_dir, policy_text, write=bool(args.write)
+        )
+        ui.kv("in_scope", ", ".join(meta.get("in_scope") or []) or "(none)")
+        ui.kv("out_of_scope", ", ".join(meta.get("out_of_scope") or []) or "(none)")
+        if args.write:
+            ui.success(f"wrote {path}")
+        else:
+            ui.info("dry preview (pass --write to save SCOPE.md)")
+            ui.markdown_panel(rendered[:4000], title="SCOPE.md preview")
+        return 0
     if args.subcommand == "plan":
         return plan_cmd(args)
     if args.subcommand == "evidence":

@@ -9,6 +9,7 @@ from typing import Any, Callable
 from . import ui
 from .intent import is_chat_prompt, resolve_effort_for_prompt
 from .llm import LLMError, chat, detect_provider, streaming_enabled
+from .session import get_active
 from .tools import TOOL_SPECS, execute_tool
 
 ApproveFn = Callable[[str], bool]
@@ -36,8 +37,10 @@ Filesystem: you CAN create, write, edit, append, move, and delete files
 whenever it helps. The operator is ALWAYS asked to approve before each change.
 If denied, respect it and adjust.
 
-Use tools instead of guessing file contents. Keep answers short, technical, first
-person as my agent. When done with tools, give a clear final answer.
+Use tools instead of guessing file contents. Prefer open_playbook for a bug class
+before inventing steps. Prefer set_target when the user names a program folder.
+Keep answers short, technical, first person as my agent. When done with tools,
+give a clear final answer.
 """
 
 SYSTEM_CHAT = """You are Hackbot, a short, friendly authorized bounty/lab CLI agent.
@@ -87,10 +90,18 @@ def run_agent(
     effort = resolve_effort_for_prompt(user_prompt)
     rounds = 1 if chat_mode else (max_rounds if max_rounds is not None else 8)
     system = SYSTEM_CHAT if chat_mode else SYSTEM_HUNT
+    active = get_active()
+    if active and not chat_mode:
+        system = system + "\n\n## Active target session\n" + active.context_block()
     tools = [] if chat_mode else TOOL_SPECS
 
     provider, model = detect_provider()
-    ui.info(f"model {provider}:{model}  effort={effort or '-'}  mode={'chat' if chat_mode else 'hunt'}")
+    mode_label = "chat" if chat_mode else "hunt"
+    ui.info(f"model {provider}:{model}  effort={effort or '-'}  mode={mode_label}")
+    if active and not chat_mode:
+        from .session import status_line
+
+        ui.info(status_line())
 
     started = time.perf_counter()
     tools_used = 0

@@ -26,6 +26,7 @@ from .providers import (
     normalize_effort,
     resolve_config,
 )
+from .session import clear_active, get_active, set_active, status_line
 
 
 def _approve(prompt: str) -> bool:
@@ -88,6 +89,9 @@ class _Session:
 def _prompt_label(mode: str) -> str:
     effort = os.environ.get("HACKBOT_EFFORT", "auto") or "auto"
     short = mode if mode != "model" else "model"
+    active = get_active()
+    if active:
+        return f"{short} · {effort} · {active.name}"
     return f"{short} · {effort}"
 
 
@@ -193,6 +197,28 @@ def start_repl(*, one_shot: str | None = None) -> int:
         if text in {"/mode", "/status"}:
             ui.kv("brain", mode)
             ui.kv("config", label)
+            ui.kv("hunt", status_line())
+            continue
+
+        if text.startswith("/target"):
+            arg = text[len("/target") :].strip()
+            if not arg or arg in {"clear", "none", "off"}:
+                if arg in {"clear", "none", "off"}:
+                    clear_active()
+                    ui.success("active target cleared")
+                else:
+                    ui.kv("hunt", status_line())
+                    ui.info("set: /target <name>   clear: /target clear")
+                continue
+            try:
+                session = set_active(arg)
+            except FileNotFoundError as exc:
+                ui.error(str(exc))
+                continue
+            ui.success(f"active target -> {session.name}")
+            ui.info(status_line())
+            if session.next_step:
+                ui.info(f"next: {session.next_step}")
             continue
 
         # ---- providers / brains ------------------------------------------
@@ -318,6 +344,7 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.info("stream:   /stream on|off   (live reasoning)")
             ui.info("verbose:  /verbose on|off  (full tool panels)")
             ui.info("codex:    /codex-write     (toggle codex file changes; on by default)")
+            ui.info("hunt:     /target <name>   /target clear")
             ui.info("session:  /status  /clear  /exit   (Ctrl+C cancels a running turn)")
             continue
 
