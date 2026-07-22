@@ -1,15 +1,12 @@
-"""Local web UI server — claude-hq visual + hackbot brains (SSE chat).
+"""Deprecated local web UI — prefer Toad + ``hackbot acp`` (see docs/TOAD.md).
 
-Serves static files from ``hackbot/web_static`` and ``POST /api/chat`` as
-Server-Sent Events. Auto-approves tools while the web UI is running (same
-rail as YOLO for the session). Bind defaults to 127.0.0.1 only.
+Serves static files and ``POST /api/chat`` as SSE. Kept for compatibility.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import threading
 import time
 import uuid
 import webbrowser
@@ -19,12 +16,10 @@ from typing import Any
 from urllib.parse import urlparse
 
 from . import ui
-from .codex_backend import codex_available, run_codex_turn
-from .cursor_backend import cursor_available, run_cursor_turn
-from .local_agent import run_local_agent
-from .providers import ConfigError, resolve_config
 from .session import get_active, set_active, status_line
-from .yolo import enable_yolo, is_yolo, yolo_auto_approve
+from .turn_bridge import resolve_mode as _resolve_mode
+from .turn_bridge import run_bridged_turn as _run_turn
+from .yolo import enable_yolo, is_yolo
 
 _PKG_STATIC = Path(__file__).resolve().parent / "web_static"
 _ROOT_WEB = Path(__file__).resolve().parents[1] / "web"
@@ -37,96 +32,6 @@ def _static_dir() -> Path:
 
 
 STATIC_DIR = _static_dir()
-
-# Per-process chat histories for the web UI
-_CODEX_HISTORY: list[tuple[str, str]] = []
-_CURSOR_HISTORY: list[tuple[str, str]] = []
-_MODEL_HISTORY: list = []
-_LOCK = threading.Lock()
-
-
-def _resolve_mode() -> tuple[str, str]:
-    if os.environ.get("HACKBOT_LOCAL", "").strip() in {"1", "true", "yes"}:
-        return "offline", "offline"
-    provider = (
-        os.environ.get("HACKBOT_PROVIDER", "").strip().lower()
-        or os.environ.get("HACKBOT_BACKEND", "").strip().lower()
-    )
-    if not provider or provider == "offline":
-        return "offline", "offline (default)"
-    try:
-        cfg = resolve_config()
-    except ConfigError as exc:
-        return "offline", f"offline ({exc})"
-    if cfg.wire == "codex":
-        if codex_available():
-            return "codex", f"codex / {cfg.model or 'plan default'}"
-        return "offline", "offline (codex not logged in)"
-    if cfg.wire == "cursor":
-        if cursor_available():
-            return "cursor", f"cursor / {cfg.model or 'composer-2.5'}"
-        return "offline", "offline (cursor unavailable)"
-    return "model", f"{cfg.provider} / {cfg.model or 'default'}"
-
-
-def _approve(prompt: str) -> bool:
-    if is_yolo():
-        return yolo_auto_approve(prompt)
-    # Web UI has no interactive Confirm — auto-approve with audit via yolo path.
-    return yolo_auto_approve(prompt)
-
-
-def _run_turn(prompt: str) -> str:
-    mode, _ = _resolve_mode()
-    with _LOCK:
-        if mode == "codex":
-            answer = run_codex_turn(
-                prompt,
-                history=_CODEX_HISTORY,
-                model=os.environ.get("HACKBOT_MODEL") or None,
-                approve_fn=_approve,
-                allow_file_ops=True,
-            )
-            if answer != "(cancelled)":
-                _CODEX_HISTORY.append(("user", prompt))
-                _CODEX_HISTORY.append(("hackbot", answer))
-                if len(_CODEX_HISTORY) > 12:
-                    del _CODEX_HISTORY[: len(_CODEX_HISTORY) - 12]
-            return answer
-        if mode == "cursor":
-            answer = run_cursor_turn(
-                prompt,
-                history=_CURSOR_HISTORY,
-                model=os.environ.get("HACKBOT_MODEL") or None,
-                approve_fn=_approve,
-                allow_file_ops=True,
-            )
-            if answer != "(cancelled)":
-                _CURSOR_HISTORY.append(("user", prompt))
-                _CURSOR_HISTORY.append(("hackbot", answer))
-                if len(_CURSOR_HISTORY) > 12:
-                    del _CURSOR_HISTORY[: len(_CURSOR_HISTORY) - 12]
-            return answer
-        if mode == "model":
-            from .agent import run_agent
-
-            run_agent(prompt, history=_MODEL_HISTORY, approve_fn=_approve)
-            for msg in reversed(_MODEL_HISTORY):
-                if msg.get("role") == "assistant" and msg.get("content"):
-                    return str(msg["content"])
-            return "(no model response)"
-        try:
-            from .local_agent import interpret
-
-            interp = interpret(prompt)
-            summary = (
-                f"offline · intents={list(getattr(interp, 'intents', []) or [])} "
-                f"host={getattr(interp, 'host', None) or '—'}"
-            )
-        except Exception:  # noqa: BLE001
-            summary = "offline turn complete"
-        run_local_agent(prompt, approve_fn=_approve)
-        return f"{summary}\n\nTool/plan output is in the terminal running `hackbot ui`."
 
 
 def _msg(role: str, content: str, **extra: Any) -> dict[str, Any]:

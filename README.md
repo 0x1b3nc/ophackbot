@@ -48,29 +48,30 @@ Then:
 
 ```bash
 python -m hackbot demo    # fake target + dry-run smoke
-python -m hackbot         # REPL, stays open
-python -m hackbot ui      # browser chat UI (claude-hq look)
+python -m hackbot         # REPL (headless / SSH)
+# Visual CLI: Toad (Textual TUI) + hackbot as ACP agent — see docs/TOAD.md
 ```
 
-### Web UI (`hackbot ui`)
+### Visual CLI — Toad + ACP
 
-The good visual is a **local browser UI** (theme adapted from
-[claude-hq](https://github.com/sossost/claude-hq), MIT) talking to a Python SSE
-API that runs the same brains/tools as the REPL. The terminal CLI stays for
-SSH/headless.
+The good visual is **[Toad](https://github.com/batrachianai/toad)** (Textual TUI
+in the terminal), not a browser. Hackbot speaks
+[ACP](https://agentclientprotocol.com/) over stdio:
 
 ```bash
-# Kali / Linux (venv already on)
 cd ~/testhackbot/ophackbot
 source .venv/bin/activate
-export HACKBOT_PROVIDER=codex   # or cursor / offline
-python -m hackbot ui            # opens http://127.0.0.1:8765/
-# python -m hackbot ui --port 8777 --no-browser
+pip install -U 'hackbot-kit[acp]'   # agent-client-protocol
+export HACKBOT_PROVIDER=codex       # or cursor / leave unset for offline
+
+# Install Toad (needs Python 3.14+ on PATH for uv tool)
+uv tool install -U batrachian-toad --python 3.14
+
+toad acp "python -m hackbot acp" .
 ```
 
-Web sessions turn YOLO on for that process (no Confirm dialog in the browser);
-out-of-scope hosts are still blocked. Tool chatter also prints in the terminal
-running the server.
+Full notes: [docs/TOAD.md](docs/TOAD.md). Plain REPL (`python -m hackbot`) stays
+for thin SSH / scripting. `hackbot ui` (browser) is deprecated.
 
 ## Brains
 

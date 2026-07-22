@@ -38,6 +38,7 @@ SUBCOMMANDS = frozenset(
         "ask",
         "demo",
         "ui",
+        "acp",
     }
 )
 
@@ -389,7 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ui_p = sub.add_parser(
         "ui",
-        help="Open local web chat UI (claude-hq visual + hackbot API)",
+        help="(deprecated) Local browser UI — prefer Toad + `hackbot acp`",
     )
     ui_p.add_argument("--host", default="127.0.0.1", help="Bind address (default 127.0.0.1)")
     ui_p.add_argument("--port", type=int, default=8765, help="Port (default 8765)")
@@ -397,6 +398,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-browser",
         action="store_true",
         help="Do not open a browser tab",
+    )
+    sub.add_parser(
+        "acp",
+        help="Run as ACP agent for Toad/Zed (stdio JSON-RPC; stdout reserved)",
     )
 
     return parser
@@ -406,6 +411,11 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.subcommand == "cmd" or args.subcommand is None:
         ui.splash()
         return 0
+    # ACP owns stdout — no Rich banner.
+    if args.subcommand == "acp":
+        from .acp_agent import start_acp_agent
+
+        return start_acp_agent()
     ui.rule(f"hackbot {args.subcommand}")
     if args.subcommand == "target-init":
         return target_init(args.name)
@@ -520,6 +530,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         ui.code_panel(json.dumps(out, indent=2), title="demo smoke", lexer="json")
         return 0 if out.get("ok") else 1
     if args.subcommand == "ui":
+        ui.warn("deprecated: prefer Toad TUI → `toad acp \"python -m hackbot acp\" .` (see docs/TOAD.md)")
         from .web_server import start_web_ui
 
         return start_web_ui(

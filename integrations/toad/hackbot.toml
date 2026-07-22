@@ -1,0 +1,49 @@
+# Optional Toad catalog entry (AGPL client — do not vendor Toad source).
+# Copy into Toad's data/agents/ if you want hackbot in the app-store UI.
+# Launch without catalog: toad acp "python -m hackbot acp" .
+
+identity = "hackbot.local"
+name = "hackbot"
+short_name = "hackbot"
+url = "https://github.com/0x1b3nc/ophackbot"
+protocol = "acp"
+type = "coding"
+author_name = "hackbot"
+author_url = "https://github.com/0x1b3nc/ophackbot"
+publisher_name = "hackbot"
+publisher_url = "https://github.com/0x1b3nc/ophackbot"
+description = "Authorized bug bounty / lab hunt agent — SCOPE rails, tools, codex/cursor/offline brains."
+tags = []
+help = """
+# hackbot (ACP)
+
+Runs the ophackbot kit over Agent Client Protocol.
+
+```bash
+pip install -U -e '.[acp]'
+export HACKBOT_PROVIDER=codex   # or cursor / offline
+toad acp "python -m hackbot acp" .
+```
+
+Approvals use YOLO for the ACP process; out-of-scope hosts stay blocked.
+"""
+welcome = """
+**hackbot** online via ACP.
+
+Set `HACKBOT_PROVIDER` (codex / cursor / offline). Talk natural — hunt stays on the Python side.
+"""
+
+[run_command]
+"*" = "python -m hackbot acp"
+linux = "python -m hackbot acp"
+macos = "python -m hackbot acp"
+
+[actions.linux.install]
+description = "Install hackbot ACP deps in the active venv"
+command = "pip install -U 'agent-client-protocol>=0.11'"
+bootstrap_uv = false
+
+[actions.macos.install]
+description = "Install hackbot ACP deps in the active venv"
+command = "pip install -U 'agent-client-protocol>=0.11'"
+bootstrap_uv = false

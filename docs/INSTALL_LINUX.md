@@ -30,12 +30,13 @@ export ANTHROPIC_API_KEY="your-key"
 
 ```bash
 python -m hackbot                 # REPL (offline by default)
-python -m hackbot ui              # browser chat UI → http://127.0.0.1:8765/
 python -m hackbot demo
 python -m hackbot target-init demo
 python -m hackbot scope-check targets/demo --host example.com
 python -m pytest -q
 ```
+
+Visual TUI (Toad + ACP): see [TOAD.md](TOAD.md).
 
 Also: `playwright install chromium` if you want browser tools.
 
