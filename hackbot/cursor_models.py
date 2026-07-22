@@ -176,17 +176,26 @@ def list_model_suggestions(*, api_key: str | None = None) -> list[tuple[str, str
             seen.add(mid)
             name = getattr(m, "display_name", "") or mid
             params = getattr(m, "parameters", ()) or ()
-            pids = [getattr(p, "id", "") for p in params]
+            pids = [getattr(p, "id", "") for p in params if getattr(p, "id", "")]
+            curated = _curated_by_alias(mid)
+            # Curated flags win for UX (grok/composer support fast even if live omits it).
+            if curated is not None:
+                if curated.supports_fast and "fast" not in pids:
+                    pids.append("fast")
+                if curated.effort_param and curated.effort_param not in pids:
+                    pids.insert(0, curated.effort_param)
             note = name
             if pids:
                 note += f"  params={','.join(pids)}"
+            if curated is not None and curated.supports_fast:
+                note += "  | /effort high fast"
             out.append((mid, note))
     for entry in _CURATED:
         if entry.id in seen:
             continue
         note = f"{entry.display_name} (curated)"
         if entry.supports_fast:
-            note += "  +fast"
+            note += "  +fast  | /effort high fast"
         if entry.effort_param:
             note += f"  +{entry.effort_param}"
         out.append((entry.id, note))
@@ -235,6 +244,30 @@ def resolve_cursor_model(
         live_ids = {getattr(m, "id", "") for m in live}
         if entry and entry.id in live_ids:
             source = "live"
+            # Keep curated fast/thinking even when live catalog omits them.
+            if entry.supports_fast is False:
+                match = next(
+                    (m for m in live if getattr(m, "id", None) == entry.id),
+                    None,
+                )
+                if match is not None:
+                    pids = {
+                        getattr(p, "id", "")
+                        for p in (getattr(match, "parameters", ()) or ())
+                    }
+                    if "fast" in pids:
+                        entry = CatalogEntry(
+                            id=entry.id,
+                            display_name=entry.display_name,
+                            aliases=entry.aliases,
+                            effort_param=entry.effort_param
+                            or (
+                                "thinking"
+                                if "thinking" in pids
+                                else ("effort" if "effort" in pids else None)
+                            ),
+                            supports_fast=True,
+                        )
         elif not entry:
             # Accept exact live id
             key = raw

@@ -1,19 +1,38 @@
-"""hackbot Textual TUI — our brand, our slash commands.
+"""hackbot Textual TUI — Toad-inspired layout, operator palette.
 
 Run: ``python -m hackbot tui``
+
+Color palette (operator-defined):
+  fundo #0D0D26 · painel #191970 · borda #4B0082
+  primária #8A2BE2 · secundária #7B68EE · texto #E8E8FF
+  ok #4ADE80 · erro #FF6B9D · aviso #FFCB6B · info #64D9E8
 """
 
 from __future__ import annotations
 
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator, TextIO
 
 from .operator_gate import set_tui_console_mute
 from .session import get_active, status_line
 from .tui_commands import filter_slash_commands, handle_slash
 from .turn_bridge import resolve_mode, run_bridged_turn
 from .yolo import enable_yolo, is_yolo
+
+# Operator palette (hex)
+_BG = "#0D0D26"
+_PANEL = "#191970"
+_BORDER = "#4B0082"
+_PRIMARY = "#8A2BE2"
+_SECONDARY = "#7B68EE"
+_TEXT = "#E8E8FF"
+_OK = "#4ADE80"
+_ERR = "#FF6B9D"
+_WARN = "#FFCB6B"
+_INFO = "#64D9E8"
 
 
 def _status_line() -> str:
@@ -36,15 +55,21 @@ def _status_line() -> str:
     return " · ".join(bits)
 
 
-def _write_md(chat: object, text: str) -> None:
-    """Write Markdown (or plain) into a RichLog without leaking Rich markup."""
-    from rich.markdown import Markdown
-
-    body = (text or "").rstrip()
-    if not body:
-        return
-    # RichLog.renderable accepts Rich renderables
-    chat.write(Markdown(body, code_theme="monokai"))  # type: ignore[attr-defined]
+@contextmanager
+def _silence_stdio() -> Iterator[None]:
+    """Redirect process stdout/stderr so SDK noise cannot paint under Textual."""
+    real_out, real_err = sys.stdout, sys.stderr
+    sink: TextIO = open(os.devnull, "w", encoding="utf-8", errors="replace")
+    try:
+        sys.stdout = sink  # type: ignore[assignment]
+        sys.stderr = sink  # type: ignore[assignment]
+        yield
+    finally:
+        sys.stdout, sys.stderr = real_out, real_err
+        try:
+            sink.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def start_tui() -> int:
@@ -52,22 +77,22 @@ def start_tui() -> int:
         from textual import work
         from textual.app import App, ComposeResult
         from textual.binding import Binding
-        from textual.containers import Horizontal, Vertical
-        from textual.widgets import Footer, Header, Input, OptionList, RichLog, Static
+        from textual.containers import Horizontal, Vertical, VerticalScroll
+        from textual.widgets import Footer, Input, Markdown, OptionList, Static
         from textual.widgets.option_list import Option
     except ImportError:
-        from . import ui
-
-        ui.error("Textual missing. Install:  pip install 'hackbot-kit[tui]'")
+        sys.stderr.write("Textual missing. Install:  pip install 'hackbot-kit[tui]'\n")
         return 1
 
-    # Keep Rich banners off the screen the TUI owns.
+    import io
+
     os.environ.setdefault("HACKBOT_PLAIN", "1")
     set_tui_console_mute(True)
+    sink = io.StringIO()
     try:
         from . import ui
 
-        ui.console.file = sys.stderr  # type: ignore[misc]
+        ui.console.file = sink  # type: ignore[misc]
         ui.console.quiet = True
     except Exception:  # noqa: BLE001
         pass
@@ -79,52 +104,91 @@ def start_tui() -> int:
         TITLE = "hackbot"
         SUB_TITLE = str(Path.cwd())
         ENABLE_COMMAND_PALETTE = False
-        CSS = """
-        Screen {
-            background: #0a0a0c;
-        }
-        #sidebar {
-            width: 26;
-            background: #141416;
-            border-right: solid #232328;
+        CSS = f"""
+        Screen {{
+            background: {_BG};
+            color: {_TEXT};
+        }}
+        #topbar {{
+            dock: top;
+            height: 3;
+            background: {_PANEL};
+            border-bottom: tall {_BORDER};
+            padding: 0 1;
+        }}
+        #brand-row {{
+            height: 1;
+            color: {_PRIMARY};
+            text-style: bold;
+        }}
+        #status {{
+            height: 1;
+            color: {_INFO};
+        }}
+        #sidebar {{
+            width: 24;
+            background: {_PANEL};
+            border-right: tall {_BORDER};
             padding: 1 1;
-        }
-        #brand {
-            color: #d4a574;
+        }}
+        #side-title {{
+            color: {_SECONDARY};
             text-style: bold;
             padding-bottom: 1;
-        }
-        #side-help {
-            color: #6b6b76;
-        }
-        #status {
-            dock: top;
-            height: 1;
-            background: #141416;
-            color: #a0a0ab;
-            padding: 0 1;
-        }
-        #chat {
-            background: #0a0a0c;
-            border: none;
-            padding: 0 1;
-            scrollbar-size-vertical: 1;
-        }
-        #picker {
-            height: 10;
-            border: solid #2a2a2f;
-            background: #1a1a1e;
-            display: none;
-        }
-        #picker.visible {
-            display: block;
-        }
-        #prompt {
+        }}
+        #side-help {{
+            color: {_SECONDARY};
+        }}
+        #main {{
+            background: {_BG};
+        }}
+        #chat {{
+            background: {_BG};
+            padding: 0 1 1 1;
+            scrollbar-background: {_BG};
+            scrollbar-color: {_BORDER};
+            scrollbar-color-hover: {_PRIMARY};
+        }}
+        .msg-user {{
+            color: {_INFO};
+            padding: 1 1 0 1;
+            text-style: bold;
+        }}
+        .msg-md {{
+            padding: 0 1 1 1;
+            background: {_BG};
+            color: {_TEXT};
+        }}
+        #composer {{
             dock: bottom;
-            margin: 0 1 1 1;
-            background: #1a1a1e;
-            border: solid #2a2a2f;
-        }
+            height: auto;
+            background: {_PANEL};
+            border-top: tall {_BORDER};
+            padding: 1 1;
+        }}
+        #picker {{
+            height: 9;
+            border: tall {_BORDER};
+            background: {_PANEL};
+            display: none;
+            margin-bottom: 1;
+        }}
+        #picker.visible {{
+            display: block;
+        }}
+        #prompt {{
+            background: {_BG};
+            border: tall {_PRIMARY};
+            color: {_TEXT};
+            padding: 0 1;
+        }}
+        #prompt:focus {{
+            border: tall {_SECONDARY};
+        }}
+        Footer {{
+            background: {_PANEL};
+            color: {_SECONDARY};
+        }}
         """
         BINDINGS = [
             Binding("ctrl+c", "interrupt", "stop", show=True),
@@ -136,50 +200,59 @@ def start_tui() -> int:
             super().__init__()
             self._busy = False
             self._picker_cmds: list[str] = []
+            self._msg_i = 0
 
         def compose(self) -> ComposeResult:
-            yield Header(show_clock=False)
-            yield Static(_status_line(), id="status")
+            with Vertical(id="topbar"):
+                yield Static("hackbot", id="brand-row")
+                yield Static(_status_line(), id="status")
             with Horizontal():
                 with Vertical(id="sidebar"):
-                    yield Static("hackbot", id="brand")
+                    yield Static("session", id="side-title")
                     yield Static(
-                        "Authorized hunt\n\n"
                         "/help\n"
                         "/target demo\n"
                         "/provider cursor\n"
                         "/model grok-4.5\n"
                         "/effort high fast\n"
+                        "/fast on\n"
                         "/yolo on\n\n"
-                        "Enter = send\n"
-                        "/ = commands",
+                        "Enter send · / cmds",
                         id="side-help",
                     )
-                with Vertical():
-                    yield RichLog(
-                        id="chat",
-                        markup=True,
-                        wrap=True,
-                        highlight=False,
-                        auto_scroll=True,
-                    )
-                    yield OptionList(id="picker")
-                    yield Input(
-                        placeholder="Message hackbot…  (/ for commands)",
-                        id="prompt",
-                    )
+                with Vertical(id="main"):
+                    yield VerticalScroll(id="chat")
+                    with Vertical(id="composer"):
+                        yield OptionList(id="picker")
+                        yield Input(
+                            placeholder="Message hackbot…  (/ for commands)",
+                            id="prompt",
+                        )
             yield Footer()
 
         def on_mount(self) -> None:
-            chat = self.query_one("#chat", RichLog)
-            chat.can_focus = False
-            chat.write("[bold #d4a574]hackbot[/] ready")
-            _write_md(chat, f"_{_status_line()}_")
+            self._append_md(
+                f"**hackbot** ready\n\n`{_status_line()}`\n\n"
+                f"Try `/model grok-4.5` then `/effort high fast`."
+            )
             self.query_one("#prompt", Input).focus()
 
         def _refresh_status(self) -> None:
             self.query_one("#status", Static).update(_status_line())
             self.sub_title = str(Path.cwd())
+
+        def _append_user(self, text: str) -> None:
+            chat = self.query_one("#chat", VerticalScroll)
+            self._msg_i += 1
+            chat.mount(Static(f"› {text}", classes="msg-user", id=f"u{self._msg_i}"))
+            chat.scroll_end(animate=False)
+
+        def _append_md(self, text: str) -> None:
+            chat = self.query_one("#chat", VerticalScroll)
+            self._msg_i += 1
+            mid = f"m{self._msg_i}"
+            chat.mount(Markdown(text or "(empty)", classes="msg-md", id=mid))
+            chat.scroll_end(animate=False)
 
         def _hide_picker(self) -> None:
             picker = self.query_one("#picker", OptionList)
@@ -233,39 +306,42 @@ def start_tui() -> int:
             self._submit(text)
 
         def _submit(self, text: str) -> None:
-            chat = self.query_one("#chat", RichLog)
-            chat.write(f"[bold #ececee]›[/] {text}")
+            self._append_user(text)
             if text.startswith("/"):
                 result = handle_slash(text)
                 if result.exit_app:
                     self.exit()
                     return
                 if result.clear_chat:
-                    chat.clear()
-                    chat.write("[dim]cleared[/]")
+                    chat = self.query_one("#chat", VerticalScroll)
+                    for child in list(chat.children):
+                        child.remove()
+                    self._append_md("_cleared_")
                     self._refresh_status()
                     return
                 if result.handled:
                     for msg in result.messages:
-                        _write_md(chat, msg)
+                        self._append_md(msg)
                     if result.refresh_status:
                         self._refresh_status()
                     return
             self._busy = True
+            self.query_one("#status", Static).update(f"{_status_line()} · working…")
             self.run_hunt_turn(text)
 
         @work(thread=True, exclusive=True, exit_on_error=False)
         def run_hunt_turn(self, text: str) -> None:
-            try:
-                answer = run_bridged_turn(text)
-            except Exception as exc:  # noqa: BLE001
-                answer = f"Error: {type(exc).__name__}: {exc}"
+            # Nuke stdout/stderr for this worker so SDK/tool noise cannot bleed under Textual.
+            with _silence_stdio():
+                try:
+                    answer = run_bridged_turn(text)
+                except Exception as exc:  # noqa: BLE001
+                    answer = f"**Error:** `{type(exc).__name__}: {exc}`"
             self.call_from_thread(self._finish_turn, answer or "(empty)")
 
         def _finish_turn(self, answer: str) -> None:
             self._busy = False
-            chat = self.query_one("#chat", RichLog)
-            _write_md(chat, answer)
+            self._append_md(answer)
             self._refresh_status()
             self.query_one("#prompt", Input).focus()
 
@@ -276,7 +352,7 @@ def start_tui() -> int:
                 request_codex_cancel()
             except Exception:  # noqa: BLE001
                 pass
-            self.query_one("#chat", RichLog).write("[yellow]stop requested[/]")
+            self._append_md(f"**stop** requested")
             self._busy = False
 
         def action_show_help(self) -> None:
@@ -289,6 +365,7 @@ def start_tui() -> int:
         try:
             from . import ui
 
+            ui.console.file = sys.stderr  # type: ignore[misc]
             ui.console.quiet = False
         except Exception:  # noqa: BLE001
             pass
