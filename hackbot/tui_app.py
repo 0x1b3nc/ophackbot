@@ -1,10 +1,11 @@
-"""hackbot Textual TUI — full-width chat + native terminal select/copy.
+"""hackbot Textual TUI — full-width chat + scroll that sticks when you read history.
 
 Run: ``python -m hackbot tui``
 
 Layout: status · scrollable chat · full-width input · footer.
 Final replies use Markdown; live stream (think/tool/plan) stays plain text.
-``mouse=False`` so the terminal can select/copy bot output (PgUp/PgDn scroll).
+Wheel scroll works (``mouse=True``). ``ctrl+y`` / ``ctrl+shift+y`` copy text.
+PgUp/PgDn work even while the input is focused. Auto-scroll only when already at bottom.
 """
 
 from __future__ import annotations
@@ -201,10 +202,13 @@ def start_tui() -> int:
             Binding("f1", "show_help", "help", show=True),
             Binding("ctrl+y", "copy_last", "copy last", show=True),
             Binding("ctrl+shift+y", "copy_all", "copy all", show=True),
-            Binding("pageup", "scroll_up", "PgUp", show=False),
-            Binding("pagedown", "scroll_down", "PgDn", show=False),
-            Binding("ctrl+u", "scroll_up", "scroll", show=False),
-            Binding("ctrl+d", "scroll_down", "scroll", show=False),
+            # priority=True → works even when Input has focus
+            Binding("pageup", "scroll_up", "PgUp", show=True, priority=True),
+            Binding("pagedown", "scroll_down", "PgDn", show=True, priority=True),
+            Binding("ctrl+u", "scroll_up", "Half↑", show=False, priority=True),
+            Binding("ctrl+d", "scroll_down", "Half↓", show=False, priority=True),
+            Binding("ctrl+home", "scroll_top", "Top", show=False, priority=True),
+            Binding("ctrl+end", "scroll_bottom", "Bottom", show=False, priority=True),
         ]
 
         def __init__(self) -> None:
@@ -226,7 +230,7 @@ def start_tui() -> int:
                 with Vertical(id="composer"):
                     yield OptionList(id="picker")
                     yield Input(
-                        placeholder="Message…  (/ cmds · select text to copy · ctrl+y last · ctrl+shift+y all)",
+                        placeholder="Message…  (/ cmds · PgUp/PgDn scroll · wheel · ctrl+y copy last)",
                         id="prompt",
                     )
             yield Footer()
@@ -236,8 +240,9 @@ def start_tui() -> int:
             self.set_interval(0.1, self._pump_feed)
             self._append_md(
                 "**hackbot** — `/provider` `/model` `/effort` `/target`\n\n"
-                "_Select text with the mouse to copy. "
-                "`ctrl+y` = last reply · `ctrl+shift+y` = full chat · PgUp/PgDn scroll._"
+                "_Scroll: mouse wheel · PgUp/PgDn · Ctrl+U/D. "
+                "Copy: `ctrl+y` last reply · `ctrl+shift+y` full chat. "
+                "Auto-scroll pauses while you read history._"
             )
             self.query_one("#prompt", Input).focus()
 
@@ -247,11 +252,30 @@ def start_tui() -> int:
         def _chat(self) -> VerticalScroll:
             return self.query_one("#chat", VerticalScroll)
 
+        def _near_bottom(self, *, slack: int = 4) -> bool:
+            """True if the user is already following the bottom of the chat."""
+            chat = self._chat()
+            try:
+                return int(chat.max_scroll_y) - int(chat.scroll_y) <= slack
+            except Exception:  # noqa: BLE001
+                return True
+
+        def _maybe_scroll_end(self, *, force: bool = False) -> None:
+            """Follow new output only if already at bottom (or force=True)."""
+            if force or self._near_bottom():
+                self._chat().scroll_end(animate=False)
+
         def action_scroll_up(self) -> None:
             self._chat().scroll_page_up(animate=False)
 
         def action_scroll_down(self) -> None:
             self._chat().scroll_page_down(animate=False)
+
+        def action_scroll_top(self) -> None:
+            self._chat().scroll_home(animate=False)
+
+        def action_scroll_bottom(self) -> None:
+            self._chat().scroll_end(animate=False)
 
         def _mark_feed(self, _kind: str, _text: str) -> None:
             self._feed_dirty = True
@@ -275,7 +299,7 @@ def start_tui() -> int:
             self._live_widget_id = f"live{self._msg_i}"
             w = Static("◌ …", classes="msg-live", id=self._live_widget_id)
             chat.mount(w)
-            chat.scroll_end(animate=False)
+            self._maybe_scroll_end()
             return w
 
         def _ingest_live(self, kind: str, text: str) -> None:
@@ -318,7 +342,7 @@ def start_tui() -> int:
                 line = f"{label}  {body}"
             w = self._ensure_live_line()
             w.update(f"◌ {line}")
-            self._chat().scroll_end(animate=False)
+            self._maybe_scroll_end()
 
         def _append_live_pin(self, line: str) -> None:
             chat = self._chat()
@@ -334,7 +358,7 @@ def start_tui() -> int:
                     pass
                 self._live_widget_id = None
             self._ensure_live_line().update("◌ …")
-            chat.scroll_end(animate=False)
+            self._maybe_scroll_end()
 
         def _clear_live(self) -> None:
             self._think_buf = ""
@@ -356,7 +380,7 @@ def start_tui() -> int:
             line = f"› {text}"
             chat.mount(Static(line, classes="msg-user", id=f"u{self._msg_i}"))
             self._chat_plain.append(line)
-            chat.scroll_end(animate=False)
+            self._maybe_scroll_end(force=True)
 
         def _append_md(self, text: str) -> None:
             """Final + slash replies: real Markdown. Live stream stays plain Static."""
@@ -368,7 +392,7 @@ def start_tui() -> int:
             self._chat_plain.append(plain)
             if len(self._chat_plain) > 300:
                 self._chat_plain = self._chat_plain[-300:]
-            chat.scroll_end(animate=False)
+            self._maybe_scroll_end(force=True)
 
         def _append_bot(self, text: str) -> None:
             self._append_md(text)
@@ -400,7 +424,7 @@ def start_tui() -> int:
                 self.notify("copied last reply", severity="information", timeout=2)
             else:
                 self.notify(
-                    "clipboard failed — select text with mouse (capture off)",
+                    "clipboard failed — use ctrl+shift+y or copy from saved evidence files",
                     severity="warning",
                     timeout=4,
                 )
@@ -411,7 +435,7 @@ def start_tui() -> int:
                 self.notify("copied full chat", severity="information", timeout=2)
             else:
                 self.notify(
-                    "clipboard failed — select text with mouse",
+                    "clipboard failed — use ctrl+y on shorter replies",
                     severity="warning",
                     timeout=4,
                 )
@@ -527,9 +551,9 @@ def start_tui() -> int:
             self._submit("/help")
 
     try:
-        # mouse=False → OS/terminal text selection + copy of bot output works.
-        # Scroll with PgUp/PgDn (wheel is owned by terminal when mouse capture is off).
-        HackbotTUI().run(mouse=False)
+        # mouse=True → wheel scrolls the chat. Copy with ctrl+y (selection is flaky in Textual).
+        # Sticky auto-scroll: only follow new lines when already near the bottom.
+        HackbotTUI().run(mouse=True)
     finally:
         live_feed.set_feed_sink(None)
         set_tui_console_mute(False)

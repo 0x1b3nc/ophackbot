@@ -385,9 +385,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "extract_page",
         "description": (
-            "Fetch an in-scope URL and extract title, readable text, and links (HTML strip). "
-            "Dry-run unless approve=true. For JS-heavy SPAs with thin text, follow with "
-            "browser_navigate + browser_eval."
+            "HTTP GET + HTML text extract (NO JavaScript). Saves full HTML/text under evidence. "
+            "Returns needs_browser/needs_session when the page is SPA or login-walled "
+            "(typical bug-bounty program portals like Intigriti). For those, do NOT retry "
+            "extract_page forever — use browser_with_session / browser_network / browser_eval "
+            "with an authenticated session. Pass session=A when secrets/sessions.yaml is loaded."
         ),
         "parameters": {
             "type": "object",
@@ -395,6 +397,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "target_dir": {"type": "string"},
                 "url": {"type": "string"},
                 "session": {"type": "string"},
+                "save": {"type": "boolean", "default": True},
                 "approve": {"type": "boolean", "default": False},
                 "force": {"type": "boolean", "default": False},
             },
@@ -4303,6 +4306,7 @@ def _tool_extract_page(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
         approve=approve,
         force=force,
         session=str(args.get("session") or ""),
+        save=parse_bool(args.get("save"), default=True),
     )
     try:
         payload = json.loads(result.stdout) if result.stdout else {}
