@@ -253,7 +253,7 @@ class HackbotTUI(App[None]):
             "_**Newline:** `Enter`. **Send:** `Ctrl+J` or the **Send** button "
             "(`Ctrl+Enter` only on Kitty/Ghostty/Windows Terminal — "
             "Kali's default terminal maps it to nothing useful). "
-            "**Copy:** `F2` / click message / `/copy`. "
+            "**Copy:** click any message or stream pin (tool/out), or `F2` / `/copy`. "
             "**Scroll:** wheel + scrollbar + PgUp/PgDn. "
             "Stop: `ctrl+c` then send a new prompt._"
         )
@@ -312,7 +312,9 @@ class HackbotTUI(App[None]):
                 self._live_widget_id = None
         self._msg_i += 1
         self._live_widget_id = f"live{self._msg_i}"
-        w = Static("◌ …", classes="msg-live", id=self._live_widget_id, markup=False)
+        w = CopyableStatic(
+            "◌ …", plain="◌ …", classes="msg-live", id=self._live_widget_id
+        )
         chat.mount(w)
         self._maybe_scroll_end()
         return w
@@ -370,7 +372,11 @@ class HackbotTUI(App[None]):
         old_id = self._live_widget_id
         self._msg_i += 1
         pin = f"· {line}"
-        chat.mount(Static(pin, classes="msg-live", id=f"pin{self._msg_i}", markup=False))
+        chat.mount(
+            CopyableStatic(
+                pin, plain=pin, classes="msg-live", id=f"pin{self._msg_i}"
+            )
+        )
         self._chat_plain.append(pin)
         if old_id:
             try:
@@ -399,9 +405,11 @@ class HackbotTUI(App[None]):
         chat = self._chat()
         self._msg_i += 1
         line = f"› {text}"
-        chat.mount(
-            CopyableStatic(line, plain=line, classes="msg-user", id=f"u{self._msg_i}")
-        )
+            chat.mount(
+                CopyableStatic(
+                    line, plain=line, classes="msg-user", id=f"u{self._msg_i}"
+                )
+            )
         self._chat_plain.append(line)
         self._maybe_scroll_end(force=True)
 
