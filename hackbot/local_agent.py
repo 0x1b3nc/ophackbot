@@ -21,7 +21,7 @@ from typing import Any, Callable
 
 from . import ui
 from .campaign import has_attack_intent, is_campaign_prompt
-from .force import is_forced, prompt_wants_force
+from .force import disable_force, enable_force, is_forced, prompt_wants_force
 from .identity import load_identity
 from .intent import is_chat_prompt
 from .knowledge import classify
@@ -2658,6 +2658,23 @@ def run_local_agent(
         title=f"thinking ({route.source})",
     )
 
+    oneshot_force = bool(interp.force) and not is_forced()
+    if oneshot_force:
+        enable_force(quiet=True)
+    try:
+        _run_local_plan(plan, user_prompt=user_prompt, interp=interp, approve_fn=approve_fn)
+    finally:
+        if oneshot_force:
+            disable_force(quiet=True)
+
+
+def _run_local_plan(
+    plan: list[Action],
+    *,
+    user_prompt: str,
+    interp: Interpretation,
+    approve_fn: ApproveFn | None,
+) -> None:
     i = 0
     while i < len(plan):
         try:

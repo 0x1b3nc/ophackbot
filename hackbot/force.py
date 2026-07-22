@@ -78,17 +78,13 @@ def set_force(on: bool) -> None:
 
 
 def prompt_wants_force(text: str) -> bool:
-    """True if the prompt itself asks for a one-shot force override."""
-    import re
+    """True if the prompt itself asks for a one-shot force override.
 
-    low = text.lower()
-    if any(w in low for w in FORCE_WORDS):
-        return True
-    tokens = re.findall(r"[a-z0-9_/]+", low)
-    # bare "force" token, but not the phrase "brute force"
-    if "force" in tokens and "brute" not in tokens and "bruteforce" not in tokens:
-        return True
-    return False
+    Requires an explicit phrase (``/force``, responsibility wording) — a bare
+    ``force`` token must not escalate SCOPE (``force HTTPS`` etc.).
+    """
+    low = (text or "").lower()
+    return any(w in low for w in FORCE_WORDS)
 
 
 def effective_force(*, prompt_force: bool = False, arg_force: bool | None = None) -> bool:

@@ -893,8 +893,13 @@ def run_hunt(
     except Exception:  # noqa: BLE001
         learned = {}
 
-    # Auto submit-ready drafts (Bugcrowd/VRT by default)
-    if findings_logged and approve_session:
+    # Auto submit-ready drafts (Bugcrowd/VRT by default) — skip if operator stopped.
+    if (
+        findings_logged
+        and approve_session
+        and not _STOP_REQUESTED
+        and (state.stop_reason or "") != "operator /hunt stop"
+    ):
         report_plat = (os.environ.get("HACKBOT_REPORT_PLATFORM") or "bugcrowd").strip().lower()
         for fid in findings_logged[:3]:
             try:

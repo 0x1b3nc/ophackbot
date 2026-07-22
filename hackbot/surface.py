@@ -135,7 +135,13 @@ def _endpoints_from_html(base_url: str, body: str, *, same_origin: str) -> list[
     return list(found.values())
 
 
-def _katana_urls(seed: str, *, timeout: float = 45.0) -> list[str]:
+def _katana_urls(
+    seed: str,
+    *,
+    target_dir: Path,
+    force: bool = False,
+    timeout: float = 45.0,
+) -> list[str]:
     if not shutil.which("katana"):
         return []
     try:
@@ -149,10 +155,19 @@ def _katana_urls(seed: str, *, timeout: float = 45.0) -> list[str]:
     except (OSError, subprocess.TimeoutExpired):
         return []
     urls: list[str] = []
+    seed_host = host_from_target(seed)
     for line in (completed.stdout or "").splitlines():
         line = line.strip()
-        if line.startswith("http"):
-            urls.append(line.split()[0])
+        if not line.startswith("http"):
+            continue
+        url = line.split()[0]
+        if host_from_target(url) != seed_host:
+            continue
+        try:
+            require_in_scope(target_dir, url, action="surface recon katana", force=force)
+        except PermissionError:
+            continue
+        urls.append(url)
     return urls[:80]
 
 
@@ -233,9 +248,7 @@ def map_surface(
         seed_ep.notes = f"fetch_error:{type(exc).__name__}"
 
     if use_katana:
-        for url in _katana_urls(seed_url):
-            if host_from_target(url) != host:
-                continue
+        for url in _katana_urls(seed_url, target_dir=target_dir, force=force):
             endpoints.append(
                 Endpoint(url=url, params=extract_params_from_url(url), source="katana")
             )

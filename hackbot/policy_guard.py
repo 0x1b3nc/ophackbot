@@ -164,6 +164,11 @@ class ScopeRule:
     path_prefix: str | None = None
     network: str | None = None  # CIDR / single IP as ip_network string
 
+    @property
+    def constrained(self) -> bool:
+        """True when scheme/port/path must be checked (bare host is not enough)."""
+        return bool(self.scheme or self.port is not None or self.path_prefix)
+
 
 @dataclass(frozen=True)
 class ScopePolicy:
@@ -185,6 +190,19 @@ class ScopePolicy:
         raw = scope_path.read_text(encoding="utf-8", errors="replace")
         meta, body = _split_front_matter(raw)
         if meta is None:
+            # No front matter, OR invalid YAML (fail closed — empty allowlist).
+            if raw.lstrip("\ufeff").startswith("---"):
+                return cls(
+                    target_dir,
+                    body if body.strip() else "",
+                    structured=True,
+                    in_scope=(),
+                    out_of_scope=(),
+                    allowed=(),
+                    prohibited=(),
+                    in_rules=(),
+                    out_rules=(),
+                )
             return cls(target_dir, raw)
         in_scope = _as_str_tuple(meta.get("in_scope"))
         out_of_scope = _as_str_tuple(meta.get("out_of_scope"))
@@ -204,7 +222,9 @@ class ScopePolicy:
         host = host.lower().strip().rstrip(".")
         if not host:
             return False
-        if self.structured and self.in_rules:
+        if self.structured:
+            if not self.in_rules:
+                return False
             return any(_host_matches_rule(host, rule) for rule in self.in_rules)
         text = self.scope_text.lower()
         if _host_mentioned(text, host):
@@ -259,8 +279,16 @@ class ScopePolicy:
 
     def target_in_scope(self, host_or_url: str) -> bool:
         """True if host or URL is covered by an in-scope rule (constraints honored)."""
-        if _looks_like_url(host_or_url) and self.structured and self.in_rules:
-            return any(_url_matches_rule(host_or_url, rule) for rule in self.in_rules)
+        if self.structured and self.in_rules:
+            if _looks_like_url(host_or_url):
+                return any(_url_matches_rule(host_or_url, rule) for rule in self.in_rules)
+            host = host_from_target(host_or_url)
+            matching = [r for r in self.in_rules if _host_matches_rule(host, r)]
+            if not matching:
+                return False
+            # Bare host is only enough when an unconstrained rule matches.
+            # Path/scheme/port rules require a full URL.
+            return any(not r.constrained for r in matching)
         return self.contains_host(host_from_target(host_or_url))
 
     def mentions_active_testing(self) -> bool:
@@ -408,17 +436,11 @@ class ScopePolicy:
                 warnings.append(
                     "active/moderate testing not mentioned in SCOPE — forced by operator"
                 )
-            elif self.structured:
-                # Structured SCOPE with no active allow: hard deny (policy fidelity).
+            else:
                 raise PermissionError(
-                    "active/moderate action not allowed by structured SCOPE.md "
+                    "active/moderate action not allowed by SCOPE.md "
                     f"(aggression={level}). Add active/automated wording under allowed, "
                     "or use /force."
-                )
-            else:
-                warnings.append(
-                    "active/moderate action: confirm policy text before running "
-                    "(or /force to override)"
                 )
 
         return {
@@ -749,7 +771,12 @@ def _as_str_tuple(value: Any) -> tuple[str, ...]:
 
 
 def _split_front_matter(raw: str) -> tuple[dict[str, Any] | None, str]:
-    """Parse leading YAML front-matter. Returns (meta or None, body)."""
+    """Parse leading YAML front-matter. Returns (meta or None, body).
+
+    On invalid YAML / non-mapping meta: returns ``(None, body)`` where body is
+    the markdown after the closing ``---`` (never the raw YAML blob). Callers
+    treat this as fail-closed structured empty allowlist.
+    """
     text = raw.lstrip("\ufeff")
     if not text.startswith("---"):
         return None, raw
@@ -768,9 +795,9 @@ def _split_front_matter(raw: str) -> tuple[dict[str, Any] | None, str]:
     try:
         meta = yaml.safe_load(block)
     except yaml.YAMLError:
-        return None, raw
+        return None, body
     if not isinstance(meta, dict):
-        return None, raw
+        return None, body
     return meta, body
 
 

@@ -114,7 +114,7 @@ async def test_panel_kind_is_separate_block(monkeypatch: pytest.MonkeyPatch) -> 
             'surface_map\n{\n  "seed": "https://api.glassdoor.com/",\n  "host": "api.glassdoor.com"\n}',
         )
         await pilot.pause()
-        assert app._active_run_id is None
+        assert app._active_run_id == run_id, "panel must not detach open run"
         panels = list(app.query(RunBlock))
         assert any(b.kind == "panel" and b.cmd == "surface_map" for b in panels)
         panel = next(b for b in panels if b.kind == "panel")

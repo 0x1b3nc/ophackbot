@@ -371,7 +371,6 @@ class HackbotTUI(App[None]):
             if not body:
                 return
             self._saw_stream_notes = True
-            self._active_run_id = None
             self._append_md(body)
             self._ensure_live_line().update("◌ …")
             return
@@ -469,7 +468,7 @@ class HackbotTUI(App[None]):
         panel_id = f"panel{self._msg_i}"
         chat.mount(RunBlock(title, kind="panel", pending_out=body or "(empty)", id=panel_id))
         self._remember_plain(f"{title}\n{body}")
-        self._active_run_id = None
+        # Keep `_active_run_id` so a later `out` still fills the open RunBlock.
         if old_id:
             try:
                 self.query_one(f"#{old_id}", Static).remove()
@@ -760,7 +759,6 @@ class HackbotTUI(App[None]):
                 if result.refresh_status:
                     self._refresh_status()
                 return
-        self._reset_cancel_rails()
         self._stop_shown = False
         self._turn_gen += 1
         gen = self._turn_gen
@@ -775,17 +773,23 @@ class HackbotTUI(App[None]):
     def run_hunt_turn(self, text: str, gen: int) -> None:
         import time as _time
 
-        # Let interrupt killpg settle before clearing cancel for this turn.
+        from ..turn_bus import begin_turn_epoch, bind_turn_epoch, reset_turn_epoch
+
+        # Let interrupt killpg settle before binding a fresh turn epoch.
         _time.sleep(0.15)
         if gen != self._turn_gen:
             return
-        self._reset_cancel_rails()
-        with silence_stdio():
-            try:
-                answer = self.turn_runner(text)
-            except Exception as exc:  # noqa: BLE001
-                answer = f"Error: {type(exc).__name__}: {exc}"
-        self.call_from_thread(self._finish_turn, answer or "(empty)", gen)
+        epoch = begin_turn_epoch()
+        token = bind_turn_epoch(epoch)
+        try:
+            with silence_stdio():
+                try:
+                    answer = self.turn_runner(text)
+                except Exception as exc:  # noqa: BLE001
+                    answer = f"Error: {type(exc).__name__}: {exc}"
+            self.call_from_thread(self._finish_turn, answer or "(empty)", gen)
+        finally:
+            reset_turn_epoch(token)
 
     def _finish_turn(self, answer: str, gen: int) -> None:
         if gen != self._turn_gen:
@@ -809,8 +813,9 @@ class HackbotTUI(App[None]):
 
     def action_interrupt(self) -> None:
         try:
-            from ..turn_bus import get_bus
+            from ..turn_bus import bump_cancel_epoch, get_bus
 
+            bump_cancel_epoch()
             bus = get_bus()
             if bus is not None:
                 bus.request_interrupt()
@@ -825,7 +830,9 @@ class HackbotTUI(App[None]):
         except Exception:  # noqa: BLE001
             try:
                 from ..codex_backend import request_codex_cancel
+                from ..turn_bus import bump_cancel_epoch
 
+                bump_cancel_epoch()
                 request_codex_cancel()
             except Exception:  # noqa: BLE001
                 pass

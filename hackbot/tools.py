@@ -4040,7 +4040,9 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
 
         action_label = tool if tool != "rate_probe" else "rate-limit testing dos stress"
         policy = ScopePolicy.load(target)
-        gate = policy.assert_action_allowed(host_from_target(host), action_label, force=force)
+        # Keep full URL when provided so path/scheme/port SCOPE rules apply.
+        gate_target = str(host)
+        gate = policy.assert_action_allowed(gate_target, action_label, force=force)
         for w in gate.get("warnings") or []:
             ui.warn(str(w))
         if gate.get("force_override"):
@@ -4124,11 +4126,40 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
 
 
 def _resolve_force_arg(args: dict[str, Any]) -> bool:
-    if "force" not in args or args.get("force") is None:
-        return is_forced()
-    if args.get("force") is False:
-        return is_forced()
-    return bool(parse_bool(args.get("force"), default=False) or is_forced())
+    """Resolve force for a tool call.
+
+    Session ``/force`` / YOLO always win. A naked ``force: true`` from model JSON
+    does **not** escalate unless ``_operator_force`` is set (local agent / CLI)
+    or ``HACKBOT_ALLOW_ARG_FORCE=1`` (tests).
+    """
+    if is_forced():
+        return True
+    raw = args.get("force")
+    if raw is None or raw is False:
+        return False
+    if not parse_bool(raw, default=False):
+        return False
+    if args.get("_operator_force") is True:
+        return True
+    import os
+
+    return os.environ.get("HACKBOT_ALLOW_ARG_FORCE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _runner_result_ok(result: Any) -> bool:
+    """True for dry-run or successful execution — not for timeout/cancel/nonzero."""
+    if not getattr(result, "executed", False):
+        return True  # dry-run is an intentional non-error
+    msg = str(getattr(result, "message", "") or "")
+    if msg in {"timeout", "cancelled", "error"}:
+        return False
+    code = getattr(result, "returncode", None)
+    return code in {0, None}
 
 
 def _target_path(value: str) -> Path:
@@ -4763,15 +4794,21 @@ def _run_playbook(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
         if isinstance(parsed, dict) and parsed.get("ok") is False:
             break
 
+    failed = any(
+        isinstance(r.get("result"), dict) and r["result"].get("ok") is False
+        for r in results
+        if not r.get("skipped")
+    )
     return json.dumps(
         {
-            "ok": True,
+            "ok": not failed,
             "class": pb.class_name,
             "executed": True,
             "max_aggression": max_agg,
             "force": force,
             "verdict": verdict,
             "results": results,
+            "error": "nested tool failed" if failed else None,
         }
     )
 
@@ -4811,14 +4848,16 @@ def _tool_simple_probe(
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
+    ok = _runner_result_ok(result)
     return json.dumps(
         {
-            "ok": True,
+            "ok": ok,
             "executed": result.executed,
-            "signal": bool(payload.get("signal")),
+            "signal": bool(payload.get("signal")) if ok else False,
             "reason": payload.get("reason") or "",
             "detail": payload,
             "message": result.message,
+            "returncode": result.returncode,
         }
     )
 
@@ -4854,14 +4893,16 @@ def _tool_param_probe(
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
+    ok = _runner_result_ok(result)
     return json.dumps(
         {
-            "ok": True,
+            "ok": ok,
             "executed": result.executed,
-            "signal": bool(payload.get("signal")),
+            "signal": bool(payload.get("signal")) if ok else False,
             "reason": payload.get("reason") or "",
             "detail": payload,
             "message": result.message,
+            "returncode": result.returncode,
         }
     )
 

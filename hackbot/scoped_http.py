@@ -19,6 +19,24 @@ from urllib.request import (
 
 def _gate(target_dir: Path, host_or_url: str, *, action: str, force: bool) -> None:
     # Local import avoids import cycles with runners.*
+    try:
+        from .turn_bus import turn_cancel_requested
+
+        if turn_cancel_requested():
+            raise PermissionError("cancelled — HTTP request aborted")
+    except PermissionError:
+        raise
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from . import hunt_controller
+
+        if bool(getattr(hunt_controller, "_STOP_REQUESTED", False)):
+            raise PermissionError("hunt stop — HTTP request aborted")
+    except PermissionError:
+        raise
+    except Exception:  # noqa: BLE001
+        pass
     from .runners.base import require_in_scope
 
     require_in_scope(target_dir, host_or_url, action=action, force=force)

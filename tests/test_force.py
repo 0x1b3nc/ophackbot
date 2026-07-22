@@ -67,7 +67,8 @@ class ForceModuleTests(unittest.TestCase):
 
     def test_prompt_wants_force(self) -> None:
         self.assertTrue(force_mod.prompt_wants_force("eu assumo a responsabilidade"))
-        self.assertTrue(force_mod.prompt_wants_force("force httpx on example.com"))
+        self.assertTrue(force_mod.prompt_wants_force("/force httpx on example.com"))
+        self.assertFalse(force_mod.prompt_wants_force("force httpx on example.com"))
         self.assertFalse(force_mod.prompt_wants_force("test brute force on example.com"))
 
     def test_force_off_refused_while_yolo(self) -> None:

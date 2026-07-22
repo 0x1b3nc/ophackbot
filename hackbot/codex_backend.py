@@ -48,6 +48,12 @@ _SANDBOX_OK = frozenset({"read-only", "workspace-write", "danger-full-access"})
 def request_codex_cancel() -> None:
     """Kill in-flight ``codex exec`` and its tool children (avoid VM orphan storms)."""
     global _CODEX_PROC
+    try:
+        from .turn_bus import bump_cancel_epoch
+
+        bump_cancel_epoch()
+    except Exception:  # noqa: BLE001
+        pass
     _CODEX_CANCEL.set()
     with _CODEX_PROC_LOCK:
         proc = _CODEX_PROC
@@ -192,6 +198,12 @@ def _apply_fileops(
     applied: list[dict[str, Any]] = []
     ui.console.print(ui_text(f"{source} proposes {len(ops)} file change(s):", "hb.label"))
     for item in ops:
+        if codex_cancel_requested():
+            ui.warn("cancelled — skipping remaining file ops")
+            applied.append(
+                {"tool": "?", "path": "", "ok": False, "error": "cancelled"}
+            )
+            break
         op = str(item.get("op", "")).strip().lower()
         tool = _FILEOP_ALIASES.get(op)
         if tool is None:
@@ -314,6 +326,17 @@ def _apply_tool_calls(
     applied: list[dict[str, Any]] = []
     ui.console.print(ui_text(f"{source} proposes {len(calls)} tool call(s):", "hb.label"))
     for item in calls:
+        if codex_cancel_requested():
+            ui.warn("cancelled — skipping remaining tool calls")
+            applied.append(
+                {
+                    "tool": "?",
+                    "ok": False,
+                    "error": "cancelled",
+                    "result": "",
+                }
+            )
+            break
         name, args = _normalize_tool_call(item, default_prompt=default_prompt)
         if not name or name not in known:
             ui.error(f"unknown tool {name!r} - skipped")
