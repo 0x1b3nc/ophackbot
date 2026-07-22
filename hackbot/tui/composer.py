@@ -21,8 +21,9 @@ class PromptArea(TextArea):
     """
 
     BINDINGS = [
-        Binding("ctrl+enter", "submit_prompt", "send", show=True, priority=True),
+        # Primary on Linux/Kali: Ctrl+Enter is often emitted as LF → ctrl+j.
         Binding("ctrl+j", "submit_prompt", "send", show=True, priority=True),
+        Binding("ctrl+enter", "submit_prompt", "send", show=False, priority=True),
     ]
 
     async def _on_key(self, event: events.Key) -> None:
