@@ -12,7 +12,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Button, Collapsible, Footer, Header, OptionList, Static, TextArea
+from textual.widgets import Button, Footer, Header, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .. import live_feed
@@ -25,6 +25,7 @@ from ..turn_bridge import resolve_mode, run_bridged_turn
 from ..yolo import is_yolo
 from .chat import plain_text
 from .composer import PromptArea
+from .run_block import RunBlock, parse_out_payload
 from .theme import (
     BG,
     BORDER,
@@ -134,6 +135,7 @@ class HackbotTUI(App[None]):
         width: 100%;
         height: auto;
         color: {SECONDARY};
+        margin: 1 0;
     }}
     .msg-out {{
         width: 100%;
@@ -141,21 +143,8 @@ class HackbotTUI(App[None]):
         color: {TEXT};
         padding: 0 1;
     }}
-    Collapsible {{
-        width: 100%;
-        height: auto;
-        color: {SECONDARY};
-        padding: 0;
-        margin-bottom: 0;
-    }}
-    Collapsible Title {{
-        color: {INFO};
-    }}
-    Collapsible Contents {{
-        width: 100%;
-        height: auto;
-        padding: 0 0 0 1;
-        border-left: tall {BORDER};
+    .msg-bot {{
+        margin: 1 0;
     }}
     #composer {{
         width: 100%;
@@ -249,7 +238,7 @@ class HackbotTUI(App[None]):
         self._think_buf: str = ""
         self._live_widget_id: str | None = None
         self._feed_dirty = False
-        self._active_run_body_id: str | None = None
+        self._active_run_id: str | None = None
         self._saw_stream_notes = False
 
     def compose(self) -> ComposeResult:
@@ -355,7 +344,7 @@ class HackbotTUI(App[None]):
             if not body:
                 return
             self._saw_stream_notes = True
-            self._active_run_body_id = None
+            self._active_run_id = None
             self._append_md(body)
             self._ensure_live_line().update("◌ …")
             return
@@ -420,30 +409,14 @@ class HackbotTUI(App[None]):
         self._maybe_scroll_end()
 
     def _append_run_block(self, cmd: str) -> None:
-        """Open a real Collapsible: title = command, body fills when out arrives."""
+        """Cursor-style run: ``$ cmd`` + folded output when it arrives."""
         chat = self._chat()
         old_id = self._live_widget_id
         self._msg_i += 1
-        body_id = f"out{self._msg_i}"
-        col_id = f"run{self._msg_i}"
-        title = cmd if len(cmd) <= 160 else cmd[:157] + "…"
-        body = CopyableStatic(
-            "(waiting for output…)",
-            plain="",
-            classes="msg-out",
-            id=body_id,
-        )
-        # Textual Collapsible ▶ is real — expands/collapses Contents.
-        chat.mount(
-            Collapsible(
-                body,
-                title=f"run  {title}",
-                collapsed=False,
-                id=col_id,
-            )
-        )
-        self._chat_plain.append(f"run  {cmd}")
-        self._active_run_body_id = body_id
+        run_id = f"run{self._msg_i}"
+        chat.mount(RunBlock(cmd, id=run_id))
+        self._chat_plain.append(f"$ {cmd}")
+        self._active_run_id = run_id
         if old_id:
             try:
                 self.query_one(f"#{old_id}", Static).remove()
@@ -454,21 +427,20 @@ class HackbotTUI(App[None]):
         self._maybe_scroll_end()
 
     def _fill_run_output(self, text: str, *, mark: str = "") -> None:
-        """Put stdout/stderr into the open run Collapsible (or a plain pin)."""
-        body = text.strip()
-        if mark and not body.startswith("exit="):
-            # Keep exit= lines as-is; otherwise optional status prefix is noise.
-            pass
-        if self._active_run_body_id:
+        """Fill the open RunBlock (preview + fold), or fall back to a pin."""
+        exit_s, dur_s, body = parse_out_payload(text)
+        if mark == "fail" and exit_s in {"", "0"}:
+            exit_s = exit_s or "1"
+        if self._active_run_id:
             try:
-                w = self.query_one(f"#{self._active_run_body_id}", CopyableStatic)
-                w.update(body or "(no output)")
+                block = self.query_one(f"#{self._active_run_id}", RunBlock)
+                block.set_output(body or "(no output)", duration=dur_s, exit_code=exit_s)
                 self._chat_plain.append(body or "(no output)")
                 self._maybe_scroll_end()
                 return
             except Exception:  # noqa: BLE001
-                self._active_run_body_id = None
-        self._append_live_pin(f"out  {body}", raw=True)
+                self._active_run_id = None
+        self._append_live_pin(f"out  {body or text.strip()}", raw=True)
 
     def _append_live_pin(self, line: str, *, raw: bool = False) -> None:
         chat = self._chat()
@@ -481,7 +453,7 @@ class HackbotTUI(App[None]):
             )
         )
         self._chat_plain.append(pin)
-        self._active_run_body_id = None
+        self._active_run_id = None
         if old_id:
             try:
                 self.query_one(f"#{old_id}", Static).remove()
@@ -494,7 +466,7 @@ class HackbotTUI(App[None]):
     def _clear_live(self) -> None:
         self._think_buf = ""
         live_feed.clear()
-        self._active_run_body_id = None
+        self._active_run_id = None
         if self._live_widget_id:
             try:
                 self.query_one(f"#{self._live_widget_id}", Static).remove()

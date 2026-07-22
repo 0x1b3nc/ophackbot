@@ -1032,6 +1032,49 @@ def _fmt_command(cmd: Any) -> str:
     return ui.format_stream_command(cmd)
 
 
+def _fmt_duration(item: dict[str, Any]) -> str:
+    """Best-effort Cursor-like duration (``348ms``, ``1.9s``) from item fields."""
+    for key in ("duration_ms", "elapsed_ms", "durationMs", "elapsedMs"):
+        if key in item and item[key] is not None:
+            try:
+                ms = float(item[key])
+            except (TypeError, ValueError):
+                continue
+            if ms < 0:
+                continue
+            if ms < 1000:
+                return f"{int(round(ms))}ms"
+            sec = ms / 1000.0
+            return f"{sec:.1f}s" if sec < 10 else f"{int(round(sec))}s"
+    for key in ("duration", "elapsed"):
+        val = item.get(key)
+        if val is None:
+            continue
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+        if isinstance(val, (int, float)):
+            ms = float(val) * 1000 if float(val) < 100 else float(val)
+            if ms < 1000:
+                return f"{int(round(ms))}ms"
+            sec = ms / 1000.0
+            return f"{sec:.1f}s" if sec < 10 else f"{int(round(sec))}s"
+    return ""
+
+
+def _out_payload(exit_code: Any, out: str, *, duration: str = "") -> str:
+    """Build ``exit=0 dur=348ms\\nbody`` for the TUI RunBlock parser."""
+    meta: list[str] = []
+    if exit_code is not None:
+        meta.append(f"exit={exit_code}")
+    if duration:
+        meta.append(f"dur={duration}")
+    head = " ".join(meta)
+    body = (out or "").strip()
+    if head and body:
+        return f"{head}\n{body}"
+    return head or body
+
+
 def _clip(text: str, n: int = 160) -> str:
     text = " ".join((text or "").split())
     if len(text) <= n:
@@ -1177,19 +1220,20 @@ def _handle_event(
                 exit_code = item.get("exit_code")
                 out = str(item.get("aggregated_output") or "").strip()
                 mark = "ok" if status != "failed" and exit_code in {0, None, "0"} else "fail"
+                dur = _fmt_duration(item)
                 # Raw stream: show real command output (truncated only if huge).
                 if out:
                     max_out = 24_000 if not ui.stream_command_compact() else 180
                     shown_out = out if len(out) <= max_out else out[: max_out - 1] + "…"
                     line(
                         f"out/{mark}",
-                        shown_out if exit_code is None else f"exit={exit_code}\n{shown_out}",
+                        _out_payload(exit_code, shown_out, duration=dur),
                         "hb.ok" if mark == "ok" else "hb.warn",
                     )
-                elif exit_code is not None:
+                elif exit_code is not None or dur:
                     line(
                         f"out/{mark}",
-                        f"exit={exit_code}",
+                        _out_payload(exit_code, "", duration=dur),
                         "hb.ok" if mark == "ok" else "hb.warn",
                     )
 
@@ -1260,11 +1304,7 @@ def _handle_event(
         if out and len(out) > max_out:
             out = out[: max_out - 1] + "…"
         detail = out or _fmt_command(msg.get("command") or "")
-        if msg.get("exit_code") is not None and out:
-            detail = f"exit={msg.get('exit_code')}\n{detail}"
-        elif msg.get("exit_code") is not None:
-            detail = f"exit={msg.get('exit_code')}"
-        line("out", detail)
+        line("out", _out_payload(msg.get("exit_code"), detail, duration=_fmt_duration(msg)))
     elif mtype == "error":
         line("err", str(msg.get("message") or "error"), "hb.warn")
     return shown

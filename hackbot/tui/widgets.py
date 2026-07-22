@@ -26,6 +26,11 @@ class CopyableStatic(Static):
         super().update(content, layout=layout)
 
     def on_click(self, event: Click) -> None:
+        # Let parent RunBlock expand folded output first (Cursor-style).
+        parent = self.parent
+        should_fold = getattr(parent, "should_fold_click", None)
+        if callable(should_fold) and should_fold():
+            return
         event.stop()
         copy_fn = getattr(self.app, "copy_plain", None)
         if callable(copy_fn):

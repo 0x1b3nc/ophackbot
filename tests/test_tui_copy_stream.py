@@ -1,4 +1,4 @@
-"""CopyableStatic keeps plain_source in sync for stream pins."""
+"""CopyableStatic + Cursor-style RunBlock fold/fill."""
 
 from __future__ import annotations
 
@@ -6,19 +6,53 @@ import pytest
 
 textual = pytest.importorskip("textual")
 
+from hackbot.tui.run_block import (  # noqa: E402
+    RunBlock,
+    fold_output,
+    format_duration_ms,
+    parse_out_payload,
+)
 from hackbot.tui.widgets import CopyableStatic  # noqa: E402
 
 
 def test_copyable_static_update_syncs_plain() -> None:
     w = CopyableStatic("◌ …", plain="◌ …")
     assert w.plain_source == "◌ …"
-    w.update("· out  {\"a\": 1}")
+    w.update('· out  {"a": 1}')
     assert w.plain_source == '· out  {"a": 1}'
 
 
+def test_fold_output_short_stays_open() -> None:
+    preview, hidden = fold_output("a\nb\nc")
+    assert hidden == 0
+    assert preview == "a\nb\nc"
+
+
+def test_fold_output_long_hides_tail() -> None:
+    text = "\n".join(f"line{i}" for i in range(20))
+    preview, hidden = fold_output(text)
+    assert hidden == 16
+    assert "line0" in preview
+    assert "line19" not in preview
+    assert "lines hidden" not in preview
+
+
+def test_parse_out_payload_meta() -> None:
+    exit_s, dur_s, body = parse_out_payload("exit=0 dur=348ms\nhello\nworld")
+    assert exit_s == "0"
+    assert dur_s == "348ms"
+    assert body == "hello\nworld"
+
+
+def test_format_duration_ms() -> None:
+    assert format_duration_ms(348) == "348ms"
+    assert format_duration_ms(1900) == "1.9s"
+    assert format_duration_ms(11_000) == "11s"
+
+
 @pytest.mark.asyncio
-async def test_run_out_fills_collapsible(monkeypatch: pytest.MonkeyPatch) -> None:
-    """out/ok must land in the open run block — not be dropped as unknown kind."""
+async def test_run_out_fills_run_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    """out/ok must land in the open RunBlock — not be dropped as unknown kind."""
     from hackbot.tui.app import HackbotTUI
 
     app = HackbotTUI()
@@ -27,12 +61,38 @@ async def test_run_out_fills_collapsible(monkeypatch: pytest.MonkeyPatch) -> Non
         app._busy = True
         app._ingest_live("run", "echo hello")
         await pilot.pause()
-        assert app._active_run_body_id, "run block should track body id"
-        app._ingest_live("out/ok", "exit=0\nhello\nworld")
+        assert app._active_run_id, "run block should track id"
+        app._ingest_live("out/ok", "exit=0 dur=12ms\nhello\nworld")
         await pilot.pause()
-        body = app.query_one(f"#{app._active_run_body_id}", CopyableStatic)
-        assert "hello" in (body.plain_source or "")
-        assert "world" in body.plain_source
+        block = app.query_one(f"#{app._active_run_id}", RunBlock)
+        assert block.duration == "12ms"
+        assert "hello" in block.full_out
+        assert "world" in block.full_out
+
+
+@pytest.mark.asyncio
+async def test_long_out_folds_with_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    from hackbot.tui.app import HackbotTUI
+
+    app = HackbotTUI()
+    monkeypatch.setattr(HackbotTUI, "turn_runner", staticmethod(lambda t: "done"))
+    long_out = "\n".join(f"L{i}" for i in range(20))
+    async with app.run_test() as pilot:
+        app._busy = True
+        app._ingest_live("run", "python3 <<'PY'")
+        await pilot.pause()
+        app._ingest_live("out/ok", f"exit=0\n{long_out}")
+        await pilot.pause()
+        block = app.query_one(f"#{app._active_run_id}", RunBlock)
+        assert not block.expanded
+        _, hidden = fold_output(block.full_out)
+        assert hidden > 0
+        assert "L19" in block.full_out
+        # Expand and confirm full text is available for copy.
+        block.expanded = True
+        block._render_body()
+        body = app.query_one(f"#{block._body_id}", CopyableStatic)
+        assert "L19" in body.plain_source
 
 
 @pytest.mark.asyncio
