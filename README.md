@@ -71,6 +71,11 @@ Plain REPL stays for thin SSH. Optional external host: [docs/TOAD.md](docs/TOAD.
 (`toad acp` + `hackbot acp`) — that UI still says “Toad”; prefer `hackbot tui`
 if you want only our brand. `hackbot ui` (browser) is deprecated.
 
+**Copy in the TUI:** mouse capture is **off** by default so you can select text
+with the terminal and copy normally (Ctrl+Shift+C / right-click). Or press
+`F2` / `Ctrl+Y` / type `/copy`. Wheel scroll: `HACKBOT_TUI_MOUSE=1` (then use
+`F2` — Windows Terminal steals Ctrl+Shift+C from the app).
+
 ## Brains
 
 I always boot **offline**. Keys alone do nothing. You have to say `/provider …`

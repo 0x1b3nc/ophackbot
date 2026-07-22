@@ -54,6 +54,8 @@ HACKBOT_SLASH: list[tuple[str, str]] = [
     ("/config", "Show effective config"),
     ("/hunt ", "Start hunt prompt (needs /target)"),
     ("/sessions", "Show saved A/B identity"),
+    ("/copy", "Copy last reply to clipboard"),
+    ("/copy all", "Copy full chat to clipboard"),
 ]
 
 

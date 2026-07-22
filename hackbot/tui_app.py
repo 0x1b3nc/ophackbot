@@ -4,7 +4,13 @@ Run: ``python -m hackbot tui``
 
 Layout: status · scrollable chat · full-width input · footer.
 Final replies use Markdown; live stream (think/tool/plan) stays plain text.
-Wheel scroll works (``mouse=True``). Copy: select + ``ctrl+shift+c`` / ``ctrl+y``.
+
+Copy (important):
+  - Default ``mouse=False`` so the **terminal** can select + Ctrl+Shift+C / right-click
+    (Textual mouse capture was eating native copy in Windows Terminal / Cursor).
+  - Wheel scroll: ``HACKBOT_TUI_MOUSE=1`` (then use F2 / Ctrl+Y / ``/copy`` — WT steals Ctrl+Shift+C).
+  - Always: ``F2`` or ``Ctrl+Y`` copies last reply; ``Ctrl+Shift+Y`` copies full chat; ``/copy``.
+
 After Ctrl+C stop, cancel flags clear so the next prompt runs again.
 PgUp/PgDn work even while the input is focused. Auto-scroll only when already at bottom.
 """
@@ -12,15 +18,13 @@ PgUp/PgDn work even while the input is focused. Auto-scroll only when already at
 from __future__ import annotations
 
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, TextIO
 
 from . import live_feed
+from .clipboard import copy_text as clipboard_copy
 from .operator_gate import set_tui_console_mute
 from .session import get_active, status_line
 from .tui_commands import filter_slash_commands, handle_slash
@@ -34,6 +38,17 @@ _PRIMARY = "#8A2BE2"
 _SECONDARY = "#7B68EE"
 _TEXT = "#E8E8FF"
 _INFO = "#64D9E8"
+
+
+def _tui_mouse_enabled() -> bool:
+    """Mouse capture enables wheel + Textual selection but breaks native terminal copy."""
+    raw = (os.environ.get("HACKBOT_TUI_MOUSE") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    # Default OFF — operators expect select+copy in WT / Cursor / SSH.
+    return False
 
 
 def _plain_text(text: str) -> str:
@@ -204,10 +219,12 @@ def start_tui() -> int:
             Binding("ctrl+c", "interrupt", "stop", show=True),
             Binding("ctrl+q", "quit", "quit", show=True),
             Binding("f1", "show_help", "help", show=True),
-            Binding("ctrl+y", "copy_last", "copy last", show=True),
-            Binding("ctrl+shift+y", "copy_all", "copy all", show=True),
-            # Terminal "copy selection" often fails under Textual — bind our own.
-            Binding("ctrl+shift+c", "copy_selection", "copy sel", show=True, priority=True),
+            # Prefer F2 / Ctrl+Y — Windows Terminal steals Ctrl+Shift+C for itself.
+            Binding("f2", "copy_selection", "copy", show=True, priority=True),
+            Binding("ctrl+y", "copy_last", "copy last", show=True, priority=True),
+            Binding("alt+c", "copy_selection", "copy", show=False, priority=True),
+            Binding("ctrl+shift+y", "copy_all", "copy all", show=True, priority=True),
+            Binding("ctrl+shift+c", "copy_selection", "copy sel", show=False, priority=True),
             Binding("ctrl+insert", "copy_selection", "copy", show=False, priority=True),
             # priority=True → works even when Input has focus
             Binding("pageup", "scroll_up", "PgUp", show=True, priority=True),
@@ -239,7 +256,7 @@ def start_tui() -> int:
                 with Vertical(id="composer"):
                     yield OptionList(id="picker")
                     yield Input(
-                        placeholder="Message…  (/ cmds · PgUp/PgDn scroll · wheel · ctrl+y copy last)",
+                        placeholder="Message…  (/ cmds · PgUp/PgDn · F2 copy · /copy)",
                         id="prompt",
                     )
             yield Footer()
@@ -247,10 +264,19 @@ def start_tui() -> int:
         def on_mount(self) -> None:
             live_feed.set_feed_sink(self._mark_feed)
             self.set_interval(0.1, self._pump_feed)
+            mouse_on = _tui_mouse_enabled()
+            copy_hint = (
+                "Mouse **on** (wheel) — copy with `F2` / `Ctrl+Y` / `/copy` "
+                "(Windows Terminal steals Ctrl+Shift+C). "
+                "Native select: `HACKBOT_TUI_MOUSE=0`."
+                if mouse_on
+                else "Mouse **off** — select text with the terminal, then copy "
+                "(Ctrl+Shift+C / right-click). Wheel: `HACKBOT_TUI_MOUSE=1`. "
+                "Or press `F2` / `Ctrl+Y` / type `/copy`."
+            )
             self._append_md(
                 "**hackbot** — `/provider` `/model` `/effort` `/target`\n\n"
-                "_Scroll: mouse wheel · PgUp/PgDn. "
-                "Copy: select text then `ctrl+shift+c` (or `ctrl+y` last / `ctrl+shift+y` all). "
+                f"_Scroll: PgUp/PgDn. {copy_hint} "
                 "Stop: `ctrl+c` then type a new prompt — it will start again._"
             )
             self.query_one("#prompt", Input).focus()
@@ -407,52 +433,18 @@ def start_tui() -> int:
             self._append_md(text)
 
         def _copy_text(self, text: str) -> bool:
-            """Best-effort clipboard for Linux/Windows terminals under Textual."""
-            data = text or ""
-            if not data.strip():
-                return False
-            # 1) Textual OSC-52 (works in many modern terminals / Windows Terminal)
-            try:
-                self.copy_to_clipboard(data)
-            except Exception:  # noqa: BLE001
-                pass
-            # 2) pyperclip
-            try:
-                import pyperclip
-
-                pyperclip.copy(data)
-                return True
-            except Exception:  # noqa: BLE001
-                pass
-            # 3) OS clipboard CLIs (Kali / Linux desktop)
-            for cmd in (
-                ["xclip", "-selection", "clipboard"],
-                ["xsel", "--clipboard", "--input"],
-                ["wl-copy"],
-                ["clip.exe"],  # WSL
-            ):
-                if not shutil.which(cmd[0]):
-                    continue
-                try:
-                    subprocess.run(
-                        cmd,
-                        input=data.encode("utf-8"),
-                        check=True,
-                        timeout=3,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    return True
-                except Exception:  # noqa: BLE001
-                    continue
-            # 4) Always persist a fallback file the operator can open/cat
-            try:
-                path = Path(tempfile.gettempdir()) / "hackbot-clipboard.txt"
-                path.write_text(data, encoding="utf-8")
-                self.notify(f"saved copy file: {path}", severity="warning", timeout=6)
-                return True
-            except Exception:  # noqa: BLE001
-                return False
+            """Best-effort clipboard (OS-native first, then OSC-52, then file)."""
+            ok, method = clipboard_copy(
+                text or "",
+                osc52_write=self.copy_to_clipboard,
+            )
+            if ok and method.startswith("file:"):
+                self.notify(
+                    f"clipboard blocked — saved {method[5:]}",
+                    severity="warning",
+                    timeout=8,
+                )
+            return ok
 
         def action_copy_selection(self) -> None:
             selected = None
@@ -462,14 +454,15 @@ def start_tui() -> int:
                 selected = None
             text = (selected or "").strip() or (self._last_plain or "").strip()
             if not text:
-                self.notify("nothing selected — select text or use ctrl+y", severity="warning", timeout=3)
+                self.notify(
+                    "nothing to copy — select text, or use F2/Ctrl+Y after a reply",
+                    severity="warning",
+                    timeout=4,
+                )
                 return
             if self._copy_text(text):
-                self.notify(
-                    f"copied {len(text)} chars" + (" (selection)" if selected else " (last reply)"),
-                    severity="information",
-                    timeout=2,
-                )
+                kind = "selection" if (selected or "").strip() else "last reply"
+                self.notify(f"copied {len(text)} chars ({kind})", severity="information", timeout=2)
             else:
                 self.notify("copy failed", severity="error", timeout=3)
 
@@ -477,7 +470,7 @@ def start_tui() -> int:
             if self._copy_text(self._last_plain):
                 self.notify("copied last reply", severity="information", timeout=2)
             else:
-                self.notify("copy failed", severity="warning", timeout=3)
+                self.notify("nothing to copy yet", severity="warning", timeout=3)
 
         def action_copy_all(self) -> None:
             blob = "\n\n".join(self._chat_plain).strip()
@@ -549,6 +542,18 @@ def start_tui() -> int:
                 pass
 
         def _submit(self, text: str) -> None:
+            # Local copy commands — never send to the model
+            low = text.strip().lower()
+            if low in {"/copy", "/copy last", "/copy l"}:
+                self.action_copy_last()
+                return
+            if low in {"/copy all", "/copy a", "/copy full"}:
+                self.action_copy_all()
+                return
+            if low in {"/copy sel", "/copy selection", "/copy s"}:
+                self.action_copy_selection()
+                return
+
             self._append_user(text)
             if text.startswith("/"):
                 result = handle_slash(text)
@@ -643,8 +648,9 @@ def start_tui() -> int:
             self._submit("/help")
 
     try:
-        # mouse=True → wheel + Textual text selection; copy via ctrl+shift+c / ctrl+y.
-        HackbotTUI().run(mouse=True)
+        # mouse=False (default): native terminal select+copy works.
+        # HACKBOT_TUI_MOUSE=1: wheel + Textual selection; use F2/Ctrl+Y to copy.
+        HackbotTUI().run(mouse=_tui_mouse_enabled())
     finally:
         live_feed.set_feed_sink(None)
         set_tui_console_mute(False)
