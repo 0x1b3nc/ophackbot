@@ -30,6 +30,24 @@ _TEXT = "#E8E8FF"
 _INFO = "#64D9E8"
 
 
+def _plain_text(text: str) -> str:
+    """Strip common Markdown markers for TUI display (no Markdown widget)."""
+    import re
+
+    s = text or ""
+    # fenced code → keep inner text
+    s = re.sub(r"```[a-zA-Z0-9_+-]*\n?", "", s)
+    s = s.replace("```", "")
+    # headings / bold / italic / inline code (keep content)
+    s = re.sub(r"^#{1,6}\s*", "", s, flags=re.M)
+    s = re.sub(r"\*\*(.+?)\*\*", r"\1", s)
+    s = re.sub(r"__(.+?)__", r"\1", s)
+    s = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"\1", s)
+    s = re.sub(r"`([^`]+)`", r"\1", s)
+    s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)
+    return s.strip()
+
+
 def _status_line() -> str:
     mode, label = resolve_mode()
     active = get_active()
@@ -72,7 +90,7 @@ def start_tui() -> int:
         from textual.app import App, ComposeResult
         from textual.binding import Binding
         from textual.containers import Vertical, VerticalScroll
-        from textual.widgets import Footer, Input, Markdown, OptionList, Static
+        from textual.widgets import Footer, Input, OptionList, Static
         from textual.widgets.option_list import Option
     except ImportError:
         sys.stderr.write("Textual missing. Install:  pip install 'hackbot-kit[tui]'\n")
@@ -129,7 +147,7 @@ def start_tui() -> int:
             text-style: bold;
             margin-top: 1;
         }}
-        .msg-md {{
+        .msg-bot {{
             width: 100%;
             color: {_TEXT};
             margin-bottom: 1;
@@ -215,10 +233,10 @@ def start_tui() -> int:
         def on_mount(self) -> None:
             live_feed.set_feed_sink(self._mark_feed)
             self.set_interval(0.1, self._pump_feed)
-            self._append_md(
-                "**hackbot** — `/provider` `/model` `/effort` `/target`\n\n"
-                "_Select text with the mouse to copy (mouse capture off). "
-                "`ctrl+y` = last reply · `ctrl+shift+y` = full chat · PgUp/PgDn scroll._"
+            self._append_bot(
+                "hackbot — /provider /model /effort /target\n\n"
+                "Select text with the mouse to copy. "
+                "ctrl+y = last reply · ctrl+shift+y = full chat · PgUp/PgDn scroll."
             )
             self.query_one("#prompt", Input).focus()
 
@@ -269,12 +287,12 @@ def start_tui() -> int:
                     self._think_buf = text
                 else:
                     self._think_buf = (self._think_buf + text)[-1500:]
-                display = self._think_buf.replace("\n", " ").strip()
+                display = _plain_text(self._think_buf).replace("\n", " ").strip()
                 if len(display) > 240:
                     display = "…" + display[-237:]
                 line = f"think  {display}"
             elif kind == "draft":
-                flat = text.replace("\n", " ").strip()
+                flat = _plain_text(text).replace("\n", " ").strip()
                 if len(flat) > 240:
                     flat = "…" + flat[-237:]
                 line = f"draft  {flat}"
@@ -292,10 +310,11 @@ def start_tui() -> int:
                     "plan": "plan",
                     "err": "err",
                 }.get(kind, kind[:8] or "·")
+                body = _plain_text(text.strip())[:200]
                 if label in {"tool", "run", "out", "err"}:
-                    self._append_live_pin(f"{label}  {text.strip()[:200]}")
+                    self._append_live_pin(f"{label}  {body}")
                     return
-                line = f"{label}  {text.strip()[:200]}"
+                line = f"{label}  {body}"
             w = self._ensure_live_line()
             w.update(f"◌ {line}")
             self._chat().scroll_end(animate=False)
@@ -304,7 +323,7 @@ def start_tui() -> int:
             chat = self._chat()
             old_id = self._live_widget_id
             self._msg_i += 1
-            pin = f"· {line}"
+            pin = f"· {_plain_text(line)}"
             chat.mount(Static(pin, classes="msg-live", id=f"pin{self._msg_i}"))
             self._chat_plain.append(pin)
             if old_id:
@@ -338,16 +357,22 @@ def start_tui() -> int:
             self._chat_plain.append(line)
             chat.scroll_end(animate=False)
 
-        def _append_md(self, text: str) -> None:
+        def _append_bot(self, text: str) -> None:
+            """Final + slash replies as plain text (Markdown widget disabled in TUI)."""
             chat = self._chat()
             self._msg_i += 1
-            plain = text or "(empty)"
-            chat.mount(Markdown(plain, classes="msg-md", id=f"m{self._msg_i}"))
-            self._last_plain = plain
-            self._chat_plain.append(plain)
+            raw = text or "(empty)"
+            plain = _plain_text(raw) or raw
+            chat.mount(Static(plain, classes="msg-bot", id=f"m{self._msg_i}"))
+            self._last_plain = raw  # keep original for copy (incl. md if any)
+            self._chat_plain.append(raw)
             if len(self._chat_plain) > 300:
                 self._chat_plain = self._chat_plain[-300:]
             chat.scroll_end(animate=False)
+
+        # Back-compat alias used nowhere after rename
+        def _append_md(self, text: str) -> None:
+            self._append_bot(text)
 
         def _copy_text(self, text: str) -> bool:
             data = (text or "").strip()
@@ -455,12 +480,12 @@ def start_tui() -> int:
                         child.remove()
                     self._live_widget_id = None
                     self._chat_plain = []
-                    self._append_md("_cleared_")
+                    self._append_bot("cleared")
                     self._refresh_status()
                     return
                 if result.handled:
                     for msg in result.messages:
-                        self._append_md(msg)
+                        self._append_bot(msg)
                     if result.refresh_status:
                         self._refresh_status()
                     return
@@ -476,7 +501,7 @@ def start_tui() -> int:
                 try:
                     answer = run_bridged_turn(text)
                 except Exception as exc:  # noqa: BLE001
-                    answer = f"**Error:** `{type(exc).__name__}: {exc}`"
+                    answer = f"Error: {type(exc).__name__}: {exc}"
             self.call_from_thread(self._finish_turn, answer or "(empty)")
 
         def _finish_turn(self, answer: str) -> None:
@@ -484,7 +509,7 @@ def start_tui() -> int:
                 self._ingest_live(kind, text)
             self._busy = False
             self._clear_live()
-            self._append_md(answer)
+            self._append_bot(answer)
             self._refresh_status()
             self.query_one("#prompt", Input).focus()
 
@@ -497,7 +522,7 @@ def start_tui() -> int:
                 pass
             self._busy = False
             self._clear_live()
-            self._append_md("**stop** requested")
+            self._append_bot("stop requested")
 
         def action_show_help(self) -> None:
             self._submit("/help")
