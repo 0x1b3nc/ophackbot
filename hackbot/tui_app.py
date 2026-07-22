@@ -1,8 +1,6 @@
-"""hackbot Textual TUI — compact operator layout + live think/tools feed.
+"""hackbot Textual TUI — single scrollable chat (no sidebar, one live stream).
 
 Run: ``python -m hackbot tui``
-
-Palette: #0D0D26 / #191970 / #4B0082 / #8A2BE2 / #7B68EE / #E8E8FF
 """
 
 from __future__ import annotations
@@ -70,7 +68,7 @@ def start_tui() -> int:
         from textual import work
         from textual.app import App, ComposeResult
         from textual.binding import Binding
-        from textual.containers import Horizontal, Vertical, VerticalScroll
+        from textual.containers import Vertical, VerticalScroll
         from textual.widgets import Footer, Input, Markdown, OptionList, Static
         from textual.widgets.option_list import Option
     except ImportError:
@@ -101,7 +99,6 @@ def start_tui() -> int:
         Screen {{
             background: {_BG};
             color: {_TEXT};
-            layout: vertical;
         }}
         #topbar {{
             dock: top;
@@ -109,72 +106,32 @@ def start_tui() -> int:
             background: {_PANEL};
             color: {_INFO};
             padding: 0 1;
-            text-style: bold;
-        }}
-        #body {{
-            height: 1fr;
-        }}
-        #sidebar {{
-            width: 18;
-            background: {_PANEL};
-            border-right: tall {_BORDER};
-            padding: 0 1;
-        }}
-        #side-title {{
-            height: 1;
-            color: {_PRIMARY};
-            text-style: bold;
-        }}
-        #side-help {{
-            color: {_SECONDARY};
-        }}
-        #main {{
-            width: 1fr;
-            height: 1fr;
-            background: {_BG};
         }}
         #chat {{
             height: 1fr;
             background: {_BG};
             padding: 0 1;
+            scrollbar-size: 1 1;
             scrollbar-background: {_BG};
             scrollbar-color: {_BORDER};
             scrollbar-color-hover: {_PRIMARY};
+            scrollbar-color-active: {_PRIMARY};
         }}
         .msg-user {{
             color: {_INFO};
-            padding: 0 0 0 0;
             text-style: bold;
             margin-top: 1;
         }}
         .msg-md {{
-            padding: 0 0 1 0;
-            background: {_BG};
             color: {_TEXT};
+            margin-bottom: 1;
         }}
-        .msg-stream {{
+        .msg-live {{
             color: {_SECONDARY};
-            padding: 0 0 1 0;
-        }}
-        #live-wrap {{
-            height: 6;
-            max-height: 6;
-            background: {_PANEL};
-            border-top: tall {_BORDER};
-            padding: 0 1;
-        }}
-        #live-title {{
-            height: 1;
-            color: {_SECONDARY};
-        }}
-        #live {{
-            height: 4;
-            color: {_TEXT};
-            overflow-y: auto;
         }}
         #composer {{
+            dock: bottom;
             height: auto;
-            max-height: 10;
             background: {_PANEL};
             border-top: tall {_BORDER};
             padding: 0 1;
@@ -185,7 +142,6 @@ def start_tui() -> int:
             border: tall {_BORDER};
             background: {_PANEL};
             display: none;
-            margin: 0;
         }}
         #picker.visible {{
             display: block;
@@ -196,7 +152,6 @@ def start_tui() -> int:
             border: tall {_PRIMARY};
             color: {_TEXT};
             padding: 0 1;
-            margin: 0 0 0 0;
         }}
         #prompt:focus {{
             border: tall {_SECONDARY};
@@ -210,8 +165,11 @@ def start_tui() -> int:
             Binding("ctrl+c", "interrupt", "stop", show=True),
             Binding("ctrl+q", "quit", "quit", show=True),
             Binding("f1", "show_help", "help", show=True),
-            Binding("ctrl+y", "copy_last", "copy last", show=True),
-            Binding("ctrl+shift+c", "copy_last", "copy last", show=False),
+            Binding("ctrl+y", "copy_last", "copy", show=True),
+            Binding("pageup", "scroll_up", "scroll↑", show=False),
+            Binding("pagedown", "scroll_down", "scroll↓", show=False),
+            Binding("ctrl+u", "scroll_up", "scroll↑", show=False),
+            Binding("ctrl+d", "scroll_down", "scroll↓", show=False),
         ]
 
         def __init__(self) -> None:
@@ -220,52 +178,40 @@ def start_tui() -> int:
             self._picker_cmds: list[str] = []
             self._msg_i = 0
             self._last_plain: str = ""
-            self._chat_plain: list[str] = []
-            self._live_lines: list[str] = []
             self._think_buf: str = ""
-            self._stream_id: str | None = None
+            self._live_widget_id: str | None = None  # single updating live line in chat
             self._feed_dirty = False
 
         def compose(self) -> ComposeResult:
             yield Static(_status_line(), id="topbar")
-            with Horizontal(id="body"):
-                with Vertical(id="sidebar"):
-                    yield Static("hackbot", id="side-title")
-                    yield Static(
-                        "/target  /provider\n"
-                        "/model   /effort\n"
-                        "/yolo on\n"
-                        "ctrl+y copy\n"
-                        "ctrl+q quit",
-                        id="side-help",
-                    )
-                with Vertical(id="main"):
-                    yield VerticalScroll(id="chat")
-                    with Vertical(id="live-wrap"):
-                        yield Static("live · think / tools / cmds", id="live-title")
-                        yield Static("idle", id="live")
-                    with Vertical(id="composer"):
-                        yield OptionList(id="picker")
-                        yield Input(
-                            placeholder="Message…  (/ for commands)",
-                            id="prompt",
-                        )
+            yield VerticalScroll(id="chat")
+            with Vertical(id="composer"):
+                yield OptionList(id="picker")
+                yield Input(placeholder="Message…  (/ cmds · PgUp/PgDn scroll)", id="prompt")
             yield Footer()
 
         def on_mount(self) -> None:
-            # Prefer polling pending queue on UI thread (reliable under token flood).
-            live_feed.set_feed_sink(self._on_feed_mark)
-            self.set_interval(0.12, self._pump_feed)
+            live_feed.set_feed_sink(self._mark_feed)
+            self.set_interval(0.1, self._pump_feed)
             self._append_md(
-                "**ready** — `/provider cursor` · `/model grok-4.5` · `/effort high fast` · `/target <name>`"
+                "**hackbot** — `/provider` `/model` `/effort` `/target` · "
+                "PgUp/PgDn or mouse wheel to scroll · `ctrl+y` copy last"
             )
             self.query_one("#prompt", Input).focus()
 
         def on_unmount(self) -> None:
             live_feed.set_feed_sink(None)
 
-        def _on_feed_mark(self, _kind: str, _text: str) -> None:
-            """Sink from worker threads — only mark dirty; UI drains on interval."""
+        def _chat(self) -> VerticalScroll:
+            return self.query_one("#chat", VerticalScroll)
+
+        def action_scroll_up(self) -> None:
+            self._chat().scroll_page_up(animate=False)
+
+        def action_scroll_down(self) -> None:
+            self._chat().scroll_page_down(animate=False)
+
+        def _mark_feed(self, _kind: str, _text: str) -> None:
             self._feed_dirty = True
 
         def _pump_feed(self) -> None:
@@ -274,124 +220,107 @@ def start_tui() -> int:
                 return
             self._feed_dirty = False
             for kind, text in events:
-                self._ingest(kind, text)
-            self._paint_live()
-            self._paint_stream_bubble()
+                self._ingest_live(kind, text)
 
-        def _ingest(self, kind: str, text: str) -> None:
+        def _ensure_live_line(self) -> Static:
+            chat = self._chat()
+            if self._live_widget_id:
+                try:
+                    return self.query_one(f"#{self._live_widget_id}", Static)
+                except Exception:  # noqa: BLE001
+                    self._live_widget_id = None
+            self._msg_i += 1
+            self._live_widget_id = f"live{self._msg_i}"
+            w = Static("◌ …", classes="msg-live", id=self._live_widget_id)
+            chat.mount(w)
+            chat.scroll_end(animate=False)
+            return w
+
+        def _ingest_live(self, kind: str, text: str) -> None:
+            """One place only: update a single live line inside the chat scroll."""
+            if not self._busy:
+                return
             kind = (kind or "info").strip().lower()
             text = text or ""
             if kind in {"think", "thinking", "reasoning"}:
                 if text.startswith("(thinking)"):
                     self._think_buf = text
                 else:
-                    self._think_buf = (self._think_buf + text)[-1200:]
+                    self._think_buf = (self._think_buf + text)[-1500:]
                 display = self._think_buf.replace("\n", " ").strip()
-                if len(display) > 200:
-                    display = "…" + display[-197:]
+                if len(display) > 240:
+                    display = "…" + display[-237:]
                 line = f"think  {display}"
-                if self._live_lines and self._live_lines[-1].startswith("think  "):
-                    self._live_lines[-1] = line
-                else:
-                    self._live_lines.append(line)
-                return
-            if kind == "draft":
+            elif kind == "draft":
                 flat = text.replace("\n", " ").strip()
-                if len(flat) > 200:
-                    flat = "…" + flat[-197:]
+                if len(flat) > 240:
+                    flat = "…" + flat[-237:]
                 line = f"draft  {flat}"
-                if self._live_lines and self._live_lines[-1].startswith("draft  "):
-                    self._live_lines[-1] = line
-                else:
-                    self._live_lines.append(line)
-                return
-            if not text.strip():
-                return
-            label = {
-                "tool": "tool",
-                "run": "run",
-                "out": "out",
-                "working": "···",
-                "info": "·",
-                "log": "log",
-                "dbg": "dbg",
-                "plan": "plan",
-                "err": "err",
-            }.get(kind, kind[:8] or "·")
-            self._live_lines.append(f"{label}  {text.strip()[:180]}")
-            self._live_lines = self._live_lines[-30:]
+            else:
+                if not text.strip():
+                    return
+                label = {
+                    "tool": "tool",
+                    "run": "run",
+                    "out": "out",
+                    "working": "···",
+                    "info": "·",
+                    "log": "log",
+                    "dbg": "dbg",
+                    "plan": "plan",
+                    "err": "err",
+                }.get(kind, kind[:8] or "·")
+                # Sticky lines for tools/runs — append new Static; think/draft reuse one widget
+                if label in {"tool", "run", "out", "err"}:
+                    self._append_live_pin(f"{label}  {text.strip()[:200]}")
+                    return
+                line = f"{label}  {text.strip()[:200]}"
+            w = self._ensure_live_line()
+            w.update(f"◌ {line}")
+            self._chat().scroll_end(animate=False)
 
-        def _paint_live(self) -> None:
-            body = "\n".join(self._live_lines[-5:]) if self._live_lines else (
-                "working…" if self._busy else "idle"
-            )
-            try:
-                self.query_one("#live", Static).update(body)
-            except Exception:  # noqa: BLE001
-                pass
-
-        def _paint_stream_bubble(self) -> None:
-            if not self._busy or not self._stream_id:
-                return
-            # Compact in-chat stream: last think or draft or last live line
-            tip = ""
-            for line in reversed(self._live_lines):
-                if line.startswith("think  ") or line.startswith("draft  ") or line.startswith("tool  ") or line.startswith("run  "):
-                    tip = line
-                    break
-            if not tip and self._live_lines:
-                tip = self._live_lines[-1]
-            if not tip:
-                tip = "··· working"
-            try:
-                w = self.query_one(f"#{self._stream_id}", Static)
-                w.update(f"◌ {tip}")
-            except Exception:  # noqa: BLE001
-                pass
-
-        def _reset_live(self) -> None:
-            self._live_lines = []
-            self._think_buf = ""
-            live_feed.clear()
-            self._paint_live()
-
-        def _start_stream_bubble(self) -> None:
-            chat = self.query_one("#chat", VerticalScroll)
+        def _append_live_pin(self, line: str) -> None:
+            """Pin a completed tool/run line, then keep the updating live widget below."""
+            chat = self._chat()
+            # Detach updating widget id so the next ensure creates a fresh one under pins
+            old_id = self._live_widget_id
             self._msg_i += 1
-            self._stream_id = f"s{self._msg_i}"
-            chat.mount(Static("◌ working…", classes="msg-stream", id=self._stream_id))
+            chat.mount(Static(f"· {line}", classes="msg-live", id=f"pin{self._msg_i}"))
+            if old_id:
+                try:
+                    self.query_one(f"#{old_id}", Static).remove()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._live_widget_id = None
+            self._ensure_live_line().update("◌ …")
             chat.scroll_end(animate=False)
 
-        def _clear_stream_bubble(self) -> None:
-            if not self._stream_id:
-                return
-            try:
-                self.query_one(f"#{self._stream_id}", Static).remove()
-            except Exception:  # noqa: BLE001
-                pass
-            self._stream_id = None
+        def _clear_live(self) -> None:
+            self._think_buf = ""
+            live_feed.clear()
+            if self._live_widget_id:
+                try:
+                    self.query_one(f"#{self._live_widget_id}", Static).remove()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._live_widget_id = None
 
         def _refresh_status(self) -> None:
             self.query_one("#topbar", Static).update(_status_line())
             self.sub_title = str(Path.cwd())
 
         def _append_user(self, text: str) -> None:
-            chat = self.query_one("#chat", VerticalScroll)
+            chat = self._chat()
             self._msg_i += 1
             chat.mount(Static(f"› {text}", classes="msg-user", id=f"u{self._msg_i}"))
-            self._chat_plain.append(f"> {text}")
             chat.scroll_end(animate=False)
 
         def _append_md(self, text: str) -> None:
-            chat = self.query_one("#chat", VerticalScroll)
+            chat = self._chat()
             self._msg_i += 1
-            mid = f"m{self._msg_i}"
             plain = text or "(empty)"
-            chat.mount(Markdown(plain, classes="msg-md", id=mid))
+            chat.mount(Markdown(plain, classes="msg-md", id=f"m{self._msg_i}"))
             self._last_plain = plain
-            self._chat_plain.append(plain)
-            if len(self._chat_plain) > 200:
-                self._chat_plain = self._chat_plain[-200:]
             chat.scroll_end(animate=False)
 
         def _copy_text(self, text: str) -> bool:
@@ -417,13 +346,9 @@ def start_tui() -> int:
 
         def action_copy_last(self) -> None:
             if self._copy_text(self._last_plain):
-                self.notify("copied last reply", severity="information", timeout=2)
+                self.notify("copied", severity="information", timeout=2)
             else:
-                self.notify(
-                    "copy failed — select with mouse",
-                    severity="warning",
-                    timeout=3,
-                )
+                self.notify("copy failed", severity="warning", timeout=3)
 
         def _hide_picker(self) -> None:
             picker = self.query_one("#picker", OptionList)
@@ -447,9 +372,8 @@ def start_tui() -> int:
         def on_input_changed(self, event: Input.Changed) -> None:
             if event.input.id != "prompt":
                 return
-            val = event.value
-            if val.startswith("/"):
-                self._show_picker(val)
+            if event.value.startswith("/"):
+                self._show_picker(event.value)
             else:
                 self._hide_picker()
 
@@ -484,10 +408,10 @@ def start_tui() -> int:
                     self.exit()
                     return
                 if result.clear_chat:
-                    chat = self.query_one("#chat", VerticalScroll)
+                    chat = self._chat()
                     for child in list(chat.children):
                         child.remove()
-                    self._stream_id = None
+                    self._live_widget_id = None
                     self._append_md("_cleared_")
                     self._refresh_status()
                     return
@@ -498,8 +422,8 @@ def start_tui() -> int:
                         self._refresh_status()
                     return
             self._busy = True
-            self._reset_live()
-            self._start_stream_bubble()
+            self._clear_live()
+            self._ensure_live_line().update("◌ working…")
             self.query_one("#topbar", Static).update(f"{_status_line()} · working…")
             self.run_hunt_turn(text)
 
@@ -513,25 +437,11 @@ def start_tui() -> int:
             self.call_from_thread(self._finish_turn, answer or "(empty)")
 
         def _finish_turn(self, answer: str) -> None:
-            # Drain any last feed events before clearing stream bubble
             for kind, text in live_feed.drain_pending():
-                self._ingest(kind, text)
-            self._paint_live()
+                self._ingest_live(kind, text)
             self._busy = False
-            self._clear_stream_bubble()
+            self._clear_live()
             self._append_md(answer)
-            if self._live_lines:
-                try:
-                    self.query_one("#live", Static).update(
-                        "\n".join(self._live_lines[-5:]) + "\n· done"
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-            else:
-                try:
-                    self.query_one("#live", Static).update("idle")
-                except Exception:  # noqa: BLE001
-                    pass
             self._refresh_status()
             self.query_one("#prompt", Input).focus()
 
@@ -543,14 +453,15 @@ def start_tui() -> int:
             except Exception:  # noqa: BLE001
                 pass
             self._busy = False
-            self._clear_stream_bubble()
+            self._clear_live()
             self._append_md("**stop** requested")
 
         def action_show_help(self) -> None:
             self._submit("/help")
 
     try:
-        HackbotTUI().run(mouse=False)
+        # mouse=True → wheel scroll works. Copy last reply with ctrl+y.
+        HackbotTUI().run(mouse=True)
     finally:
         live_feed.set_feed_sink(None)
         set_tui_console_mute(False)
