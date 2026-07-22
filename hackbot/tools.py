@@ -385,19 +385,26 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "extract_page",
         "description": (
-            "HTTP GET + HTML text extract (NO JavaScript). Saves full HTML/text under evidence. "
-            "Returns needs_browser/needs_session when the page is SPA or login-walled "
-            "(typical bug-bounty program portals like Intigriti). For those, do NOT retry "
-            "extract_page forever — use browser_with_session / browser_network / browser_eval "
-            "with an authenticated session. Pass session=A when secrets/sessions.yaml is loaded."
+            "Extract an in-scope PUBLIC page (login NOT required). GET HTML, pull "
+            "__NEXT_DATA__/embedded program JSON, save full artifacts. If the page is a SPA "
+            "shell, auto headless-renders with Chromium still WITHOUT login (render=auto). "
+            "Pass session only when the page truly returns 401/403. Prefer read_file on "
+            "saved_text/saved_json for full program/scope content."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "target_dir": {"type": "string"},
                 "url": {"type": "string"},
-                "session": {"type": "string"},
+                "session": {
+                    "type": "string",
+                    "description": "Optional. Only if page is auth-walled (401/403).",
+                },
                 "save": {"type": "boolean", "default": True},
+                "render": {
+                    "type": "boolean",
+                    "description": "Force headless Chromium (no login). Default auto on SPA.",
+                },
                 "approve": {"type": "boolean", "default": False},
                 "force": {"type": "boolean", "default": False},
             },
@@ -4307,6 +4314,11 @@ def _tool_extract_page(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
         force=force,
         session=str(args.get("session") or ""),
         save=parse_bool(args.get("save"), default=True),
+        render=(
+            None
+            if args.get("render") is None
+            else parse_bool(args.get("render"), default=False)
+        ),
     )
     try:
         payload = json.loads(result.stdout) if result.stdout else {}
