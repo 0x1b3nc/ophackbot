@@ -239,7 +239,7 @@ class HackbotTUI(App[None]):
                     soft_wrap=True,
                     tab_behavior="indent",
                     show_line_numbers=False,
-                    placeholder="Message…  Enter newline · Ctrl+Enter send · F2 copy",
+                    placeholder="Message…  Enter newline · Ctrl+Enter/Ctrl+J send · F2 copy",
                     id="prompt",
                 )
                 yield Button("Send", id="send", variant="primary")
@@ -250,7 +250,8 @@ class HackbotTUI(App[None]):
         self.set_interval(0.1, self._pump_feed)
         self._append_md(
             "**hackbot** — `/provider` `/model` `/effort` `/target`\n\n"
-            "_**Newline:** `Enter`. **Send:** `Ctrl+Enter` or the **Send** button. "
+            "_**Newline:** `Enter`. **Send:** `Ctrl+Enter` / `Ctrl+J` or the **Send** button "
+            "(many terminals map Ctrl+Enter → Ctrl+J). "
             "**Copy:** `F2` / click message / `/copy`. "
             "**Scroll:** wheel + scrollbar + PgUp/PgDn. "
             "Stop: `ctrl+c` then send a new prompt._"

@@ -3,9 +3,9 @@
 Run: ``python -m hackbot tui`` (via ``hackbot.tui.start_tui``).
 
 Composer (mode A, Textual-native):
-  Enter       → newline (TextArea default)
-  Ctrl+Enter  → send
-  Send button → send
+  Enter                 → newline (TextArea default)
+  Ctrl+Enter / Ctrl+J   → send (Ctrl+J = what most terminals emit for Ctrl+Enter)
+  Send button           → send
 """
 
 from __future__ import annotations

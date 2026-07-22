@@ -1,4 +1,4 @@
-"""Multiline composer — Textual-native Enter=newline; Ctrl+Enter sends."""
+"""Multiline composer — Textual-native Enter=newline; Ctrl+Enter / Ctrl+J sends."""
 
 from __future__ import annotations
 
@@ -8,23 +8,28 @@ from textual.widgets import TextArea
 
 from ..clipboard import read_text as clipboard_read
 
+# Keys that submit. Many Linux terminals (incl. Kali defaults) send LF for
+# Ctrl+Enter, which Textual reports as ``ctrl+j`` — not ``ctrl+enter``.
+_SUBMIT_KEYS = frozenset({"ctrl+enter", "ctrl+j"})
+
 
 class PromptArea(TextArea):
     """Chat composer aligned with Textual TextArea defaults.
 
     Enter inserts a newline (native TextArea ``_on_key``).
-    Ctrl+Enter submits via ``action_submit_prompt``.
+    Ctrl+Enter / Ctrl+J submits (Ctrl+J is what most terminals actually emit).
     """
 
     BINDINGS = [
         Binding("ctrl+enter", "submit_prompt", "send", show=True, priority=True),
+        Binding("ctrl+j", "submit_prompt", "send", show=True, priority=True),
     ]
 
     async def _on_key(self, event: events.Key) -> None:
-        """Submit on Ctrl+Enter; let Enter fall through to TextArea newline."""
+        """Submit on Ctrl+Enter / Ctrl+J; let Enter fall through to newline."""
         key = (event.key or "").lower()
         aliases = {(a or "").lower() for a in (event.aliases or [])}
-        if key == "ctrl+enter" or "ctrl+enter" in aliases:
+        if key in _SUBMIT_KEYS or aliases & _SUBMIT_KEYS:
             event.stop()
             event.prevent_default()
             self.action_submit_prompt()

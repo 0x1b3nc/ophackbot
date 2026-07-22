@@ -45,12 +45,29 @@ async def test_ctrl_enter_submits(mock_turn: list[str]) -> None:
         await pilot.press("h", "e", "l", "l", "o")
         await pilot.press("ctrl+enter")
         await pilot.pause()
-        # Worker may still be finishing — wait for idle turn
         for _ in range(50):
             if not app._busy and mock_turn:
                 break
             await pilot.pause()
         assert mock_turn == ["hello"]
+        assert (prompt.text or "").strip() == ""
+
+
+@pytest.mark.asyncio
+async def test_ctrl_j_submits(mock_turn: list[str]) -> None:
+    """Kali/QTerminal often delivers Ctrl+Enter as ctrl+j (LF)."""
+    app = HackbotTUI()
+    async with app.run_test() as pilot:
+        prompt = app.query_one("#prompt", PromptArea)
+        prompt.focus()
+        await pilot.press("o", "k")
+        await pilot.press("ctrl+j")
+        await pilot.pause()
+        for _ in range(50):
+            if not app._busy and mock_turn:
+                break
+            await pilot.pause()
+        assert mock_turn == ["ok"]
         assert (prompt.text or "").strip() == ""
 
 

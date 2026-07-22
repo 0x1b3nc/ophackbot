@@ -73,7 +73,8 @@ if you want only our brand. `hackbot ui` (browser) is deprecated.
 
 **Copy in the TUI:** click a message, or `F2` / `Ctrl+Y` / `/copy`.
 **Paste:** multiline composer — Ctrl+V keeps every line; `Enter` inserts a newline;
-`Ctrl+Enter` or the **Send** button submits. **Scroll:** wheel + scrollbar + PgUp/PgDn always on.
+`Ctrl+Enter` / `Ctrl+J` or the **Send** button submits (Kali terminals often emit
+Ctrl+J for Ctrl+Enter). **Scroll:** wheel + scrollbar + PgUp/PgDn always on.
 
 ## Brains
 
