@@ -89,21 +89,40 @@ class CodexToolBridgeTests(unittest.TestCase):
         self.assertIn("adultforce.com", nudge)
 
     def test_continue_prompt_includes_result(self) -> None:
-        text = _tool_continue_prompt(
-            "GET na home",
-            [
-                {
-                    "tool": "http_request",
-                    "ok": True,
-                    "result": '{"ok": true, "status": 200}',
-                    "args": {"url": "https://example.com/"},
-                }
-            ],
-        )
+        with mock.patch("hackbot.step_mode.step_mode_enabled", return_value=True):
+            text = _tool_continue_prompt(
+                "GET na home",
+                [
+                    {
+                        "tool": "http_request",
+                        "ok": True,
+                        "result": '{"ok": true, "status": 200}',
+                        "args": {"url": "https://example.com/"},
+                    }
+                ],
+            )
         self.assertIn("http_request", text)
         self.assertIn("200", text)
         self.assertIn("GET na home", text)
-        self.assertIn("Do NOT claim tools are missing", text)
+        self.assertIn("then STOP", text)
+
+    def test_continue_prompt_full_hunt_keeps_going(self) -> None:
+        with mock.patch("hackbot.step_mode.step_mode_enabled", return_value=False):
+            text = _tool_continue_prompt(
+                "não pause até achar",
+                [
+                    {
+                        "tool": "http_request",
+                        "ok": True,
+                        "result": '{"ok": true, "saved_body": "targets/aylo/recon/http_bodies/x.js"}',
+                        "args": {"url": "https://example.com/x.js"},
+                    }
+                ],
+            )
+        self.assertIn("FULL HUNT MODE", text)
+        self.assertIn("do NOT stop", text)
+        self.assertNotIn("then STOP", text)
+        self.assertIn("saved_body", text)
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ from .hunt_controller import hunt_status, request_stop, run_hunt
 from .identity import save_session
 from .local_agent import run_local_agent
 from .operator_gate import operator_prompt_active
+from .prompt_line import ask_operator_line
 from .providers import (
     EFFORT_LEVELS,
     PROVIDERS,
@@ -295,7 +296,8 @@ def start_repl(*, one_shot: str | None = None) -> int:
             # line doubles and glues onto the next ``- codex effort=…`` banner.
             ui.ensure_prompt_line()
             tag = _prompt_label(mode)
-            user = Prompt.ask(f"[bold cyan]hackbot[/] [dim]· {tag}[/]")
+            # prompt_toolkit: paste with trailing newline does NOT auto-submit.
+            user = ask_operator_line(tag, fallback=Prompt.ask)
         except (EOFError, KeyboardInterrupt):
             ui.console.print()
             ui.info("bye")

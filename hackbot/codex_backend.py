@@ -66,7 +66,20 @@ def codex_sandbox_mode() -> str:
 _FILEOP_RE = re.compile(r"```hackbot-fileop\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 _TOOL_RE = re.compile(r"```hackbot-tool\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 _MAX_TOOL_CONTINUES = 2
+_MAX_TOOL_CONTINUES_FULL = 16
 _MAX_TOOL_RESULT_CHARS = 6000
+
+
+def _tool_continue_budget() -> int:
+    """How many tool→continue rounds in one operator turn."""
+    try:
+        from .step_mode import step_mode_enabled
+
+        if not step_mode_enabled():
+            return _MAX_TOOL_CONTINUES_FULL
+    except Exception:  # noqa: BLE001
+        pass
+    return _MAX_TOOL_CONTINUES
 
 _FILEOP_ALIASES = {
     "write": "write_file", "write_file": "write_file", "create": "write_file", "overwrite": "write_file",
@@ -323,13 +336,28 @@ def _apply_tool_calls(
 def _tool_continue_prompt(
     user_prompt: str, applied: list[dict[str, Any]]
 ) -> str:
-    chunks: list[str] = [
-        "Hackbot executed your hackbot-tool call(s). Results follow.",
-        "Summarize briefly for the operator + ONE next step, then STOP.",
-        "Do NOT claim tools are missing. Emit another hackbot-tool only if one "
-        "more step is truly required this turn.",
-        "",
-    ]
+    from .step_mode import step_mode_enabled
+
+    if step_mode_enabled():
+        instructions = [
+            "Hackbot executed your hackbot-tool call(s). Results follow.",
+            "Summarize briefly for the operator + ONE next step, then STOP.",
+            "Do NOT claim tools are missing. Emit another hackbot-tool only if one "
+            "more step is truly required this turn.",
+        ]
+    else:
+        instructions = [
+            "Hackbot executed your hackbot-tool call(s). Results follow.",
+            "FULL HUNT MODE is ON — do NOT stop to ask the operator to continue.",
+            "Immediately emit the NEXT hackbot-tool call(s) to keep hunting.",
+            "Only STOP and summarize for the operator when you have: a finding "
+            "candidate, a hard blocker (needs_setup/MFA/OOS), or it is no longer "
+            "worth continuing (budget/dead ends).",
+            "If a result includes saved_body / saved_path, use read_file on that "
+            "path for the full JS/body — do not assume body_preview is complete.",
+            "Do NOT claim tools are missing.",
+        ]
+    chunks: list[str] = [*instructions, ""]
     for i, row in enumerate(applied, 1):
         mark = "ok" if row.get("ok") else f"FAILED ({row.get('error') or 'error'})"
         chunks.append(f"### tool {i}: {row.get('tool')} → {mark}")
@@ -876,7 +904,7 @@ def run_codex_turn(
 
     # Tool results must be fed back — otherwise Codex guesses and invents
     # "I don't have http_request".
-    if applied_tools and _fileop_depth < _MAX_TOOL_CONTINUES:
+    if applied_tools and _fileop_depth < _tool_continue_budget():
         ui.info("tool results ready; continuing codex")
         hist = list(history or [])
         hist.append(("user", orig))

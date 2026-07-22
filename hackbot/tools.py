@@ -3540,6 +3540,8 @@ def _tool_http_request(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
 
+    saved_body = ""
+    looks_js = False
     if result.executed and isinstance(payload, dict):
         _RESPONSE_CACHE[_cache_key(target, label)] = payload
         # Redacted evidence copy (no full secrets)
@@ -3557,7 +3559,31 @@ def _tool_http_request(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
             )
         except StrictRedactError:
             pass
+        # Persist full JS/text bodies for later read_file / analyze_js (preview alone
+        # truncates and made Codex think the file was incomplete).
+        body_full = str(payload.get("body") or "")
+        url_l = str(payload.get("url") or url or "").lower()
+        looks_js = url_l.endswith(".js") or ".js?" in url_l or (
+            "javascript" in str(payload.get("headers") or "").lower()
+        )
+        if body_full and (looks_js or len(body_full) > 4000):
+            try:
+                from urllib.parse import urlparse
 
+                host = urlparse(str(payload.get("url") or url)).hostname or "asset"
+                base = Path(str(payload.get("url") or url)).name.split("?")[0] or "body.txt"
+                if looks_js and not base.endswith(".js"):
+                    base = base + ".js"
+                safe_base = "".join(c if c.isalnum() or c in "._-" else "_" for c in base)[:80]
+                out_dir = Path(target) / "recon" / "http_bodies"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_path = out_dir / f"{host}_{safe_base}"
+                out_path.write_text(body_full, encoding="utf-8", errors="replace")
+                saved_body = str(out_path).replace("\\", "/")
+            except OSError:
+                saved_body = ""
+
+    preview_cap = 4000 if looks_js or saved_body else 1500
     return json.dumps(
         {
             "ok": result.returncode in (None, 0) or not result.executed,
@@ -3567,7 +3593,13 @@ def _tool_http_request(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
             "status": payload.get("status"),
             "length": payload.get("length"),
             "sha256": payload.get("sha256"),
-            "body_preview": (payload.get("body_preview") or "")[:1500],
+            "body_preview": (payload.get("body_preview") or "")[:preview_cap],
+            "saved_body": saved_body,
+            "hint": (
+                f"full body saved — call read_file path={saved_body}"
+                if saved_body
+                else ""
+            ),
             "error": payload.get("error") or result.stderr,
         }
     )
