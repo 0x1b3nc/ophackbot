@@ -30,11 +30,11 @@ HACKBOT_SLASH: list[tuple[str, str]] = [
     ("/status", "Provider, target, yolo, step"),
     ("/clear", "Clear the chat pane"),
     ("/exit", "Quit the TUI"),
-    ("/yolo on", "Auto-approve tools (OOS still blocked)"),
+    ("/yolo on", "Auto-approve tools + force (incl. OOS)"),
     ("/yolo off", "Ask before tools"),
     ("/step on", "Pause after each act"),
     ("/step off", "Full hunt until finding/budget"),
-    ("/force on", "Soft SCOPE override on"),
+    ("/force on", "Full SCOPE override (incl. OOS)"),
     ("/force off", "Force off"),
     ("/target ", "Set active target (e.g. /target demo)"),
     ("/target clear", "Clear active target"),
@@ -102,7 +102,7 @@ def handle_slash(text: str) -> CmdResult:
         arg = raw[len("/yolo") :].strip().lower()
         if arg in {"", "on", "1", "true", "yes"}:
             enable_yolo(quiet=True)
-            return CmdResult(messages=["yolo **on** (OOS still blocked)"])
+            return CmdResult(messages=["yolo **on** (force on; OOS overridable)"])
         if arg in {"off", "0", "false", "no"}:
             disable_yolo()
             return CmdResult(messages=["yolo **off**"])

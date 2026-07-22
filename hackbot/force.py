@@ -1,7 +1,9 @@
-"""Operator /force override: conscious bypass of soft SCOPE gates.
+"""Operator /force override: conscious bypass of ALL SCOPE gates.
 
-Hard rule: explicitly OUT_OF_SCOPE hosts stay blocked even with force.
-Active traffic still requires approve. Responsibility is strictly the operator's.
+When force is ON, the operator can hit any host/action they ask for — including
+explicitly OUT_OF_SCOPE. Legal/operational risk is strictly theirs.
+Without force, OOS and soft gates still block as usual.
+Active traffic still needs approve (unless YOLO skips approve).
 """
 
 from __future__ import annotations
@@ -12,10 +14,9 @@ _FORCE_ACTIVE = False
 
 FORCE_BANNER = (
     "**FORCE ON — operator responsibility**\n\n"
-    "You are overriding soft SCOPE gates (level-3 / active-testing wording, "
-    "and hosts not yet confirmed in SCOPE.md).\n\n"
-    "- Explicitly **OUT_OF_SCOPE** hosts remain blocked.\n"
-    "- **Approve** is still required before any active traffic.\n"
+    "You are overriding **all** SCOPE gates: OUT_OF_SCOPE hosts, level-3 / "
+    "prohibited wording, and hosts not confirmed in SCOPE.md.\n\n"
+    "- **Approve** is still required before any active traffic (unless `/yolo on`).\n"
     "- Legal/operational risk is **yours** alone.\n\n"
     "Turn off with `/force off`."
 )

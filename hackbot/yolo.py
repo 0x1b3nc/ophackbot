@@ -1,10 +1,10 @@
-"""Session YOLO: skip y/n approve + soft-force.
+"""Session YOLO: skip y/n approve + enable force.
 
 YOLO does NOT mean endless autonomous chaining. Step mode (default ON) still
 pauses after each meaningful hunt act for the operator.
 
-Hard rail unchanged: explicit OUT_OF_SCOPE stays blocked.
-Operator owns the risk. Password/secrets never live in this module.
+With YOLO, `/force` is turned ON — so OOS/soft gates follow force (operator
+owns the risk). Password/secrets never live in this module.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ _YOLO_ENABLED_FORCE = False
 
 YOLO_BANNER = (
     "**YOLO ON - operator responsibility**\n\n"
-    "Approve prompts are skipped. Soft SCOPE gates follow `/force` (ON with yolo).\n"
-    "Explicit **OUT_OF_SCOPE** hosts stay hard-blocked.\n"
+    "Approve prompts are skipped. `/force` is ON with yolo — **all** SCOPE gates "
+    "(including OUT_OF_SCOPE) can be overridden; risk is yours.\n"
     "Lab tools may use local sudo (`.hackbot/sudo_pass` / `HACKBOT_SUDO_PASS`).\n"
     "Step mode still pauses after each hunt act unless `/step off`.\n"
     "YOLO is not 'run forever' by itself.\n\n"

@@ -335,25 +335,37 @@ class ScopePolicy:
         force: bool = False,
         tool: str | None = None,
     ) -> dict[str, object]:
-        """Gate target + aggression + prohibited. OOS never bypassable.
+        """Gate target + aggression + prohibited.
 
-        Soft gates (NOT_CONFIRMED, L3 wording, prohibited, L2 without active
-        allow on structured SCOPE) yield to operator ``force``.
+        Without ``force``: OOS / NOT_CONFIRMED / L3 / prohibited block as usual.
+        With ``force``: operator override for **all** gates including OUT_OF_SCOPE
+        (audited via ``force_override``). Risk is the operator's.
         """
         host = host_from_target(host_or_url)
-        if self.target_out_of_scope(host_or_url):
-            raise PermissionError(
-                f"host out of scope: {host or host_or_url} "
-                "(OUT_OF_SCOPE cannot be overridden with /force)"
-            )
-
-        in_scope = self.target_in_scope(host_or_url)
-        status = "IN_SCOPE" if in_scope else "NOT_CONFIRMED"
-        level = self.classify_aggression(action, tool=tool)
         warnings: list[str] = []
         force_override = False
 
-        if not in_scope:
+        if self.target_out_of_scope(host_or_url):
+            if force:
+                force_override = True
+                warnings.append(
+                    f"target OUT_OF_SCOPE ({host or host_or_url}) — forced by operator"
+                )
+            else:
+                raise PermissionError(
+                    f"host out of scope: {host or host_or_url}. "
+                    "Remove from Out of Scope, or use /force (operator responsibility)."
+                )
+
+        in_scope = self.target_in_scope(host_or_url)
+        # Forced OOS still reports status honestly for audit/UI
+        if self.target_out_of_scope(host_or_url) and force:
+            status = "OUT_OF_SCOPE_FORCED"
+        else:
+            status = "IN_SCOPE" if in_scope else "NOT_CONFIRMED"
+        level = self.classify_aggression(action, tool=tool)
+
+        if not in_scope and not (force and self.target_out_of_scope(host_or_url)):
             if force:
                 force_override = True
                 warnings.append(

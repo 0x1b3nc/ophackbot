@@ -6,7 +6,9 @@ pentests, and learning. I don't point it at systems without permission.
 ## Non-negotiable for me
 
 - Every target needs a `SCOPE.md`
-- Explicitly **OUT_OF_SCOPE** hosts stay hard-blocked (even with `/force`)
+- Without `/force`, explicitly **OUT_OF_SCOPE** hosts stay blocked
+- With `/force on` (also enabled by `/yolo on`), the operator can override **all**
+  SCOPE gates including OOS — legal/operational risk is theirs alone
 - Active testing should map to policy text by default
 - Destructive / level-3 work needs explicit SCOPE wording **or** a conscious
   `/force` override, then **approve**, then execute
@@ -32,19 +34,19 @@ pentests, and learning. I don't point it at systems without permission.
 ## Operator model
 
 ```text
-SCOPE (default gates)  →  /force (soft override, my responsibility)
+SCOPE (default gates)  →  /force (full override, my responsibility)
                        →  approve (Confirm before live traffic)
                        →  execute
 ```
 
-`/force` does **not** skip approve. It does **not** unlock hosts marked
-OUT_OF_SCOPE. It only overrides soft gates: level-3 / active-testing wording
-missing from SCOPE, and hosts still `NOT_CONFIRMED`.
+`/force` does **not** skip approve (unless `/yolo on`). It **does** unlock hosts
+marked OUT_OF_SCOPE, soft gates (level-3 / active-testing wording missing),
+prohibited matches, and hosts still `NOT_CONFIRMED` — audited as
+`force_override`.
 
 HTTP redirects and derived fetches (HAR/OpenAPI/surface) re-gate each
 **effective destination**. An in-scope hop that lands on an OOS host is
-hard-blocked without force; intentional `/force` for soft-gated destinations
-stays operator responsibility.
+blocked without force; with `/force`, the operator owns that hop.
 
 Structured SCOPE may list URL rules (scheme/port/path prefix) and CIDR/IP
 ranges. `prohibited` blocks matching tools/actions unless `/force`. On

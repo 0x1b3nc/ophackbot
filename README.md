@@ -152,8 +152,9 @@ Allow this action? y/n (n):
 Then type `y` or `n` (or `approve` / `deny`). That's the real gate.
 
 `/hunt … --approve` (or saying "approve" in NL) unlocks live traffic for that
-hunt loop. OUT_OF_SCOPE stays blocked. `/force` only softens "not confirmed /
-missing active-testing wording". It never unlocks OOS and never skips approve.
+hunt loop. Without `/force`, OUT_OF_SCOPE stays blocked. `/force on` overrides
+**all** SCOPE gates (including OOS) — risk is yours. It never skips approve
+unless `/yolo on`.
 
 ## Hunt
 
@@ -255,11 +256,11 @@ ai_eval_run url=https://chat.example.com/v1/chat families=prompt-injection,rag,t
 ## Safety (the short version)
 
 - Every program needs `targets/<name>/SCOPE.md`
-- Explicit OUT_OF_SCOPE is hard-blocked (even with `/force` / `/yolo`)
+- Without `/force`, OUT_OF_SCOPE stays blocked; with `/force` / `/yolo`, operator owns OOS too
 - Exact hosts in `in_scope` beat wildcards like `*.example.com` in OOS
-- Soft gates need `/force` **and** approve (unless `/yolo on`)
-- Redirects get re-checked (HTTP and Playwright)
-- `prohibited` in SCOPE is real (e.g. heavy automated scanning)
+- Soft/hard SCOPE gates need `/force` **and** approve (unless `/yolo on`)
+- Redirects get re-checked (HTTP and Playwright); force applies per hop
+- `prohibited` in SCOPE is real unless `/force` (e.g. heavy automated scanning)
 - Secrets get redacted; crank it with `HACKBOT_STRICT_REDACT=1` if you want
 - Approvals land in local `audit.log` (gitignored)
 
@@ -287,7 +288,7 @@ In the REPL:
 inicie o hunting
 ```
 
-`/yolo on` skips approve prompts and turns force on. OOS stays blocked. Password
+`/yolo on` skips approve prompts and turns force on (including OOS). Password
 never goes in git (`.hackbot/` is ignored). Step mode still pauses after each
 hunt act (`HACKBOT_STEP_MODE=0` for the old full-budget loop).
 

@@ -322,7 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
     pb_p.add_argument("--target-dir", default="targets/demo", help="Target folder for --run")
     pb_p.add_argument("--run", action="store_true", help="Dry-run executable steps (or --approve)")
     pb_p.add_argument("--approve", action="store_true", help="Execute playbook (asks confirmation)")
-    pb_p.add_argument("--force", action="store_true", help="Operator force override for soft SCOPE gates")
+    pb_p.add_argument("--force", action="store_true", help="Operator force override for all SCOPE gates (incl. OOS)")
     pb_p.add_argument("--max-aggression", type=int, default=None)
 
     pol_p = sub.add_parser("policy-import", help="Import policy text into SCOPE.md YAML")

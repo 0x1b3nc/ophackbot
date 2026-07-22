@@ -1,6 +1,7 @@
 # Copy to configs/hackbot.yaml to customize. Loaded by hackbot.config.
 # Precedence: env (HACKBOT_MAX_RPS, HACKBOT_SUBPROCESS_TIMEOUT) > this file > defaults.
-# OOS hard-block, SCOPE.md requirement, and approve for destructive actions cannot be disabled.
+# OOS is blocked by default (overridable only via /force), SCOPE.md is required,
+# and approve for destructive actions cannot be disabled by this file.
 
 workspace: .
 

@@ -697,7 +697,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "description": (
             "Autonomous OODA hunt: map surface → prioritize → specialist modules with chaining "
             "→ validate → FINDINGS. Session approve (--approve) unlocks active traffic for the "
-            "whole loop; OOS still hard-blocked. Prefer this over run_campaign for open-ended hunts."
+            "whole loop; OOS blocked unless /force (YOLO turns force on). Prefer this over run_campaign for open-ended hunts."
         ),
         "parameters": {
             "type": "object",
@@ -1976,7 +1976,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "Run or dry-run an external tool (httpx, katana, nuclei, ffuf, reconftw, "
             "hexstrike, burp, rate_probe). Default approve=false (dry-run only). "
             "approve=true sends real traffic and requires operator confirmation. "
-            "force=true overrides soft SCOPE gates (not OUT_OF_SCOPE)."
+            "force=true overrides ALL SCOPE gates including OUT_OF_SCOPE "
+            "(operator responsibility)."
         ),
         "parameters": {
             "type": "object",

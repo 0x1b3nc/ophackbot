@@ -41,7 +41,7 @@ toad acp "python -m hackbot acp" .
 | --- | --- |
 | Toad | TUI: markdown, prompt editor, shell (`!`), sessions |
 | `hackbot acp` | stdio ACP agent → same brains/tools as the REPL |
-| SCOPE / YOLO | Rails stay in the kit; ACP sessions enable YOLO (OOS still blocked) |
+| SCOPE / YOLO | Rails stay in the kit; ACP sessions enable YOLO (force on, OOS overridable) |
 
 Stdout of `hackbot acp` is **JSON-RPC only**. Rich tool chatter goes to stderr /
 the host terminal.

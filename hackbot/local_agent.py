@@ -2144,7 +2144,7 @@ def build_plan(text: str, interp: Interpretation) -> list[Action]:
     if interp.force and ("run" in intents or "playbook_run" in intents):
         plan.append(
             Action(
-                "FORCE is on — soft SCOPE gates may be overridden; OUT_OF_SCOPE still blocked; "
+                "FORCE is on — ALL SCOPE gates may be overridden (incl. OUT_OF_SCOPE); "
                 "approve still required for live traffic. Responsibility is yours.",
                 "_note",
                 {"message": "force override active (operator responsibility)"},

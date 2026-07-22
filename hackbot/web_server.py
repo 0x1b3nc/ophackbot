@@ -210,10 +210,12 @@ def start_web_ui(
         return 1
     global STATIC_DIR
     STATIC_DIR = static
-    # Web sessions auto-approve (no Confirm in browser); still OOS-blocked.
+    # Web sessions auto-approve (no Confirm in browser); force on with YOLO.
     if not is_yolo():
         enable_yolo()
-        ui.warn("web UI enabled YOLO for this process (approve skipped; OOS still blocked)")
+        ui.warn(
+            "web UI enabled YOLO for this process (approve skipped; force on incl. OOS)"
+        )
     httpd = ThreadingHTTPServer((host, port), HackbotHandler)
     url = f"http://{host}:{port}/"
     ui.success(f"hackbot ui → {url}")

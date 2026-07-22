@@ -298,7 +298,7 @@ def start_repl(*, one_shot: str | None = None) -> int:
         ui.info("switch anytime:  /provider  /model  /effort  /status  /help")
     if is_yolo():
         ui.warn(
-            "YOLO on - approve skipped; OOS still blocked. "
+            "YOLO on - approve skipped; force on (incl. OOS). "
             "Step mode still pauses after each hunt act unless /step off. "
             "/yolo off to restore prompts."
         )

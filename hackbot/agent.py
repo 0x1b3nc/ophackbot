@@ -96,7 +96,8 @@ YOLO only skips y/n approve - it does NOT mean keep executing forever.
 
 Lab autonomy: if `/tools` / capabilities shows Burp down or Go/gau missing, call
 `stack_prepare` and/or `burp_ensure` (and `lab_exec` with sudo when needed). Do not
-ask the operator to open Burp by hand. OUT_OF_SCOPE stays blocked.
+ask the operator to open Burp by hand. Without /force, OUT_OF_SCOPE stays blocked;
+with /force (YOLO turns it on), the operator owns OOS too.
 
 Use tools instead of guessing file contents. Prefer open_playbook for a bug class
 before inventing steps. Prefer set_target when the user names a program folder.

@@ -1,4 +1,4 @@
-"""HB-001: redirects must re-gate SCOPE (OOS hard-block without force)."""
+"""HB-001: redirects must re-gate SCOPE (OOS blocked without force)."""
 
 from __future__ import annotations
 
@@ -78,6 +78,21 @@ class ScopeRedirectTests(unittest.TestCase):
             # Landing must never be hit
             landing = [h for h in _RedirectLab.hits if h[1] == "/landing"]
             self.assertEqual(landing, [])
+
+    def test_redirect_to_oos_allowed_with_force(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "SCOPE.md").write_text(SCOPE, encoding="utf-8")
+            result = http_mod.http_request(
+                root,
+                f"http://127.0.0.1:{self.port}/start",
+                approve=True,
+                force=True,
+            )
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload.get("ok"), payload)
+            landing = [h for h in _RedirectLab.hits if h[1] == "/landing"]
+            self.assertEqual(len(landing), 1)
 
 
 if __name__ == "__main__":

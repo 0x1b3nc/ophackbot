@@ -1,7 +1,7 @@
 """Shared turn runner for non-REPL front-ends (ACP / deprecated web UI).
 
 Resolves the same provider rails as the REPL (codex / cursor / model / offline)
-and auto-approves via YOLO (OOS still blocked).
+and auto-approves via YOLO (force on; OOS overridable).
 """
 
 from __future__ import annotations

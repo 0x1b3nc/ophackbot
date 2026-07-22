@@ -1,8 +1,7 @@
 """HTTP transport that re-validates SCOPE on every redirect hop.
 
-Operator ``force`` still unlocks soft gates (NOT_CONFIRMED / L3 wording).
-Explicit OUT_OF_SCOPE remains hard-blocked on every hop — silent redirect
-bypass is a bug; intentional force is the operator's responsibility.
+Without ``force``, OOS / soft gates still block on every hop (silent redirect
+bypass is a bug). With ``force``, the operator may follow any hop — risk is theirs.
 """
 
 from __future__ import annotations
@@ -66,7 +65,7 @@ class ScopedRedirectHandler(HTTPRedirectHandler):
             raise PermissionError(
                 f"redirect hop limit ({self.max_hops}) exceeded at {absolute}"
             )
-        # Re-gate every hop (OOS hard-block; soft gates honor force)
+        # Re-gate every hop (OOS blocked unless force)
         _gate(
             self.target_dir,
             absolute,

@@ -161,7 +161,7 @@ def collect_capabilities(*, prompt: str = "", probe_network: bool = True) -> dic
             "study": "open_knowledge reaches extreme notes always; study-extreme env = all tools",
             "workflow": "workflow_load / workflow_run (dry default) — see docs/WORKFLOW_HARNESS.md",
             "lab": "stack_prepare / burp_ensure / lab_exec (sudo via .hackbot/sudo_pass)",
-            "yolo": "/yolo on → skip y/n (OOS still blocked; step mode still pauses)",
+            "yolo": "/yolo on → skip y/n + force on (incl. OOS); step mode still pauses",
             "step_mode": "/step off or HACKBOT_STEP_MODE=0 → full hunt until finding/budget",
             "all_tools": "HACKBOT_TOOL_PACK=all (also: advanced / study-extreme)",
         },

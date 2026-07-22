@@ -134,7 +134,9 @@ def load_config(
         notes.append("require_scope_file=false ignored (SCOPE.md remains mandatory)")
         safety = SafetyConfig(**{**asdict(safety), "require_scope_file": True})
     if not safety.block_out_of_scope:
-        notes.append("block_out_of_scope=false ignored (OOS stays hard-blocked)")
+        notes.append(
+            "block_out_of_scope=false ignored (OOS stays blocked unless /force)"
+        )
         safety = SafetyConfig(**{**asdict(safety), "block_out_of_scope": True})
     if not safety.destructive_actions_require_approval:
         notes.append(

@@ -16,7 +16,7 @@ Linux: `source .venv/bin/activate` then `python -m hackbot`.
 ## YOLO + lab tools
 
 ```text
-/yolo on|off          # skip y/n; force on; OOS still blocked
+/yolo on|off          # skip y/n; force on (incl. OOS); risk is yours
 stack_prepare         # fix Go/gau PATH for this process
 burp_ensure           # start Burp Community + wait for local REST
 lab_exec              # local shell; sudo via HACKBOT_SUDO_PASS or .hackbot/sudo_pass

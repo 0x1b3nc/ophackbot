@@ -1,4 +1,4 @@
-"""Tests for /force session flag and policy soft-gate overrides."""
+"""Tests for /force session flag and policy gate overrides (incl. OOS)."""
 
 from __future__ import annotations
 
@@ -80,10 +80,19 @@ class ForcePolicyGateTests(unittest.TestCase):
         self.assertTrue(gate["force_override"])
         self.assertEqual(gate["aggression"], 3)
 
-    def test_oos_blocked_even_with_force(self) -> None:
+    def test_oos_blocked_without_force(self) -> None:
         policy = self._policy(SCOPE_WITH_OOS)
         with self.assertRaises(PermissionError):
-            policy.assert_action_allowed("admin.example.com", "httpx", force=True)
+            policy.assert_action_allowed("admin.example.com", "httpx", force=False)
+
+    def test_oos_allowed_with_force(self) -> None:
+        policy = self._policy(SCOPE_WITH_OOS)
+        gate = policy.assert_action_allowed("admin.example.com", "httpx", force=True)
+        self.assertTrue(gate["force_override"])
+        self.assertEqual(gate["status"], "OUT_OF_SCOPE_FORCED")
+        self.assertTrue(
+            any("OUT_OF_SCOPE" in w for w in (gate.get("warnings") or []))
+        )
 
     def test_not_confirmed_needs_force(self) -> None:
         policy = self._policy(SCOPE_NO_L3)

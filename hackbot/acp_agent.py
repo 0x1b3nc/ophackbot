@@ -1,7 +1,7 @@
 """ACP (Agent Client Protocol) stdio agent for Toad / Zed / other ACP clients.
 
 Stdout is reserved for JSON-RPC. Rich logs go to stderr. Approvals use YOLO
-(OOS still blocked). Launch via::
+(force on; OOS overridable). Launch via::
 
     toad acp "python -m hackbot acp" .
     # or: python -m hackbot acp
@@ -89,7 +89,7 @@ def start_acp_agent() -> int:
     )
     if not is_yolo():
         enable_yolo(quiet=True)
-        _LOG.info("YOLO enabled for ACP session (OOS still blocked)")
+        _LOG.info("YOLO enabled for ACP session (force on; OOS overridable)")
 
     mode, label = resolve_mode()
     _LOG.info("hackbot ACP ready · %s", label)

@@ -1,12 +1,12 @@
 # AGENTS.md — Hackbot operator contract
 
-Hard rules (never weaken):
+Hard rules (never weaken without operator `/force`):
 
-1. **SCOPE.md is law** — OUT_OF_SCOPE traffic is blocked; `/force` cannot override OOS.
-2. **Dry-run default** — traffic tools use `approve=false` unless the operator approves ACTIVE.
+1. **SCOPE.md is law by default** — OUT_OF_SCOPE / soft gates block until the operator turns `/force on` (full override; risk is theirs). YOLO turns force on.
+2. **Dry-run default** — traffic tools use `approve=false` unless the operator approves ACTIVE (YOLO skips approve prompts).
 3. **Redaction** — evidence goes through redaction; no secrets in git.
 4. **STEP_MODE mindset** — one significant action per turn when step mode is on: hypothesis → tool → evidence → stop → next suggestion.
-5. **No DoS / destruction** — smuggle/cache probes are detection-only; prohibited playbook = identify + stop.
+5. **No DoS / destruction by default** — smuggle/cache probes are detection-only; prohibited playbook = identify + stop unless `/force`.
 
 ## Packs
 
