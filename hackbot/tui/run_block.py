@@ -100,24 +100,29 @@ class RunBlock(Vertical):
     }
     RunBlock > .run-head {
         width: 100%;
+        height: auto;
         color: #64D9E8;
         text-style: bold;
+        text-wrap: wrap;
     }
     RunBlock > .msg-out {
         width: 100%;
         height: auto;
         color: #E8E8FF;
         padding: 0 1 0 0;
+        text-wrap: wrap;
     }
     """
 
-    def __init__(self, cmd: str, **kwargs: Any) -> None:
+    def __init__(self, cmd: str, *, kind: str = "shell", pending_out: str | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.cmd = (cmd or "").strip() or "(command)"
+        self.kind = kind if kind in {"shell", "panel"} else "shell"
         self.full_out = ""
         self.expanded = False
         self.duration = ""
         self.exit_code = ""
+        self._pending_out = pending_out
         wid = kwargs.get("id") or self.id
         self._head_id = f"{wid}-head" if wid else None
         self._body_id = f"{wid}-body" if wid else None
@@ -125,14 +130,22 @@ class RunBlock(Vertical):
     def compose(self) -> ComposeResult:
         yield Static(self._head_label(), classes="run-head", markup=False, id=self._head_id)
         yield CopyableStatic(
-            "(waiting for output…)",
+            "(waiting for output…)" if self.kind == "shell" else "",
             plain="",
             classes="msg-out",
             id=self._body_id,
         )
 
+    def on_mount(self) -> None:
+        if self._pending_out is not None:
+            out = self._pending_out
+            self._pending_out = None
+            self.set_output(out)
+
     def _head_label(self) -> str:
         cmd = self.cmd if len(self.cmd) <= 140 else self.cmd[:137] + "…"
+        if self.kind == "panel":
+            return f"── {cmd} ──"
         bits = [f"$ {cmd}"]
         if self.duration:
             bits.append(self.duration)

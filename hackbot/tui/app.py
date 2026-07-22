@@ -131,17 +131,19 @@ class HackbotTUI(App[None]):
         color: {TEXT};
         margin-bottom: 1;
     }}
-    .msg-live {{
-        width: 100%;
-        height: auto;
-        color: {SECONDARY};
-        margin: 1 0;
-    }}
     .msg-out {{
         width: 100%;
         height: auto;
         color: {TEXT};
         padding: 0 1;
+        text-wrap: wrap;
+    }}
+    .msg-live {{
+        width: 100%;
+        height: auto;
+        color: {SECONDARY};
+        margin: 1 0;
+        text-wrap: wrap;
     }}
     .msg-bot {{
         margin: 1 0;
@@ -372,6 +374,7 @@ class HackbotTUI(App[None]):
                 "tool": "tool",
                 "run": "run",
                 "out": "out",
+                "panel": "panel",
                 "working": "···",
                 "info": "·",
                 "log": "log",
@@ -382,6 +385,9 @@ class HackbotTUI(App[None]):
             body = text.strip()
             if label == "run":
                 self._append_run_block(body)
+                return
+            if label == "panel":
+                self._append_panel_block(body)
                 return
             if label in {"out", "tool", "err", "log"}:
                 if len(body) > LIVE_OUT_CHARS:
@@ -426,6 +432,27 @@ class HackbotTUI(App[None]):
         self._ensure_live_line().update("◌ …")
         self._maybe_scroll_end()
 
+    def _append_panel_block(self, text: str) -> None:
+        """Titled dump (surface_map, args, …) — never merges into an open run."""
+        title, _, body = (text or "").partition("\n")
+        title = (title or "panel").strip() or "panel"
+        body = body.lstrip("\n")
+        chat = self._chat()
+        old_id = self._live_widget_id
+        self._msg_i += 1
+        panel_id = f"panel{self._msg_i}"
+        chat.mount(RunBlock(title, kind="panel", pending_out=body or "(empty)", id=panel_id))
+        self._chat_plain.append(f"{title}\n{body}")
+        self._active_run_id = None
+        if old_id:
+            try:
+                self.query_one(f"#{old_id}", Static).remove()
+            except Exception:  # noqa: BLE001
+                pass
+            self._live_widget_id = None
+        self._ensure_live_line().update("◌ …")
+        self._maybe_scroll_end()
+
     def _fill_run_output(self, text: str, *, mark: str = "") -> None:
         """Fill the open RunBlock (preview + fold), or fall back to a pin."""
         exit_s, dur_s, body = parse_out_payload(text)
@@ -436,6 +463,8 @@ class HackbotTUI(App[None]):
                 block = self.query_one(f"#{self._active_run_id}", RunBlock)
                 block.set_output(body or "(no output)", duration=dur_s, exit_code=exit_s)
                 self._chat_plain.append(body or "(no output)")
+                # Done with this run — later panels must not overwrite stdout.
+                self._active_run_id = None
                 self._maybe_scroll_end()
                 return
             except Exception:  # noqa: BLE001

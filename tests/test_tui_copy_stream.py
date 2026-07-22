@@ -61,10 +61,12 @@ async def test_run_out_fills_run_block(monkeypatch: pytest.MonkeyPatch) -> None:
         app._busy = True
         app._ingest_live("run", "echo hello")
         await pilot.pause()
-        assert app._active_run_id, "run block should track id"
+        run_id = app._active_run_id
+        assert run_id, "run block should track id"
         app._ingest_live("out/ok", "exit=0 dur=12ms\nhello\nworld")
         await pilot.pause()
-        block = app.query_one(f"#{app._active_run_id}", RunBlock)
+        assert app._active_run_id is None, "run slot clears after out"
+        block = app.query_one(f"#{run_id}", RunBlock)
         assert block.duration == "12ms"
         assert "hello" in block.full_out
         assert "world" in block.full_out
@@ -81,9 +83,10 @@ async def test_long_out_folds_with_hint(monkeypatch: pytest.MonkeyPatch) -> None
         app._busy = True
         app._ingest_live("run", "python3 <<'PY'")
         await pilot.pause()
+        run_id = app._active_run_id
         app._ingest_live("out/ok", f"exit=0\n{long_out}")
         await pilot.pause()
-        block = app.query_one(f"#{app._active_run_id}", RunBlock)
+        block = app.query_one(f"#{run_id}", RunBlock)
         assert not block.expanded
         _, hidden = fold_output(block.full_out)
         assert hidden > 0
@@ -93,6 +96,33 @@ async def test_long_out_folds_with_hint(monkeypatch: pytest.MonkeyPatch) -> None
         block._render_body()
         body = app.query_one(f"#{block._body_id}", CopyableStatic)
         assert "L19" in body.plain_source
+
+
+@pytest.mark.asyncio
+async def test_panel_kind_is_separate_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    from hackbot.tui.app import HackbotTUI
+
+    app = HackbotTUI()
+    monkeypatch.setattr(HackbotTUI, "turn_runner", staticmethod(lambda t: "done"))
+    async with app.run_test() as pilot:
+        app._busy = True
+        app._ingest_live("run", "echo hi")
+        await pilot.pause()
+        run_id = app._active_run_id
+        app._ingest_live(
+            "panel",
+            'surface_map\n{\n  "seed": "https://api.glassdoor.com/",\n  "host": "api.glassdoor.com"\n}',
+        )
+        await pilot.pause()
+        assert app._active_run_id is None
+        panels = list(app.query(RunBlock))
+        assert any(b.kind == "panel" and b.cmd == "surface_map" for b in panels)
+        panel = next(b for b in panels if b.kind == "panel")
+        assert "api.glassdoor.com" in panel.full_out
+        assert "glassdoor.co..." not in panel.full_out
+        assert run_id
+        run = app.query_one(f"#{run_id}", RunBlock)
+        assert run.full_out == ""
 
 
 @pytest.mark.asyncio
@@ -110,7 +140,11 @@ async def test_click_stream_pin_copies(monkeypatch: pytest.MonkeyPatch) -> None:
     async with app.run_test() as pilot:
         app._append_live_pin('out  {"ok": true}', raw=True)
         await pilot.pause()
-        pin = app.query_one(".msg-live", CopyableStatic)
+        pin = next(
+            w
+            for w in app.query(CopyableStatic)
+            if (w.plain_source or "").startswith("out  ")
+        )
         await pilot.click(f"#{pin.id}")
         await pilot.pause()
         assert copied

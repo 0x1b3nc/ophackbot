@@ -173,12 +173,43 @@ def splash() -> None:
     console.print()
 
 
+def plain_ui() -> bool:
+    """True when panels must not use Rich chrome (TUI / piped Codex capture)."""
+    if _force_plain:
+        return True
+    try:
+        return not console.is_terminal
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def rule(title: str = "") -> None:
+    label = f"─── {title} ───" if title else "────────"
+    try:
+        from .live_feed import emit
+
+        emit("log", label)
+    except Exception:  # noqa: BLE001
+        pass
+    if plain_ui():
+        console.print(label)
+        return
     console.print(Rule(title, style="dim"))
 
 
 def kv(label: str, value: str, *, style: str = "hb.info") -> None:
     width = max(14, min(28, len(label) + 2))
+    plain = f"{label:<{width}}{value}"
+    try:
+        from .live_feed import emit
+
+        emit("log", plain)
+    except Exception:  # noqa: BLE001
+        pass
+    if plain_ui():
+        # Full line — no Panel/Syntax width ellipsis when Codex captures stdout.
+        console.print(plain)
+        return
     line = Text()
     line.append(f"{label:<{width}}", style="hb.label")
     line.append(value, style=style)
@@ -648,16 +679,22 @@ def markdown_panel(md: str, *, title: str) -> None:
 
 
 def code_panel(code: str, *, title: str = "command", lexer: str = "bash") -> None:
+    # JSON / bash plans stay intact. Only squash huge HTML text dumps.
     body = compact_text(code, max_chars=2400) if lexer in {"text", "html", "xml"} else code
     if lexer == "text" and ("<html" in body[:200].lower() or "<!doctype" in body[:80].lower()):
         body = compact_text(body, max_chars=1800)
-    # TUI mutes Rich console.print — mirror plain body into the live feed.
+    # ``panel`` (not ``out``) so the TUI never merges this into an open RunBlock.
     try:
         from .live_feed import emit
 
-        emit("out", f"{title}\n{body}")
+        emit("panel", f"{title}\n{body}")
     except Exception:  # noqa: BLE001
         pass
+    if plain_ui():
+        # Codex captures tool stdout via a pipe. Rich Panel/Syntax ellipsis-clips
+        # long lines to a tiny width — operators saw ``surface_map`` cut mid-URL.
+        console.print(f"── {title} ──\n{body}", highlight=False, crop=False, overflow="ignore")
+        return
     console.print(
         Panel(
             Syntax(body, lexer, theme="monokai", word_wrap=True),
@@ -707,15 +744,24 @@ def blocked(msg: str) -> None:
 
 def file_panel(path: str, text: str, *, title: str | None = None) -> None:
     shown_title = title or path
+    body = text or ""
     try:
         from .live_feed import emit
 
-        emit("out", f"{shown_title}\n{text}")
+        emit("panel", f"{shown_title}\n{body}")
     except Exception:  # noqa: BLE001
         pass
+    if plain_ui():
+        console.print(
+            f"── {shown_title} ──\n{body}",
+            highlight=False,
+            crop=False,
+            overflow="ignore",
+        )
+        return
     console.print(
         Panel(
-            Markdown(text) if text.lstrip().startswith("#") else Text(text),
+            Markdown(body) if body.lstrip().startswith("#") else Text(body),
             title=shown_title,
             subtitle=str(path),
             subtitle_align="right",
