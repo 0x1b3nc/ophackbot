@@ -150,8 +150,8 @@ def start_tui() -> int:
     class PromptArea(TextArea):
         """Multiline composer — Enter sends; Shift+Enter = newline.
 
-        Textual enables the Kitty keyboard protocol so Shift+Enter is distinct
-        from Enter in supporting terminals. Ctrl+J / Alt+Enter remain fallbacks.
+        Textual's TextArea hardcodes enter→newline in ``_on_key`` (before
+        bindings), so we must override that handler or Enter can never send.
         """
 
         BINDINGS = [
@@ -160,6 +160,21 @@ def start_tui() -> int:
             Binding("ctrl+j", "newline", "newline", show=False, priority=True),
             Binding("alt+enter", "newline", "newline", show=False, priority=True),
         ]
+
+        async def _on_key(self, event) -> None:  # noqa: ANN001
+            """Intercept Enter/Shift+Enter before TextArea inserts a newline."""
+            key = getattr(event, "key", "") or ""
+            if key == "enter":
+                event.stop()
+                event.prevent_default()
+                self.action_submit_prompt()
+                return
+            if key in {"shift+enter", "ctrl+j", "alt+enter"}:
+                event.stop()
+                event.prevent_default()
+                self.action_newline()
+                return
+            await super()._on_key(event)
 
         def action_submit_prompt(self) -> None:
             submit = getattr(self.app, "submit_composer", None)
