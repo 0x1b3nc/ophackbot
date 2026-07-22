@@ -201,6 +201,16 @@ def run_agent(
 
     try:
         for _ in range(max_iters):
+            try:
+                from .turn_bus import turn_cancel_requested
+
+                if turn_cancel_requested():
+                    ui.warn("cancelled")
+                    _trim_history(messages)
+                    ui.turn_timing(time.perf_counter() - started, tools_used)
+                    return messages
+            except Exception:  # noqa: BLE001
+                pass
             response = _one_llm_call(system, messages, tools, effort)
             if response is None:
                 _trim_history(messages)

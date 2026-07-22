@@ -9,11 +9,17 @@ from hackbot.prompt_line import ask_operator_line
 
 
 class PromptLineTests(unittest.TestCase):
-    def test_uses_prompt_toolkit_when_present(self) -> None:
-        with mock.patch("prompt_toolkit.prompt", return_value="  hello  ") as pt:
+    def test_uses_prompt_toolkit_session_when_present(self) -> None:
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest("prompt_toolkit not installed")
+        session = mock.Mock()
+        session.prompt.return_value = "  hello  "
+        with mock.patch("hackbot.prompt_line._SESSION", session):
             out = ask_operator_line("codex · auto · aylo")
         self.assertEqual(out, "hello")
-        pt.assert_called_once()
+        session.prompt.assert_called_once()
 
     def test_fallback_when_import_fails(self) -> None:
         import builtins

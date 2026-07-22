@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -37,8 +38,39 @@ _CODEX_AVAIL_TTL = 90.0
 # After the first successful exec in this process, resume --last for speed.
 _CODEX_SESSION_READY = False
 _CODEX_LAST_SANDBOX: str | None = None
+_CODEX_CANCEL = threading.Event()
+_CODEX_PROC: subprocess.Popen[str] | None = None
+_CODEX_PROC_LOCK = threading.Lock()
 
 _SANDBOX_OK = frozenset({"read-only", "workspace-write", "danger-full-access"})
+
+
+def request_codex_cancel() -> None:
+    """Kill in-flight ``codex exec`` (operator interrupt / queued message)."""
+    global _CODEX_PROC
+    _CODEX_CANCEL.set()
+    with _CODEX_PROC_LOCK:
+        proc = _CODEX_PROC
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def clear_codex_cancel() -> None:
+    _CODEX_CANCEL.clear()
+
+
+def codex_cancel_requested() -> bool:
+    if _CODEX_CANCEL.is_set():
+        return True
+    try:
+        from .turn_bus import turn_cancel_requested
+
+        return turn_cancel_requested()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def ui_text(text: str, style: str) -> _Text:
@@ -824,6 +856,11 @@ def run_codex_turn(
         ui.turn_timing(time.perf_counter() - started, 0)
         return answer
     stdout, error, stream_meta = captured
+    if (error or "").strip() == "(cancelled)" or codex_cancel_requested():
+        out_path.unlink(missing_ok=True)
+        ui.warn("cancelled")
+        ui.turn_timing(time.perf_counter() - started, 0)
+        return "(cancelled)"
 
     answer = ""
     if out_path.exists():
@@ -1210,22 +1247,42 @@ def _handle_event(
 def _run_quiet(
     cmd: list[str], prompt: str, timeout: int
 ) -> tuple[str, str, dict[str, Any]] | None:
+    """Non-stream exec via Popen so operator interrupt can kill mid-flight."""
+    global _CODEX_PROC
     try:
-        with ui.console.status("[cyan]codex is thinking...[/]", spinner="dots"):
-            proc = subprocess.run(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-            )
-    except subprocess.TimeoutExpired:
-        return "", f"(codex timed out after {timeout}s)", {}
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
     except OSError as exc:
         return "", f"(could not launch codex: {exc})", {}
-    return proc.stdout or "", proc.stderr or "", {}
+    with _CODEX_PROC_LOCK:
+        _CODEX_PROC = proc
+    try:
+        with ui.console.status("[cyan]codex is thinking...[/]", spinner="dots"):
+            assert proc.stdin is not None
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                return "", f"(codex timed out after {timeout}s)", {}
+        if codex_cancel_requested():
+            return "", "(cancelled)", {}
+        return stdout or "", stderr or "", {}
+    except KeyboardInterrupt:
+        proc.kill()
+        raise
+    finally:
+        with _CODEX_PROC_LOCK:
+            if _CODEX_PROC is proc:
+                _CODEX_PROC = None
 
 
 def _run_streaming(
@@ -1237,6 +1294,7 @@ def _run_streaming(
     Spinner only until the first progress line — then plain append-only output
     (restarting Rich Status was wiping the feeling of a live stream).
     """
+    global _CODEX_PROC
     try:
         proc = subprocess.Popen(
             cmd,
@@ -1251,6 +1309,9 @@ def _run_streaming(
     except OSError as exc:
         return "", f"(could not launch codex: {exc})", {}
 
+    with _CODEX_PROC_LOCK:
+        _CODEX_PROC = proc
+
     errbuf: list[str] = []
     printed_hdr: dict[str, Any] = {}
     answer_sink: list[str] = []
@@ -1258,6 +1319,7 @@ def _run_streaming(
     assert proc.stdout is not None and proc.stdin is not None
     status = ui.console.status("[cyan]codex is thinking...[/]", spinner="dots")
     status_live = False
+    cancelled = False
     trace = os.environ.get("HACKBOT_CODEX_TRACE", "").strip().lower() in {
         "1",
         "true",
@@ -1279,6 +1341,10 @@ def _run_streaming(
         status.start()
         status_live = True
         for raw_line in proc.stdout:
+            if codex_cancel_requested():
+                cancelled = True
+                proc.kill()
+                break
             raw_line = raw_line.rstrip("\r\n")
             if not raw_line:
                 continue
@@ -1305,17 +1371,24 @@ def _run_streaming(
                     answer_sink=answer_sink,
                     meta=meta,
                 )
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            return "", f"(codex timed out after {timeout}s)", meta
+        if not cancelled:
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                return "", f"(codex timed out after {timeout}s)", meta
     except KeyboardInterrupt:
         proc.kill()
         raise
     finally:
         _stop_spinner()
         ui.stop_live()
+        with _CODEX_PROC_LOCK:
+            if _CODEX_PROC is proc:
+                _CODEX_PROC = None
+    if cancelled or codex_cancel_requested():
+        ui.warn("codex interrupted")
+        return "", "(cancelled)", meta
     if printed_hdr.get("v"):
         ui.console.print()
     return (answer_sink[-1] if answer_sink else ""), "\n".join(errbuf), meta

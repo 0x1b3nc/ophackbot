@@ -27,7 +27,7 @@ from .hunt_controller import hunt_status, request_stop, run_hunt
 from .identity import save_session
 from .local_agent import run_local_agent
 from .operator_gate import operator_prompt_active
-from .prompt_line import ask_operator_line
+from .prompt_line import ask_operator_line, ask_yes_no, operator_input_session
 from .providers import (
     EFFORT_LEVELS,
     PROVIDERS,
@@ -43,6 +43,7 @@ from .step_mode import (
     step_mode_enabled,
 )
 from .tools import execute_tool
+from .turn_bus import TurnBus, set_bus
 from .yolo import boot_yolo_from_env, disable_yolo, enable_yolo, is_yolo, yolo_auto_approve
 
 
@@ -54,7 +55,8 @@ def _approve(prompt: str) -> bool:
         ui.console.print()
         ui.permission(prompt)
         while True:
-            raw = Prompt.ask(
+            # run_in_terminal when the REPL PromptSession is open (turn worker).
+            raw = ask_yes_no(
                 "[bold yellow]Allow this action?[/] [dim]y/n[/]",
                 default="n",
             )
@@ -288,7 +290,93 @@ def start_repl(*, one_shot: str | None = None) -> int:
         return 0
 
     ui.info("chat is open. type a task, press Enter. it stays open.  /exit  /help")
+    ui.info("while a turn runs you can still type — Enter queues + interrupts")
     ui.console.print()
+
+    # Mutable brain label so slash cmds on the main thread update what the
+    # worker uses for the next turn.
+    brain = {"mode": mode, "label": label}
+
+    def _worker_turn(text: str) -> None:
+        ui.console.print()
+        if text.startswith("/hunt"):
+            _execute_hunt_line(text)
+        else:
+            maybe_disable_from_prompt(text)
+            _run_turn(brain["mode"], text, session)
+        ui.console.print()
+
+    try:
+        import prompt_toolkit  # noqa: F401
+
+        concurrent = True
+    except ImportError:
+        concurrent = False
+        ui.warn("prompt_toolkit missing — install it to type while a turn runs")
+
+    bus = TurnBus(sync=not concurrent)
+    set_bus(bus)
+    bus.start(_worker_turn)
+
+    with operator_input_session():
+        return _repl_loop(brain, session, bus)
+
+
+def _execute_hunt_line(text: str) -> None:
+    """Run ``/hunt <prompt> [--approve] [--budget N]`` (worker thread)."""
+    active = get_active()
+    if active is None:
+        ui.error("no active target — /target <name> first")
+        return
+    rest = text[len("/hunt") :].strip()
+    approve_session = bool(is_yolo())
+    budget = None
+    tokens = rest.split()
+    prompt_parts: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in {"--approve", "-a", "--yes"}:
+            approve_session = True
+            i += 1
+            continue
+        if tok == "--budget" and i + 1 < len(tokens):
+            try:
+                budget = int(tokens[i + 1])
+            except ValueError:
+                ui.error("--budget needs an integer")
+                return
+            i += 2
+            continue
+        prompt_parts.append(tok)
+        i += 1
+    prompt = " ".join(prompt_parts).strip()
+    if not prompt:
+        ui.error("usage: /hunt <prompt> [--approve]")
+        return
+    result = run_hunt(
+        active.target_dir,
+        prompt,
+        approve_session=approve_session,
+        budget=budget,
+        approve_fn=_approve if approve_session else None,
+        force=is_forced(),
+    )
+    ui.code_panel(
+        __import__("json").dumps(result, indent=2)[:4000],
+        title="hunt result",
+        lexer="json",
+    )
+
+
+def _repl_loop(brain: dict, session: _Session, bus: TurnBus) -> int:
+    """Main prompt loop — stays responsive while turns run on TurnBus."""
+    mode = brain["mode"]
+    label = brain["label"]
+
+    def _sync_brain() -> None:
+        brain["mode"] = mode
+        brain["label"] = label
 
     while True:
         try:
@@ -297,9 +385,22 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.ensure_prompt_line()
             tag = _prompt_label(mode)
             # prompt_toolkit: paste with trailing newline does NOT auto-submit.
+            # Session stays open during turns (patch_stdout) so you can queue.
             user = ask_operator_line(tag, fallback=Prompt.ask)
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             ui.console.print()
+            bus.shutdown()
+            set_bus(None)
+            ui.info("bye")
+            return 0
+        except KeyboardInterrupt:
+            ui.console.print()
+            if bus.is_busy():
+                bus.request_interrupt()
+                ui.warn("interrupted — keep typing, or /exit")
+                continue
+            bus.shutdown()
+            set_bus(None)
             ui.info("bye")
             return 0
 
@@ -316,6 +417,8 @@ def start_repl(*, one_shot: str | None = None) -> int:
             )
             continue
         if text in {"/exit", "/quit", "exit", "quit"}:
+            bus.shutdown()
+            set_bus(None)
             ui.info("bye")
             return 0
         if text == "/clear":
@@ -453,45 +556,8 @@ def start_repl(*, one_shot: str | None = None) -> int:
             if active is None:
                 ui.error("no active target — /target <name> first")
                 continue
-            approve_session = bool(is_yolo())
-            budget = None
-            tokens = rest.split()
-            prompt_parts: list[str] = []
-            i = 0
-            while i < len(tokens):
-                tok = tokens[i]
-                if tok in {"--approve", "-a", "--yes"}:
-                    approve_session = True
-                    i += 1
-                    continue
-                if tok == "--budget" and i + 1 < len(tokens):
-                    try:
-                        budget = int(tokens[i + 1])
-                    except ValueError:
-                        ui.error("--budget needs an integer")
-                        break
-                    i += 2
-                    continue
-                prompt_parts.append(tok)
-                i += 1
-            else:
-                prompt = " ".join(prompt_parts).strip()
-                if not prompt:
-                    ui.error("usage: /hunt <prompt> [--approve]")
-                    continue
-                result = run_hunt(
-                    active.target_dir,
-                    prompt,
-                    approve_session=approve_session,
-                    budget=budget,
-                    approve_fn=_approve if approve_session else None,
-                    force=is_forced(),
-                )
-                ui.code_panel(
-                    __import__("json").dumps(result, indent=2)[:4000],
-                    title="hunt result",
-                    lexer="json",
-                )
+            # Long hunt runs on the turn worker so the prompt stays open.
+            bus.submit(text)
             continue
 
         if text.startswith("/target"):
@@ -594,6 +660,7 @@ def start_repl(*, one_shot: str | None = None) -> int:
             if prev == "cursor" and arg != "cursor":
                 close_cursor_agent()
             mode, label = _resolve_mode()
+            _sync_brain()
             ui.success(f"provider -> {label}  (brain: {mode})")
             continue
         if text in {"/codex"}:
@@ -603,6 +670,7 @@ def start_repl(*, one_shot: str | None = None) -> int:
             # Force a fresh login-status check when the user asks for codex.
             codex_available(force=True)
             mode, label = _resolve_mode()
+            _sync_brain()
             if mode == "codex":
                 ui.success(f"switched to codex  ({label})")
             else:
@@ -611,6 +679,7 @@ def start_repl(*, one_shot: str | None = None) -> int:
         if text in {"/cursor"}:
             os.environ["HACKBOT_PROVIDER"] = "cursor"
             mode, label = _resolve_mode()
+            _sync_brain()
             if mode == "cursor":
                 ui.success(f"switched to cursor  ({label})")
             else:
@@ -636,6 +705,7 @@ def start_repl(*, one_shot: str | None = None) -> int:
                 close_cursor_agent()
             os.environ["HACKBOT_PROVIDER"] = "offline"
             mode, label = _resolve_mode()
+            _sync_brain()
             ui.success("switched to offline (rule-based) brain")
             continue
 
@@ -699,6 +769,7 @@ def start_repl(*, one_shot: str | None = None) -> int:
                 mode, label = _resolve_mode()
                 ui.success(f"model -> {canonical or '(plan default)'}  [{source}]")
             mode, label = _resolve_mode()
+            _sync_brain()
             continue
 
         # ---- reasoning effort --------------------------------------------
@@ -729,6 +800,7 @@ def start_repl(*, one_shot: str | None = None) -> int:
                 os.environ["HACKBOT_CURSOR_FAST"] = "1" if fast else "0"
                 close_cursor_agent()
             mode, label = _resolve_mode()
+            _sync_brain()
             msg = f"effort -> {level}"
             if fast is True:
                 msg += " + fast"
@@ -808,10 +880,9 @@ def start_repl(*, one_shot: str | None = None) -> int:
             )
             ui.info("lab:     stack_prepare / burp_ensure / lab_exec  (sudo: .hackbot/sudo_pass)")
             ui.info("stack:    /tools  (httpx/katana/nuclei/ffuf + HexStrike/Burp health)")
-            ui.info("session:  /clear  /exit   (Ctrl+C cancels a running turn)")
+            ui.info("session:  /clear  /exit   (Ctrl+C interrupts; type while busy to queue)")
             continue
 
-        # "não pausa / até achar" → full hunt (step mode off) for this session.
-        maybe_disable_from_prompt(text)
-        _run_turn(mode, text, session)
-        ui.console.print()
+        # Chat / hunt turns run on the background worker so the prompt stays open.
+        _sync_brain()
+        bus.submit(text)
