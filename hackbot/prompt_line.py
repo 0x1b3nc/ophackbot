@@ -36,7 +36,12 @@ def operator_input_session() -> Iterator[None]:
 
     session = PromptSession()
     _SESSION = session
-    patch_cm = patch_stdout()
+    # raw=True: keep Rich/ANSI SGR codes. Default patch_stdout strips ESC and
+    # leaves garbage like "?[1;32m✓?[0m" in the terminal.
+    try:
+        patch_cm = patch_stdout(raw=True)
+    except TypeError:
+        patch_cm = patch_stdout()
     _PATCH = patch_cm
     patch_cm.__enter__()
     try:
