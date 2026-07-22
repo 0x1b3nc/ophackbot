@@ -273,11 +273,19 @@ def run_agent(
                 except Exception:  # noqa: BLE001
                     pass
                 tools_used += 1
+                detail = ""
+                if isinstance(tc.arguments, dict):
+                    detail = str(
+                        tc.arguments.get("url")
+                        or tc.arguments.get("path")
+                        or tc.arguments.get("command")
+                        or ""
+                    )[:60]
                 if _verbose():
                     ui.kv("tool", tc.name)
                     ui.code_panel(json.dumps(tc.arguments, indent=2), title="args", lexer="json")
                 else:
-                    ui.tool_line(tc.name, "running")
+                    ui.tool_line(tc.name, "running", detail=detail)
                 result = execute_tool(tc.name, tc.arguments, approve_fn=approve_fn)
                 ok = True
                 try:
@@ -294,7 +302,7 @@ def run_agent(
                     preview = result if len(result) < 1200 else result[:1200] + "...(truncated)"
                     ui.code_panel(preview, title="result", lexer="json")
                 else:
-                    ui.tool_line(tc.name, "ok" if ok else "fail")
+                    ui.tool_line(tc.name, "ok" if ok else "fail", detail=detail)
                 messages.append(
                     {
                         "role": "tool",
@@ -343,7 +351,7 @@ def _one_llm_call(
             ui.markdown_panel(response.text, title="hackbot")
         return response
 
-    with ui.console.status("[cyan]thinking...[/]", spinner="dots"):
+    with ui.working("thinking…"):
         try:
             response = chat(
                 system=system,

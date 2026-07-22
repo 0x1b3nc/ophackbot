@@ -6,6 +6,9 @@ import json
 import os
 import re
 import sys
+from contextlib import contextmanager
+from typing import Iterator
+from urllib.parse import urlparse
 
 from rich.console import Console, Group
 from rich.markdown import Markdown
@@ -387,10 +390,148 @@ def stop_live() -> None:
         pass
 
 
-def ensure_prompt_line() -> None:
-    """Clean cursor + blank line before Prompt.ask (spinner/print races)."""
+def verbose_enabled() -> bool:
+    """Full JSON panels / dumps. Default off — Cursor-like one-liners."""
+    return os.environ.get("HACKBOT_VERBOSE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _prompt_session_open() -> bool:
+    try:
+        from .prompt_line import get_prompt_session
+
+        return get_prompt_session() is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@contextmanager
+def working(label: str = "working") -> Iterator[None]:
+    """Show in-flight work without gluing a Rich Status onto the PromptSession line.
+
+    When the concurrent REPL prompt is open, print one scrollback line instead of
+    ``console.status`` (which races the input row). Otherwise use a normal spinner.
+    """
     stop_live()
+    label = (label or "working").strip()
+    if _prompt_session_open():
+        console.print(Text.from_markup(f"[hb.muted]⠿[/] [cyan]{label}[/]"))
+        try:
+            yield
+        finally:
+            stop_live()
+        return
+    status = console.status(f"[cyan]{label}[/]", spinner="dots")
+    status.start()
+    try:
+        yield
+    finally:
+        try:
+            status.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        stop_live()
+
+
+def ensure_prompt_line() -> None:
+    """Clean cursor + blank line before the operator prompt (spinner/print races)."""
+    stop_live()
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001
+        pass
     console.print()
+
+
+def format_session_footer(*parts: str) -> str:
+    """Pure helper: ``codex · high · aylo · yolo · step off``."""
+    bits = [str(p).strip() for p in parts if str(p or "").strip()]
+    return " · ".join(bits)
+
+
+def session_footer(*parts: str) -> None:
+    """Dim status strip after a turn (Cursor-like session chrome)."""
+    line = format_session_footer(*parts)
+    if not line:
+        return
+    console.print(Text(line, style="hb.muted"))
+
+
+def short_host(url: str) -> str:
+    """Host (+ path snip) for compact action lines."""
+    raw = (url or "").strip()
+    if not raw:
+        return "?"
+    try:
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        host = parsed.netloc or parsed.path.split("/")[0] or raw
+        path = parsed.path or ""
+        if path in {"", "/"}:
+            return host
+        if len(path) > 36:
+            path = path[:33] + "…"
+        return f"{host}{path}"
+    except Exception:  # noqa: BLE001
+        return raw[:48]
+
+
+def format_http_action(
+    method: str,
+    url: str,
+    *,
+    status: int | None = None,
+    error: str | None = None,
+    elapsed_ms: float | None = None,
+) -> str:
+    """One-line HTTP summary for scrollback."""
+    method = (method or "GET").upper()
+    target = short_host(url)
+    if error:
+        err = str(error)
+        # Keep URLError/timeout readable without the full repr dump.
+        low = err.lower()
+        if "timed out" in low or "timeout" in low:
+            tail = "timeout"
+        elif "refused" in low:
+            tail = "connection refused"
+        else:
+            tail = err.split(":", 1)[0].strip()[:40]
+        return f"{method} {target} → {tail}"
+    if status is None:
+        return f"{method} {target}"
+    bits = [f"{method} {target} → {status}"]
+    if elapsed_ms is not None:
+        bits.append(f"{elapsed_ms:.0f}ms")
+    return " · ".join(bits)
+
+
+def action_line(kind: str, detail: str, *, ok: bool | None = None) -> None:
+    """Cursor-style action row: ``http  HEAD api.example → 200``."""
+    kind = (kind or "·").strip()
+    detail = (detail or "").strip()
+    if not detail:
+        return
+    if ok is True:
+        mark, style = "✓", "hb.ok"
+    elif ok is False:
+        mark, style = "✗", "hb.bad"
+    else:
+        mark, style = "·", "hb.muted"
+    console.print(
+        Text.from_markup(f"[{style}]{mark}[/] [hb.label]{kind}[/] ")
+        + Text(detail, style="hb.info")
+    )
+
+
+def maybe_code_panel(code: str, *, title: str = "command", lexer: str = "bash") -> None:
+    """Panel only when verbose; otherwise skip (callers should print a one-liner)."""
+    if verbose_enabled():
+        code_panel(code, title=title, lexer=lexer)
 
 
 def markdown_panel(md: str, *, title: str) -> None:
@@ -496,10 +637,18 @@ def plain(text: str) -> None:
     console.print(text)
 
 
-def tool_line(name: str, status: str = "ok") -> None:
+def tool_line(name: str, status: str = "ok", *, detail: str = "") -> None:
     """One-line tool progress (compact UI)."""
-    style = "hb.ok" if status in {"ok", "done"} else ("hb.bad" if status in {"fail", "error"} else "hb.muted")
-    console.print(Text.from_markup(f"[hb.muted]tool[/] [hb.cmd]{name}[/] [{style}]{status}[/]"))
+    ok = status in {"ok", "done"}
+    bad = status in {"fail", "error"}
+    style = "hb.ok" if ok else ("hb.bad" if bad else "hb.muted")
+    mark = "✓" if ok else ("✗" if bad else "·")
+    line = Text.from_markup(
+        f"[{style}]{mark}[/] [hb.muted]tool[/] [hb.cmd]{name}[/] [{style}]{status}[/]"
+    )
+    if detail:
+        line = line + Text(f" {detail}", style="hb.muted")
+    console.print(line)
 
 
 def turn_timing(seconds: float, tools_used: int = 0) -> None:
@@ -511,8 +660,8 @@ def turn_timing(seconds: float, tools_used: int = 0) -> None:
 class Stream:
     """Append-only (typewriter) streaming. No live re-render, so no flicker.
 
-    Shows a spinner until the first token arrives, then streams thinking (dim)
-    and the answer under a rule.
+    Shows a working indicator until the first token arrives, then streams
+    thinking (dim) and the answer under a rule.
     """
 
     def __init__(self, title: str = "hackbot") -> None:
@@ -520,17 +669,21 @@ class Stream:
         self._answer: list[str] = []
         self._started_reasoning = False
         self._started_answer = False
-        self._status = None
+        self._wait_cm = None
 
     def __enter__(self) -> "Stream":
-        self._status = console.status("[cyan]thinking...[/]", spinner="dots")
-        self._status.start()
+        self._wait_cm = working("thinking…")
+        self._wait_cm.__enter__()
         return self
 
     def _stop_wait(self) -> None:
-        if self._status is not None:
-            self._status.stop()
-            self._status = None
+        if self._wait_cm is not None:
+            try:
+                self._wait_cm.__exit__(None, None, None)
+            except Exception:  # noqa: BLE001
+                pass
+            self._wait_cm = None
+            stop_live()
 
     def reasoning(self, delta: str) -> None:
         if not delta:

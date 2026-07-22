@@ -284,10 +284,9 @@ def _run_send(agent: Any, prompt: str, *, selection: Any) -> tuple[str, str]:
             return False
 
     stream_answer = ""
-    # Live token print is off (mangled spaces); keep a spinner so the REPL isn't silent.
-    wait_status = ui.console.status("[cyan]thinking…[/]", spinner="dots")
-    wait_status.start()
     cancelled = False
+    # Scrollback working line — never glue Rich Live onto the concurrent prompt.
+    ui.console.print(ui_text("⠿ working · cursor", "hb.muted"))
     try:
         if streaming_enabled():
             try:
@@ -309,22 +308,17 @@ def _run_send(agent: Any, prompt: str, *, selection: Any) -> tuple[str, str]:
                             or len(piece) >= len(stream_answer)
                         ):
                             stream_answer = piece
-                        if stream_output_allowed():
-                            wait_status.update("[cyan]thinking…[/]")
                     elif mtype == "tool_call":
                         name = getattr(message, "name", "?")
                         tstatus = str(getattr(message, "status", "") or "")
-                        # Stop spinner before tool UI / possible Confirm.ask (shared console).
-                        wait_status.stop()
                         if stream_output_allowed():
-                            ui.console.print(
-                                ui_text(f"cursor tool  {name}  {tstatus}", "hb.dim")
+                            ok = tstatus.lower() in {"completed", "done", "ok"}
+                            bad = tstatus.lower() in {"error", "failed", "cancelled"}
+                            ui.action_line(
+                                "tool",
+                                f"{name} {tstatus}".strip(),
+                                ok=True if ok else (False if bad else None),
                             )
-                        # Resume spinner only after the tool finishes (not while approve waits).
-                        if tstatus.lower() in {"completed", "error", "failed", "cancelled"}:
-                            if stream_output_allowed():
-                                wait_status.start()
-                                wait_status.update("[cyan]thinking…[/]")
             except Exception:
                 pass
 
@@ -333,13 +327,9 @@ def _run_send(agent: Any, prompt: str, *, selection: Any) -> tuple[str, str]:
                 close_cursor_agent()
             except Exception:  # noqa: BLE001
                 pass
-            wait_status.stop()
             ui.stop_live()
             return "(cancelled)", format_selection_label(selection)
 
-        if stream_output_allowed():
-            wait_status.start()
-            wait_status.update("[cyan]thinking…[/]")
         result = run.wait() if hasattr(run, "wait") else None
         if _cancelled():
             try:
@@ -348,7 +338,6 @@ def _run_send(agent: Any, prompt: str, *, selection: Any) -> tuple[str, str]:
                 pass
             return "(cancelled)", format_selection_label(selection)
     finally:
-        wait_status.stop()
         ui.stop_live()
     status = getattr(result, "status", None) if result is not None else None
 

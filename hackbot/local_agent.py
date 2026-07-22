@@ -2446,8 +2446,10 @@ def _render_result(tool: str, result_json: str) -> None:
         return
 
     if tool == "http_request":
-        ui.kv("label", str(data.get("label", "?")))
-        ui.kv("status", str(data.get("status", "?")))
+        # Runner already printed a compact action line; avoid kv spam.
+        if ui.verbose_enabled():
+            ui.kv("label", str(data.get("label", "?")))
+            ui.kv("status", str(data.get("status", "?")))
         return
 
     if tool == "assert_diff":

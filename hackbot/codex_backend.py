@@ -797,12 +797,15 @@ def run_codex_turn(
         ui.warn(f"codex sandbox changed ({_CODEX_LAST_SANDBOX} → {sandbox}); fresh exec")
 
     prompt = _build_prompt(user_prompt, history, chat_mode=chat_mode, resume=resume)
-    ui.info(
-        f"codex  effort={effort or '-'}  mode={'chat' if chat_mode else 'hunt'}"
-        + f"  sandbox={sandbox}"
-        + ("  resume" if resume else "")
-        + (f"  after-fileop-{_fileop_depth}" if _fileop_depth else "")
-    )
+    # Banner once per operator turn — not on every tool/fileop continue.
+    if _fileop_depth == 0:
+        ui.info(
+            f"codex  effort={effort or '-'}  mode={'chat' if chat_mode else 'hunt'}"
+            + f"  sandbox={sandbox}"
+            + ("  resume" if resume else "")
+        )
+    else:
+        ui.action_line("codex", f"continue · depth {_fileop_depth}")
     started = time.perf_counter()
 
     with tempfile.NamedTemporaryFile(
@@ -1299,7 +1302,7 @@ def _run_quiet(
         _CODEX_PROC = proc
     timed_out = False
     try:
-        with ui.console.status("[cyan]codex is thinking...[/]", spinner="dots"):
+        with ui.working("working · codex"):
             assert proc.stdin is not None
             proc.stdin.write(prompt)
             proc.stdin.close()
@@ -1359,10 +1362,9 @@ def _run_streaming(
     answer_sink: list[str] = []
     meta: dict[str, Any] = {"shell_http": []}
     assert proc.stdout is not None and proc.stdin is not None
-    status = ui.console.status("[cyan]codex is thinking...[/]", spinner="dots")
-    status_live = False
     cancelled = False
     timed_out = False
+    waiting = True
     trace = os.environ.get("HACKBOT_CODEX_TRACE", "").strip().lower() in {
         "1",
         "true",
@@ -1370,19 +1372,18 @@ def _run_streaming(
         "on",
     }
 
-    def _stop_spinner() -> None:
-        nonlocal status_live
-        if status_live:
-            status.stop()
-            status_live = False
+    def _stop_waiting() -> None:
+        nonlocal waiting
+        if waiting:
+            waiting = False
             ui.stop_live()
 
     try:
         # Close stdin after writing so Codex does not hang waiting for more input.
         proc.stdin.write(prompt)
         proc.stdin.close()
-        status.start()
-        status_live = True
+        # Scrollback line (not Rich Live) so it never glues onto the prompt row.
+        ui.console.print(ui_text("⠿ working · codex", "hb.muted"))
         for raw_line in proc.stdout:
             if codex_cancel_requested():
                 cancelled = True
@@ -1398,7 +1399,7 @@ def _run_streaming(
                 # Non-JSON progress lines from codex (rare with --json).
                 flat = _clip(raw_line, 180)
                 if flat and not flat.startswith("{"):
-                    _stop_spinner()
+                    _stop_waiting()
                     if not printed_hdr.get("v"):
                         ui.console.print(ui_text("codex", "hb.label"))
                         printed_hdr["v"] = True
@@ -1410,7 +1411,7 @@ def _run_streaming(
                 _handle_event(
                     obj,
                     printed_hdr,
-                    before_print=_stop_spinner,
+                    before_print=_stop_waiting,
                     answer_sink=answer_sink,
                     meta=meta,
                 )
@@ -1425,7 +1426,7 @@ def _run_streaming(
         proc.kill()
         raise
     finally:
-        _stop_spinner()
+        _stop_waiting()
         ui.stop_live()
         if cancelled or timed_out or codex_cancel_requested() or (proc.poll() is None):
             _reap_proc(proc)

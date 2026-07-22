@@ -71,7 +71,13 @@ def http_request(
         "body_len": len(body) if body else 0,
         "label": label or "",
     }
-    ui.code_panel(json.dumps(plan, indent=2), title="http_request", lexer="json")
+    if ui.verbose_enabled():
+        ui.code_panel(json.dumps(plan, indent=2), title="http_request", lexer="json")
+    else:
+        ui.action_line(
+            "http",
+            ui.format_http_action(method, full_url),
+        )
 
     cmd = ["http_request", method, full_url, f"session={session or '-'}"]
     if not approve:
@@ -116,11 +122,9 @@ def http_request(
         final_url = resp.url or full_url
     except PermissionError as exc:
         err_msg = str(exc)
-        ui.error(err_msg)
         set_cookies = []
     except Exception as exc:  # noqa: BLE001
         err_msg = f"{type(exc).__name__}: {exc}"
-        ui.error(err_msg)
         set_cookies = []
 
     elapsed_ms = (time.perf_counter() - started) * 1000
@@ -156,12 +160,23 @@ def http_request(
         "body": resp_body,
         "error": err_msg,
     }
-    ui.kv("status", str(status))
-    ui.kv("length", str(len(resp_body)))
-    ui.kv("sha256", body_hash[:16] + "…")
-    if resp_body:
-        preview = ui.compact_text(redact_text(resp_body[:PREVIEW_CHARS]), max_chars=PREVIEW_CHARS)
-        ui.code_panel(preview, title="body_preview", lexer="text")
+    summary = ui.format_http_action(
+        method,
+        full_url,
+        status=status if not err_msg else None,
+        error=err_msg or None,
+        elapsed_ms=elapsed_ms if not err_msg else None,
+    )
+    ui.action_line("http", summary, ok=False if err_msg else True)
+    if ui.verbose_enabled():
+        ui.kv("status", str(status))
+        ui.kv("length", str(len(resp_body)))
+        ui.kv("sha256", body_hash[:16] + "…")
+        if resp_body:
+            preview = ui.compact_text(
+                redact_text(resp_body[:PREVIEW_CHARS]), max_chars=PREVIEW_CHARS
+            )
+            ui.code_panel(preview, title="body_preview", lexer="text")
 
     # Persist a compact JSON (no secrets in request headers) under evidence/safe
     safe_payload = {

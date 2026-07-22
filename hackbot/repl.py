@@ -170,6 +170,18 @@ def _prompt_label(mode: str) -> str:
     return f"{short} · {effort}"
 
 
+def _session_footer_parts(mode: str) -> tuple[str, ...]:
+    effort = os.environ.get("HACKBOT_EFFORT", "auto") or "auto"
+    active = get_active()
+    parts: list[str] = [mode if mode != "model" else "model", effort]
+    if active:
+        parts.append(active.name)
+    if is_yolo():
+        parts.append("yolo")
+    parts.append("step on" if step_mode_enabled() else "step off")
+    return tuple(parts)
+
+
 def _run_turn(mode: str, text: str, session: _Session) -> None:
     try:
         if mode == "model":
@@ -220,6 +232,8 @@ def _run_turn(mode: str, text: str, session: _Session) -> None:
             run_local_agent(text, approve_fn=_approve)
     except KeyboardInterrupt:
         ui.warn("cancelled")
+    finally:
+        ui.session_footer(*_session_footer_parts(mode))
 
 
 def _cmd_providers() -> None:
@@ -306,12 +320,15 @@ def start_repl(*, one_shot: str | None = None) -> int:
     brain = {"mode": mode, "label": label}
 
     def _worker_turn(text: str) -> None:
+        ui.stop_live()
         ui.console.print()
         if text.startswith("/hunt"):
             _execute_hunt_line(text)
+            ui.session_footer(*_session_footer_parts(brain["mode"]))
         else:
             maybe_disable_from_prompt(text)
             _run_turn(brain["mode"], text, session)
+        ui.stop_live()
         ui.console.print()
 
     try:

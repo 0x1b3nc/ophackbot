@@ -56,43 +56,67 @@ def operator_input_session() -> Iterator[None]:
 
 
 def ask_operator_line(tag: str, *, fallback: Callable[[str], str] | None = None) -> str:
-    """Prompt ``hackbot · <tag>: `` and return stripped input."""
-    label = f"hackbot · {tag}: "
+    """Prompt ``› <tag> `` with a Cursor-like follow-up hint."""
+    label = f"› {tag} "
     try:
         from prompt_toolkit.formatted_text import FormattedText
         from prompt_toolkit.styles import Style
     except ImportError:
         if fallback is not None:
-            return (fallback(f"[bold cyan]hackbot[/] [dim]· {tag}[/]") or "").strip()
+            return (fallback(f"[bold cyan]›[/] [dim]{tag}[/]") or "").strip()
         return input(label).strip()
 
     style = Style.from_dict(
         {
-            "name": "bold ansicyan",
-            "sep": "ansibrightblack",
+            "prompt": "bold ansicyan",
             "tag": "ansibrightblack",
+            "hint": "ansibrightblack",
         }
     )
     message = FormattedText(
         [
-            ("class:name", "hackbot"),
-            ("class:sep", " · "),
-            ("class:tag", f"{tag}: "),
+            ("class:prompt", "› "),
+            ("class:tag", f"{tag} "),
+        ]
+    )
+    bottom = FormattedText(
+        [
+            (
+                "class:hint",
+                " follow-up · enter queues · ctrl+c interrupt ",
+            )
         ]
     )
     try:
         session = _SESSION
+        kwargs = {"style": style, "bottom_toolbar": bottom}
         if session is not None:
-            text = session.prompt(message, style=style)
+            text = session.prompt(message, **kwargs)
         else:
             from prompt_toolkit import prompt as pt_prompt
 
-            text = pt_prompt(message, style=style)
+            text = pt_prompt(message, **kwargs)
     except (EOFError, KeyboardInterrupt):
         raise
+    except TypeError:
+        # Older prompt_toolkit without bottom_toolbar
+        try:
+            session = _SESSION
+            if session is not None:
+                text = session.prompt(message, style=style)
+            else:
+                from prompt_toolkit import prompt as pt_prompt
+
+                text = pt_prompt(message, style=style)
+        except (EOFError, KeyboardInterrupt):
+            raise
+        except Exception:
+            if fallback is not None:
+                return (fallback(f"[bold cyan]›[/] [dim]{tag}[/]") or "").strip()
+            return input(label).strip()
     except Exception:
         if fallback is not None:
-            return (fallback(f"[bold cyan]hackbot[/] [dim]· {tag}[/]") or "").strip()
+            return (fallback(f"[bold cyan]›[/] [dim]{tag}[/]") or "").strip()
         return input(label).strip()
     return (text or "").strip()
 
