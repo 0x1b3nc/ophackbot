@@ -1,11 +1,8 @@
-"""hackbot Textual TUI — Toad-inspired layout, operator palette.
+"""hackbot Textual TUI — compact operator layout + live think/tools feed.
 
 Run: ``python -m hackbot tui``
 
-Color palette (operator-defined):
-  fundo #0D0D26 · painel #191970 · borda #4B0082
-  primária #8A2BE2 · secundária #7B68EE · texto #E8E8FF
-  ok #4ADE80 · erro #FF6B9D · aviso #FFCB6B · info #64D9E8
+Palette: #0D0D26 / #191970 / #4B0082 / #8A2BE2 / #7B68EE / #E8E8FF
 """
 
 from __future__ import annotations
@@ -23,16 +20,12 @@ from .tui_commands import filter_slash_commands, handle_slash
 from .turn_bridge import resolve_mode, run_bridged_turn
 from .yolo import enable_yolo, is_yolo
 
-# Operator palette (hex)
 _BG = "#0D0D26"
 _PANEL = "#191970"
 _BORDER = "#4B0082"
 _PRIMARY = "#8A2BE2"
 _SECONDARY = "#7B68EE"
 _TEXT = "#E8E8FF"
-_OK = "#4ADE80"
-_ERR = "#FF6B9D"
-_WARN = "#FFCB6B"
 _INFO = "#64D9E8"
 
 
@@ -58,7 +51,6 @@ def _status_line() -> str:
 
 @contextmanager
 def _silence_stdio() -> Iterator[None]:
-    """Redirect process stdout/stderr so SDK noise cannot paint under Textual."""
     real_out, real_err = sys.stdout, sys.stderr
     sink: TextIO = open(os.devnull, "w", encoding="utf-8", errors="replace")
     try:
@@ -109,61 +101,64 @@ def start_tui() -> int:
         Screen {{
             background: {_BG};
             color: {_TEXT};
+            layout: vertical;
         }}
         #topbar {{
             dock: top;
-            height: 3;
+            height: 1;
             background: {_PANEL};
-            border-bottom: tall {_BORDER};
+            color: {_INFO};
+            padding: 0 1;
+            text-style: bold;
+        }}
+        #body {{
+            height: 1fr;
+        }}
+        #sidebar {{
+            width: 18;
+            background: {_PANEL};
+            border-right: tall {_BORDER};
             padding: 0 1;
         }}
-        #brand-row {{
+        #side-title {{
             height: 1;
             color: {_PRIMARY};
             text-style: bold;
-        }}
-        #status {{
-            height: 1;
-            color: {_INFO};
-        }}
-        #sidebar {{
-            width: 24;
-            background: {_PANEL};
-            border-right: tall {_BORDER};
-            padding: 1 1;
-        }}
-        #side-title {{
-            color: {_SECONDARY};
-            text-style: bold;
-            padding-bottom: 1;
         }}
         #side-help {{
             color: {_SECONDARY};
         }}
         #main {{
-            background: {_BG};
+            width: 1fr;
             height: 1fr;
+            background: {_BG};
         }}
         #chat {{
             height: 1fr;
             background: {_BG};
-            padding: 0 1 1 1;
+            padding: 0 1;
             scrollbar-background: {_BG};
             scrollbar-color: {_BORDER};
             scrollbar-color-hover: {_PRIMARY};
         }}
         .msg-user {{
             color: {_INFO};
-            padding: 1 1 0 1;
+            padding: 0 0 0 0;
             text-style: bold;
+            margin-top: 1;
         }}
         .msg-md {{
-            padding: 0 1 1 1;
+            padding: 0 0 1 0;
             background: {_BG};
             color: {_TEXT};
         }}
+        .msg-stream {{
+            color: {_SECONDARY};
+            padding: 0 0 1 0;
+        }}
         #live-wrap {{
-            height: 10;
+            height: 6;
+            max-height: 6;
             background: {_PANEL};
             border-top: tall {_BORDER};
             padding: 0 1;
@@ -171,33 +166,37 @@ def start_tui() -> int:
         #live-title {{
             height: 1;
             color: {_SECONDARY};
-            text-style: bold;
         }}
         #live {{
-            height: 8;
+            height: 4;
             color: {_TEXT};
+            overflow-y: auto;
         }}
         #composer {{
             height: auto;
+            max-height: 10;
             background: {_PANEL};
             border-top: tall {_BORDER};
-            padding: 1 1;
+            padding: 0 1;
         }}
         #picker {{
-            height: 9;
+            height: 5;
+            max-height: 5;
             border: tall {_BORDER};
             background: {_PANEL};
             display: none;
-            margin-bottom: 1;
+            margin: 0;
         }}
         #picker.visible {{
             display: block;
         }}
         #prompt {{
+            height: 3;
             background: {_BG};
             border: tall {_PRIMARY};
             color: {_TEXT};
             padding: 0 1;
+            margin: 0 0 0 0;
         }}
         #prompt:focus {{
             border: tall {_SECONDARY};
@@ -224,25 +223,20 @@ def start_tui() -> int:
             self._chat_plain: list[str] = []
             self._live_lines: list[str] = []
             self._think_buf: str = ""
+            self._stream_id: str | None = None
+            self._feed_dirty = False
 
         def compose(self) -> ComposeResult:
-            with Vertical(id="topbar"):
-                yield Static("hackbot", id="brand-row")
-                yield Static(_status_line(), id="status")
-            with Horizontal():
+            yield Static(_status_line(), id="topbar")
+            with Horizontal(id="body"):
                 with Vertical(id="sidebar"):
-                    yield Static("session", id="side-title")
+                    yield Static("hackbot", id="side-title")
                     yield Static(
-                        "/help\n"
-                        "/target demo\n"
-                        "/provider cursor\n"
-                        "/model grok-4.5\n"
-                        "/effort high fast\n"
-                        "/fast on\n"
-                        "/yolo on\n\n"
-                        "mouse off → select/copy\n"
-                        "ctrl+y → copy last\n"
-                        "Enter send · / cmds",
+                        "/target  /provider\n"
+                        "/model   /effort\n"
+                        "/yolo on\n"
+                        "ctrl+y copy\n"
+                        "ctrl+q quit",
                         id="side-help",
                     )
                 with Vertical(id="main"):
@@ -253,71 +247,105 @@ def start_tui() -> int:
                     with Vertical(id="composer"):
                         yield OptionList(id="picker")
                         yield Input(
-                            placeholder="Message hackbot…  (/ for commands)",
+                            placeholder="Message…  (/ for commands)",
                             id="prompt",
                         )
             yield Footer()
 
         def on_mount(self) -> None:
-            live_feed.set_feed_sink(self._on_feed)
+            # Prefer polling pending queue on UI thread (reliable under token flood).
+            live_feed.set_feed_sink(self._on_feed_mark)
+            self.set_interval(0.12, self._pump_feed)
             self._append_md(
-                f"**hackbot** ready\n\n`{_status_line()}`\n\n"
-                f"Try `/model grok-4.5` then `/effort high fast`.\n\n"
-                f"_Select text with the mouse (capture off). `ctrl+y` copies last reply._"
+                "**ready** — `/provider cursor` · `/model grok-4.5` · `/effort high fast` · `/target <name>`"
             )
             self.query_one("#prompt", Input).focus()
 
         def on_unmount(self) -> None:
             live_feed.set_feed_sink(None)
 
-        def _on_feed(self, kind: str, text: str) -> None:
-            """Called from worker threads — hop onto the UI thread."""
-            try:
-                self.call_from_thread(self._apply_feed, kind, text)
-            except Exception:  # noqa: BLE001
-                pass
+        def _on_feed_mark(self, _kind: str, _text: str) -> None:
+            """Sink from worker threads — only mark dirty; UI drains on interval."""
+            self._feed_dirty = True
 
-        def _apply_feed(self, kind: str, text: str) -> None:
-            kind = (kind or "info").strip().lower()
-            text = (text or "").rstrip()
-            if not text:
+        def _pump_feed(self) -> None:
+            events = live_feed.drain_pending()
+            if not events and not self._feed_dirty:
                 return
+            self._feed_dirty = False
+            for kind, text in events:
+                self._ingest(kind, text)
+            self._paint_live()
+            self._paint_stream_bubble()
+
+        def _ingest(self, kind: str, text: str) -> None:
+            kind = (kind or "info").strip().lower()
+            text = text or ""
             if kind in {"think", "thinking", "reasoning"}:
-                # Coalesce think tokens into one rolling line.
                 if text.startswith("(thinking)"):
                     self._think_buf = text
                 else:
-                    self._think_buf = (self._think_buf + text)[-900:]
-                display = self._think_buf.replace("\n", " ")
-                if len(display) > 220:
-                    display = "…" + display[-217:]
+                    self._think_buf = (self._think_buf + text)[-1200:]
+                display = self._think_buf.replace("\n", " ").strip()
+                if len(display) > 200:
+                    display = "…" + display[-197:]
                 line = f"think  {display}"
                 if self._live_lines and self._live_lines[-1].startswith("think  "):
                     self._live_lines[-1] = line
                 else:
                     self._live_lines.append(line)
-            elif kind == "draft":
-                line = f"draft  {text}"
+                return
+            if kind == "draft":
+                flat = text.replace("\n", " ").strip()
+                if len(flat) > 200:
+                    flat = "…" + flat[-197:]
+                line = f"draft  {flat}"
                 if self._live_lines and self._live_lines[-1].startswith("draft  "):
                     self._live_lines[-1] = line
                 else:
                     self._live_lines.append(line)
-            else:
-                label = {
-                    "tool": "tool",
-                    "run": "run",
-                    "out": "out",
-                    "working": "···",
-                    "info": "·",
-                    "log": "log",
-                    "dbg": "dbg",
-                    "plan": "plan",
-                }.get(kind, kind[:8] or "·")
-                self._live_lines.append(f"{label}  {text}")
-            self._live_lines = self._live_lines[-40:]
-            body = "\n".join(self._live_lines[-12:])
+                return
+            if not text.strip():
+                return
+            label = {
+                "tool": "tool",
+                "run": "run",
+                "out": "out",
+                "working": "···",
+                "info": "·",
+                "log": "log",
+                "dbg": "dbg",
+                "plan": "plan",
+                "err": "err",
+            }.get(kind, kind[:8] or "·")
+            self._live_lines.append(f"{label}  {text.strip()[:180]}")
+            self._live_lines = self._live_lines[-30:]
+
+        def _paint_live(self) -> None:
+            body = "\n".join(self._live_lines[-5:]) if self._live_lines else (
+                "working…" if self._busy else "idle"
+            )
             try:
-                self.query_one("#live", Static).update(body or "idle")
+                self.query_one("#live", Static).update(body)
+            except Exception:  # noqa: BLE001
+                pass
+
+        def _paint_stream_bubble(self) -> None:
+            if not self._busy or not self._stream_id:
+                return
+            # Compact in-chat stream: last think or draft or last live line
+            tip = ""
+            for line in reversed(self._live_lines):
+                if line.startswith("think  ") or line.startswith("draft  ") or line.startswith("tool  ") or line.startswith("run  "):
+                    tip = line
+                    break
+            if not tip and self._live_lines:
+                tip = self._live_lines[-1]
+            if not tip:
+                tip = "··· working"
+            try:
+                w = self.query_one(f"#{self._stream_id}", Static)
+                w.update(f"◌ {tip}")
             except Exception:  # noqa: BLE001
                 pass
 
@@ -325,13 +353,26 @@ def start_tui() -> int:
             self._live_lines = []
             self._think_buf = ""
             live_feed.clear()
+            self._paint_live()
+
+        def _start_stream_bubble(self) -> None:
+            chat = self.query_one("#chat", VerticalScroll)
+            self._msg_i += 1
+            self._stream_id = f"s{self._msg_i}"
+            chat.mount(Static("◌ working…", classes="msg-stream", id=self._stream_id))
+            chat.scroll_end(animate=False)
+
+        def _clear_stream_bubble(self) -> None:
+            if not self._stream_id:
+                return
             try:
-                self.query_one("#live", Static).update("working…")
+                self.query_one(f"#{self._stream_id}", Static).remove()
             except Exception:  # noqa: BLE001
                 pass
+            self._stream_id = None
 
         def _refresh_status(self) -> None:
-            self.query_one("#status", Static).update(_status_line())
+            self.query_one("#topbar", Static).update(_status_line())
             self.sub_title = str(Path.cwd())
 
         def _append_user(self, text: str) -> None:
@@ -364,7 +405,6 @@ def start_tui() -> int:
                 return True
             except Exception:  # noqa: BLE001
                 pass
-            # OSC 52 clipboard (works in many SSH/tmux terminals).
             try:
                 import base64
 
@@ -380,7 +420,7 @@ def start_tui() -> int:
                 self.notify("copied last reply", severity="information", timeout=2)
             else:
                 self.notify(
-                    "copy failed — select with mouse (capture off)",
+                    "copy failed — select with mouse",
                     severity="warning",
                     timeout=3,
                 )
@@ -397,7 +437,7 @@ def start_tui() -> int:
             if not matches:
                 self._hide_picker()
                 return
-            top = matches[:12]
+            top = matches[:8]
             self._picker_cmds = [c for c, _ in top]
             for i, (cmd, desc) in enumerate(top):
                 picker.add_option(Option(f"{cmd}  —  {desc}", id=f"cmd-{i}"))
@@ -447,6 +487,7 @@ def start_tui() -> int:
                     chat = self.query_one("#chat", VerticalScroll)
                     for child in list(chat.children):
                         child.remove()
+                    self._stream_id = None
                     self._append_md("_cleared_")
                     self._refresh_status()
                     return
@@ -458,12 +499,12 @@ def start_tui() -> int:
                     return
             self._busy = True
             self._reset_live()
-            self.query_one("#status", Static).update(f"{_status_line()} · working…")
+            self._start_stream_bubble()
+            self.query_one("#topbar", Static).update(f"{_status_line()} · working…")
             self.run_hunt_turn(text)
 
         @work(thread=True, exclusive=True, exit_on_error=False)
         def run_hunt_turn(self, text: str) -> None:
-            # Nuke stdout/stderr for this worker so SDK/tool noise cannot bleed under Textual.
             with _silence_stdio():
                 try:
                     answer = run_bridged_turn(text)
@@ -472,12 +513,17 @@ def start_tui() -> int:
             self.call_from_thread(self._finish_turn, answer or "(empty)")
 
         def _finish_turn(self, answer: str) -> None:
+            # Drain any last feed events before clearing stream bubble
+            for kind, text in live_feed.drain_pending():
+                self._ingest(kind, text)
+            self._paint_live()
             self._busy = False
+            self._clear_stream_bubble()
             self._append_md(answer)
             if self._live_lines:
                 try:
                     self.query_one("#live", Static).update(
-                        "\n".join(self._live_lines[-12:]) + "\n· done"
+                        "\n".join(self._live_lines[-5:]) + "\n· done"
                     )
                 except Exception:  # noqa: BLE001
                     pass
@@ -496,14 +542,14 @@ def start_tui() -> int:
                 request_codex_cancel()
             except Exception:  # noqa: BLE001
                 pass
-            self._append_md(f"**stop** requested")
             self._busy = False
+            self._clear_stream_bubble()
+            self._append_md("**stop** requested")
 
         def action_show_help(self) -> None:
             self._submit("/help")
 
     try:
-        # mouse=False → terminal native select/copy (Textual won't eat clicks).
         HackbotTUI().run(mouse=False)
     finally:
         live_feed.set_feed_sink(None)
