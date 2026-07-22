@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
-import os
-import signal
 import subprocess
-import sys
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .. import ui
 from ..config import get_config
 from ..policy_guard import ScopePolicy, host_from_target
+from ..procutil import kill_process_tree, popen_new_group_kwargs
+
+# Re-export for callers that imported kill_process_tree from runners.base.
+__all__ = [
+    "RunnerResult",
+    "kill_process_tree",
+    "require_in_scope",
+    "run_command",
+]
 
 
 @dataclass(frozen=True)
@@ -83,38 +91,6 @@ def _default_cancel_check() -> bool:
         return False
 
 
-def kill_process_tree(proc: subprocess.Popen[str]) -> None:
-    """Best-effort terminate process and children (Windows taskkill / POSIX group)."""
-    if proc.poll() is not None:
-        return
-    pid = proc.pid
-    try:
-        if sys.platform == "win32":
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True,
-                check=False,
-            )
-        else:
-            try:
-                os.killpg(pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
-                proc.terminate()
-            deadline = time.monotonic() + 3.0
-            while proc.poll() is None and time.monotonic() < deadline:
-                time.sleep(0.05)
-            if proc.poll() is None:
-                try:
-                    os.killpg(pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError, OSError):
-                    proc.kill()
-    except Exception:  # noqa: BLE001
-        try:
-            proc.kill()
-        except Exception:  # noqa: BLE001
-            pass
-
-
 def run_command(
     command: list[str],
     *,
@@ -147,14 +123,33 @@ def run_command(
         "stderr": subprocess.PIPE,
         "text": True,
     }
-    if sys.platform != "win32":
-        popen_kwargs["start_new_session"] = True
-    else:
-        # New process group so taskkill /T can reap children.
-        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    popen_kwargs.update(popen_new_group_kwargs())
 
     with ui.console.status("[cyan]running...[/]", spinner="dots"):
         proc = subprocess.Popen(command, **popen_kwargs)  # type: ignore[arg-type]
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+
+        def _drain(stream: Any, bucket: list[str]) -> None:
+            if stream is None:
+                return
+            try:
+                while True:
+                    chunk = stream.read(4096)
+                    if not chunk:
+                        break
+                    bucket.append(chunk)
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Drain pipes while waiting — a full stdout pipe freezes the child (and
+        # stacked hung tools look like a frozen VM).
+        readers = [
+            threading.Thread(target=_drain, args=(proc.stdout, stdout_chunks), daemon=True),
+            threading.Thread(target=_drain, args=(proc.stderr, stderr_chunks), daemon=True),
+        ]
+        for t in readers:
+            t.start()
         stdout = ""
         stderr = ""
         message = "executed"
@@ -164,31 +159,28 @@ def run_command(
             while True:
                 if cancel():
                     kill_process_tree(proc)
-                    stdout, stderr = proc.communicate(timeout=5)
-                    returncode = proc.returncode
                     message = "cancelled"
                     ui.warn("subprocess cancelled (hunt stop)")
                     break
                 if time.monotonic() >= deadline:
                     kill_process_tree(proc)
-                    stdout, stderr = proc.communicate(timeout=5)
-                    returncode = proc.returncode
                     message = "timeout"
                     ui.error(f"subprocess timed out after {limit:.0f}s")
                     break
                 if proc.poll() is not None:
-                    stdout, stderr = proc.communicate(timeout=5)
                     returncode = proc.returncode
                     break
                 time.sleep(0.1)
         except Exception:  # noqa: BLE001
             kill_process_tree(proc)
-            try:
-                stdout, stderr = proc.communicate(timeout=5)
-            except Exception:  # noqa: BLE001
-                stdout, stderr = "", ""
             returncode = proc.returncode
             message = "error"
+        for t in readers:
+            t.join(timeout=2.0)
+        stdout = "".join(stdout_chunks)
+        stderr = "".join(stderr_chunks)
+        if returncode is None:
+            returncode = proc.returncode
 
     if stdout:
         ui.code_panel(stdout.rstrip(), title="stdout", lexer="text")

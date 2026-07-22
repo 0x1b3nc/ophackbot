@@ -40,6 +40,10 @@ from .theme import (
 )
 from .widgets import CopyableStatic, ReplyMarkdown
 
+# Cap chat DOM — unbounded RunBlocks/pins during long hunts thrash VMs.
+_MAX_CHAT_WIDGETS = 100
+_MAX_PLAIN_CHARS = 8_000
+
 
 def status_line_text() -> str:
     mode, label = resolve_mode()
@@ -295,6 +299,27 @@ class HackbotTUI(App[None]):
         if force or self._near_bottom():
             self._chat().scroll_end(animate=False)
 
+    def _remember_plain(self, text: str) -> None:
+        blob = text or ""
+        if len(blob) > _MAX_PLAIN_CHARS:
+            blob = blob[:_MAX_PLAIN_CHARS] + "\n…"
+        self._chat_plain.append(blob)
+        if len(self._chat_plain) > 200:
+            self._chat_plain = self._chat_plain[-200:]
+
+    def _prune_chat(self) -> None:
+        """Drop oldest durable widgets so long hunts don't balloon Textual DOM/RAM."""
+        chat = self._chat()
+        kids = [c for c in list(chat.children) if getattr(c, "id", None) != self._live_widget_id]
+        overflow = len(kids) - _MAX_CHAT_WIDGETS
+        if overflow <= 0:
+            return
+        for child in kids[:overflow]:
+            try:
+                child.remove()
+            except Exception:  # noqa: BLE001
+                pass
+
     def action_scroll_up(self) -> None:
         self._chat().scroll_page_up(animate=False)
 
@@ -421,7 +446,7 @@ class HackbotTUI(App[None]):
         self._msg_i += 1
         run_id = f"run{self._msg_i}"
         chat.mount(RunBlock(cmd, id=run_id))
-        self._chat_plain.append(f"$ {cmd}")
+        self._remember_plain(f"$ {cmd}")
         self._active_run_id = run_id
         if old_id:
             try:
@@ -430,6 +455,7 @@ class HackbotTUI(App[None]):
                 pass
             self._live_widget_id = None
         self._ensure_live_line().update("◌ …")
+        self._prune_chat()
         self._maybe_scroll_end()
 
     def _append_panel_block(self, text: str) -> None:
@@ -442,7 +468,7 @@ class HackbotTUI(App[None]):
         self._msg_i += 1
         panel_id = f"panel{self._msg_i}"
         chat.mount(RunBlock(title, kind="panel", pending_out=body or "(empty)", id=panel_id))
-        self._chat_plain.append(f"{title}\n{body}")
+        self._remember_plain(f"{title}\n{body}")
         self._active_run_id = None
         if old_id:
             try:
@@ -451,6 +477,7 @@ class HackbotTUI(App[None]):
                 pass
             self._live_widget_id = None
         self._ensure_live_line().update("◌ …")
+        self._prune_chat()
         self._maybe_scroll_end()
 
     def _fill_run_output(self, text: str, *, mark: str = "") -> None:
@@ -462,7 +489,7 @@ class HackbotTUI(App[None]):
             try:
                 block = self.query_one(f"#{self._active_run_id}", RunBlock)
                 block.set_output(body or "(no output)", duration=dur_s, exit_code=exit_s)
-                self._chat_plain.append(body or "(no output)")
+                self._remember_plain(body or "(no output)")
                 # Done with this run — later panels must not overwrite stdout.
                 self._active_run_id = None
                 self._maybe_scroll_end()
@@ -481,7 +508,7 @@ class HackbotTUI(App[None]):
                 pin, plain=pin, classes="msg-live", id=f"pin{self._msg_i}"
             )
         )
-        self._chat_plain.append(pin)
+        self._remember_plain(pin)
         self._active_run_id = None
         if old_id:
             try:
@@ -490,6 +517,7 @@ class HackbotTUI(App[None]):
                 pass
             self._live_widget_id = None
         self._ensure_live_line().update("◌ …")
+        self._prune_chat()
         self._maybe_scroll_end()
 
     def _clear_live(self) -> None:
@@ -516,7 +544,8 @@ class HackbotTUI(App[None]):
                 line, plain=line, classes="msg-user", id=f"u{self._msg_i}"
             )
         )
-        self._chat_plain.append(line)
+        self._remember_plain(line)
+        self._prune_chat()
         self._maybe_scroll_end(force=True)
 
     def _append_md(self, text: str) -> None:
@@ -527,9 +556,8 @@ class HackbotTUI(App[None]):
             ReplyMarkdown(plain, plain=plain, classes="msg-md", id=f"m{self._msg_i}")
         )
         self._last_plain = plain
-        self._chat_plain.append(plain)
-        if len(self._chat_plain) > 300:
-            self._chat_plain = self._chat_plain[-300:]
+        self._remember_plain(plain)
+        self._prune_chat()
         self._maybe_scroll_end(force=True)
 
     def _append_bot(self, text: str) -> None:
@@ -740,11 +768,18 @@ class HackbotTUI(App[None]):
         self._clear_live()
         self._ensure_live_line().update("◌ working…")
         self.query_one("#status", Static).update(f"{status_line_text()} · working…")
-        # exclusive=False so interrupt + new turn can overlap; stale finish ignored via gen.
+        # exclusive=True: one turn at a time (overlapping Codex+tools freezes VMs).
         self.run_hunt_turn(text, gen)
 
-    @work(thread=True, exclusive=False, exit_on_error=False)
+    @work(thread=True, exclusive=True, exit_on_error=False)
     def run_hunt_turn(self, text: str, gen: int) -> None:
+        import time as _time
+
+        # Let interrupt killpg settle before clearing cancel for this turn.
+        _time.sleep(0.15)
+        if gen != self._turn_gen:
+            return
+        self._reset_cancel_rails()
         with silence_stdio():
             try:
                 answer = self.turn_runner(text)

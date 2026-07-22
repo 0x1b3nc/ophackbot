@@ -46,16 +46,15 @@ _SANDBOX_OK = frozenset({"read-only", "workspace-write", "danger-full-access"})
 
 
 def request_codex_cancel() -> None:
-    """Kill in-flight ``codex exec`` (operator interrupt / queued message)."""
+    """Kill in-flight ``codex exec`` and its tool children (avoid VM orphan storms)."""
     global _CODEX_PROC
     _CODEX_CANCEL.set()
     with _CODEX_PROC_LOCK:
         proc = _CODEX_PROC
-    if proc is not None and proc.poll() is None:
-        try:
-            proc.kill()
-        except OSError:
-            pass
+    if proc is not None:
+        from .procutil import kill_process_tree
+
+        kill_process_tree(proc)
 
 
 def clear_codex_cancel() -> None:
@@ -1333,6 +1332,8 @@ def _run_quiet(
 ) -> tuple[str, str, dict[str, Any]] | None:
     """Non-stream exec via Popen so operator interrupt can kill mid-flight."""
     global _CODEX_PROC
+    from .procutil import popen_new_group_kwargs
+
     try:
         proc = subprocess.Popen(
             cmd,
@@ -1342,6 +1343,7 @@ def _run_quiet(
             text=True,
             encoding="utf-8",
             errors="replace",
+            **popen_new_group_kwargs(),
         )
     except OSError as exc:
         return "", f"(could not launch codex: {exc})", {}
@@ -1357,7 +1359,9 @@ def _run_quiet(
                 stdout, stderr = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
                 timed_out = True
-                proc.kill()
+                from .procutil import kill_process_tree
+
+                kill_process_tree(proc)
                 try:
                     stdout, stderr = proc.communicate(timeout=5)
                 except Exception:  # noqa: BLE001
@@ -1367,10 +1371,15 @@ def _run_quiet(
             return "", "(cancelled)", {}
         return stdout or "", stderr or "", {}
     except KeyboardInterrupt:
-        proc.kill()
+        from .procutil import kill_process_tree
+
+        kill_process_tree(proc)
         raise
     finally:
         if timed_out or codex_cancel_requested() or (proc.poll() is None):
+            from .procutil import kill_process_tree
+
+            kill_process_tree(proc)
             _reap_proc(proc)
         with _CODEX_PROC_LOCK:
             if _CODEX_PROC is proc:
@@ -1387,6 +1396,8 @@ def _run_streaming(
     (restarting Rich Status was wiping the feeling of a live stream).
     """
     global _CODEX_PROC
+    from .procutil import kill_process_tree, popen_new_group_kwargs
+
     try:
         proc = subprocess.Popen(
             cmd,
@@ -1397,6 +1408,7 @@ def _run_streaming(
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            **popen_new_group_kwargs(),
         )
     except OSError as exc:
         return "", f"(could not launch codex: {exc})", {}
@@ -1412,6 +1424,7 @@ def _run_streaming(
     cancelled = False
     timed_out = False
     waiting = True
+    deadline = time.monotonic() + max(30, int(timeout))
     trace = os.environ.get("HACKBOT_CODEX_TRACE", "").strip().lower() in {
         "1",
         "true",
@@ -1432,9 +1445,13 @@ def _run_streaming(
         # Scrollback line (not Rich Live) so it never glues onto the prompt row.
         ui.working_line("working · codex")
         for raw_line in proc.stdout:
+            if time.monotonic() >= deadline:
+                timed_out = True
+                kill_process_tree(proc)
+                break
             if codex_cancel_requested():
                 cancelled = True
-                proc.kill()
+                kill_process_tree(proc)
                 break
             raw_line = raw_line.rstrip("\r\n")
             if not raw_line:
@@ -1462,20 +1479,23 @@ def _run_streaming(
                     answer_sink=answer_sink,
                     meta=meta,
                 )
-        if not cancelled:
+        if not cancelled and not timed_out:
             try:
-                proc.wait(timeout=timeout)
+                proc.wait(timeout=min(30, max(5, int(timeout))))
             except subprocess.TimeoutExpired:
                 timed_out = True
-                proc.kill()
+                kill_process_tree(proc)
                 return "", f"(codex timed out after {timeout}s)", meta
+        if timed_out:
+            return "", f"(codex timed out after {timeout}s)", meta
     except KeyboardInterrupt:
-        proc.kill()
+        kill_process_tree(proc)
         raise
     finally:
         _stop_waiting()
         ui.stop_live()
         if cancelled or timed_out or codex_cancel_requested() or (proc.poll() is None):
+            kill_process_tree(proc)
             _reap_proc(proc)
         with _CODEX_PROC_LOCK:
             if _CODEX_PROC is proc:
