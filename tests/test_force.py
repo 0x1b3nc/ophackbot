@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from hackbot import force as force_mod
+from hackbot import yolo as yolo_mod
 from hackbot.policy_guard import ScopePolicy
 from hackbot.tools import execute_tool
 
@@ -39,12 +42,19 @@ SCOPE_WITH_OOS = """# Scope
 """
 
 
+def _reset_force_yolo() -> None:
+    force_mod._FORCE_ACTIVE = False  # noqa: SLF001
+    yolo_mod._YOLO_ACTIVE = False  # noqa: SLF001
+    yolo_mod._YOLO_ENABLED_FORCE = False  # noqa: SLF001
+    os.environ.pop("HACKBOT_YOLO", None)
+
+
 class ForceModuleTests(unittest.TestCase):
     def setUp(self) -> None:
-        force_mod._FORCE_ACTIVE = False  # noqa: SLF001
+        _reset_force_yolo()
 
     def tearDown(self) -> None:
-        force_mod._FORCE_ACTIVE = False  # noqa: SLF001
+        _reset_force_yolo()
 
     def test_toggle(self) -> None:
         self.assertFalse(force_mod.is_forced())
@@ -60,8 +70,32 @@ class ForceModuleTests(unittest.TestCase):
         self.assertTrue(force_mod.prompt_wants_force("force httpx on example.com"))
         self.assertFalse(force_mod.prompt_wants_force("test brute force on example.com"))
 
+    def test_force_off_refused_while_yolo(self) -> None:
+        with mock.patch.object(yolo_mod, "ui"), mock.patch.object(force_mod, "ui"):
+            yolo_mod.enable_yolo(quiet=True)
+            self.assertTrue(force_mod.is_forced())
+            ok = force_mod.disable_force(quiet=True)
+            self.assertFalse(ok)
+            self.assertTrue(force_mod.is_forced())
+            yolo_mod.disable_yolo()
+        self.assertFalse(force_mod.is_forced())
+
+    def test_yolo_implies_is_forced(self) -> None:
+        with mock.patch.object(yolo_mod, "ui"), mock.patch.object(force_mod, "ui"):
+            yolo_mod.enable_yolo(quiet=True)
+            # Even if the raw flag is cleared, YOLO keeps force semantics.
+            force_mod._FORCE_ACTIVE = False  # noqa: SLF001
+            self.assertTrue(force_mod.is_forced())
+            yolo_mod.disable_yolo()
+
 
 class ForcePolicyGateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        _reset_force_yolo()
+
+    def tearDown(self) -> None:
+        _reset_force_yolo()
+
     def _policy(self, text: str) -> ScopePolicy:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -101,6 +135,29 @@ class ForcePolicyGateTests(unittest.TestCase):
         gate = policy.assert_action_allowed("other.com", "httpx", force=True)
         self.assertTrue(gate["force_override"])
 
+    def test_scope_check_oos_forced(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "SCOPE.md").write_text(SCOPE_WITH_OOS, encoding="utf-8")
+        blocked = json.loads(
+            execute_tool(
+                "scope_check",
+                {"target_dir": str(root), "host": "admin.example.com", "force": False},
+            )
+        )
+        self.assertEqual(blocked.get("status"), "OUT_OF_SCOPE")
+        self.assertFalse(blocked.get("allowed"))
+        forced = json.loads(
+            execute_tool(
+                "scope_check",
+                {"target_dir": str(root), "host": "admin.example.com", "force": True},
+            )
+        )
+        self.assertEqual(forced.get("status"), "OUT_OF_SCOPE_FORCED")
+        self.assertTrue(forced.get("allowed"))
+        self.assertTrue(forced.get("force_override"))
+
     def test_run_tool_dry_run_level3_with_force(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -119,8 +176,6 @@ class ForcePolicyGateTests(unittest.TestCase):
                 "concurrency": 2,
             },
         )
-        import json
-
         data = json.loads(out)
         self.assertTrue(data.get("ok"))
         self.assertFalse(data.get("executed"))

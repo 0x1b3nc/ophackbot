@@ -134,6 +134,14 @@ def handle_slash(text: str) -> CmdResult:
             enable_force(quiet=True)
             return CmdResult(messages=["force **on**"])
         if arg in {"off", "0", "false", "no"}:
+            from .yolo import is_yolo
+
+            if is_yolo():
+                return CmdResult(
+                    messages=[
+                        "force stays **on** while yolo is on — `/yolo off` first"
+                    ]
+                )
             disable_force(quiet=True)
             return CmdResult(messages=["force **off**"])
         return CmdResult(messages=[f"force is {'on' if is_forced() else 'off'}"])

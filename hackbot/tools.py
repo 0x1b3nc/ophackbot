@@ -1772,13 +1772,22 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "scope_check",
-        "description": "Check if a host is in SCOPE.md and classify an optional action's aggression level.",
+        "description": (
+            "Check if a host is in SCOPE.md and classify an optional action's aggression. "
+            "With /force or force=true, OUT_OF_SCOPE returns status OUT_OF_SCOPE_FORCED "
+            "(allowed under operator responsibility) instead of a hard stop."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "target_dir": {"type": "string", "description": "e.g. targets/demo"},
                 "host": {"type": "string"},
                 "action": {"type": "string", "description": "optional action text for aggression level"},
+                "force": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Operator override; also follows session /force and /yolo",
+                },
             },
             "required": ["target_dir", "host"],
             "additionalProperties": False,
@@ -3700,19 +3709,50 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         if not target.is_absolute():
             target = ROOT / target
         policy = ScopePolicy.load(target)
-        host = host_from_target(args["host"])
-        if policy.is_explicitly_out_of_scope(host):
-            status = "OUT_OF_SCOPE"
-        elif policy.contains_host(host):
-            status = "IN_SCOPE"
-        else:
-            status = "NOT_CONFIRMED"
-        out: dict[str, Any] = {"host": host, "status": status}
-        action = args.get("action")
-        if action:
-            level = policy.classify_aggression(action)
-            out["aggression"] = level
-            out["policy_quote"] = policy_quote_for(policy, level)
+        host_raw = str(args["host"])
+        host = host_from_target(host_raw)
+        force = _resolve_force_arg(args)
+        action = str(args.get("action") or "recon").strip() or "recon"
+        out: dict[str, Any] = {"host": host, "force": force, "ok": True}
+        try:
+            gate = policy.assert_action_allowed(
+                host_raw, action, force=force, tool="scope_check"
+            )
+            status = str(gate.get("status") or "NOT_CONFIRMED")
+            out.update(
+                {
+                    "status": status,
+                    "allowed": True,
+                    "aggression": gate.get("aggression"),
+                    "force_override": bool(gate.get("force_override")),
+                    "warnings": list(gate.get("warnings") or []),
+                    "policy_quote": policy_quote_for(
+                        policy, int(gate.get("aggression") or 0)
+                    ),
+                }
+            )
+        except PermissionError as exc:
+            if policy.target_out_of_scope(host_raw) or policy.is_explicitly_out_of_scope(
+                host
+            ):
+                status = "OUT_OF_SCOPE"
+            elif not (
+                policy.target_in_scope(host_raw) or policy.contains_host(host)
+            ):
+                status = "NOT_CONFIRMED"
+            else:
+                status = "DENIED"
+            level = policy.classify_aggression(action, tool="scope_check")
+            out.update(
+                {
+                    "status": status,
+                    "allowed": False,
+                    "aggression": level,
+                    "force_override": False,
+                    "error": str(exc),
+                    "policy_quote": policy_quote_for(policy, level),
+                }
+            )
         return json.dumps(out)
 
     if name == "show_config":

@@ -80,26 +80,45 @@ def target_init(name: str) -> int:
     return 0
 
 
-def scope_check(target_dir: str, host: str | None, action: str | None) -> int:
+def scope_check(
+    target_dir: str,
+    host: str | None,
+    action: str | None,
+    *,
+    force: bool = False,
+) -> int:
+    from .force import is_forced
+
     policy = ScopePolicy.load(Path(target_dir))
+    forced = bool(force or is_forced())
     rc = 0
     if host:
         parsed_host = host_from_target(host)
-        if policy.is_explicitly_out_of_scope(parsed_host):
-            status = "OUT_OF_SCOPE"
-            rc = 1
-        elif policy.contains_host(parsed_host):
-            status = "IN_SCOPE"
-        else:
-            status = "NOT_CONFIRMED"
+        try:
+            gate = policy.assert_action_allowed(
+                host, action or "recon", force=forced, tool="scope_check"
+            )
+            status = str(gate.get("status") or "IN_SCOPE")
+            if status in {"OUT_OF_SCOPE"}:
+                rc = 1
+            # OUT_OF_SCOPE_FORCED / IN_SCOPE / NOT_CONFIRMED-with-force → ok for operator
+        except PermissionError:
+            if policy.is_explicitly_out_of_scope(parsed_host) or policy.target_out_of_scope(
+                host
+            ):
+                status = "OUT_OF_SCOPE"
+            elif policy.contains_host(parsed_host) or policy.target_in_scope(host):
+                status = "DENIED"
+            else:
+                status = "NOT_CONFIRMED"
             rc = 1
         ui.scope_result(parsed_host, status)
     if action:
         level = policy.classify_aggression(action)
         warnings: list[str] = []
-        if level >= 2 and not policy.mentions_active_testing():
+        if level >= 2 and not policy.mentions_active_testing() and not forced:
             warnings.append("active/moderate action: confirm policy text before running")
-        if level >= 3 and not policy.allows_level3():
+        if level >= 3 and not policy.allows_level3() and not forced:
             warnings.append("level 3 not explicitly allowed in SCOPE.md")
             rc = 1
         ui.aggression_result(level, policy_quote_for(policy, level), warnings)
@@ -302,6 +321,11 @@ def build_parser() -> argparse.ArgumentParser:
     scope_p.add_argument("target_dir")
     scope_p.add_argument("--host")
     scope_p.add_argument("--action")
+    scope_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Operator force override (incl. OUT_OF_SCOPE → OUT_OF_SCOPE_FORCED)",
+    )
 
     sub.add_parser(
         "show-config",
@@ -443,7 +467,9 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.subcommand == "target-init":
         return target_init(args.name)
     if args.subcommand == "scope-check":
-        return scope_check(args.target_dir, args.host, args.action)
+        return scope_check(
+            args.target_dir, args.host, args.action, force=bool(args.force)
+        )
     if args.subcommand == "show-config":
         from .config import get_config
 

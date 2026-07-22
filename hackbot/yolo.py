@@ -67,7 +67,7 @@ def disable_yolo() -> None:
     _YOLO_ACTIVE = False
     os.environ.pop("HACKBOT_YOLO", None)
     if _YOLO_ENABLED_FORCE:
-        disable_force()
+        disable_force(quiet=True)
         _YOLO_ENABLED_FORCE = False
     ui.success("yolo OFF — approve prompts back")
     log_decision("ALLOW", "yolo OFF", kind="yolo")

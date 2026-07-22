@@ -114,8 +114,12 @@ def copy_text(text: str, *, osc52_write=None, normalize: bool = True) -> tuple[b
         return False, "failed"
 
 
-def read_text() -> str | None:
-    """Best-effort read from the system clipboard (for /cleanclip)."""
+def read_text(*, allow_file_fallback: bool = False) -> str | None:
+    """Best-effort read from the system clipboard.
+
+    Does **not** read ``hackbot-clipboard.txt`` by default — that file is only a
+    last-resort *write* sink and can be stale from a prior session.
+    """
     if sys.platform == "win32":
         ps = shutil.which("powershell") or shutil.which("pwsh")
         if ps:
@@ -155,12 +159,13 @@ def read_text() -> str | None:
             return r.stdout.decode("utf-8", errors="replace")
         except Exception:  # noqa: BLE001
             continue
-    path = clipboard_fallback_path()
-    if path.is_file():
-        try:
-            return path.read_text(encoding="utf-8")
-        except Exception:  # noqa: BLE001
-            return None
+    if allow_file_fallback:
+        path = clipboard_fallback_path()
+        if path.is_file():
+            try:
+                return path.read_text(encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                return None
     return None
 
 
@@ -169,7 +174,7 @@ def clean_clipboard() -> tuple[bool, str, int, int]:
 
     Returns ``(ok, method, before_len, after_len)``.
     """
-    raw = read_text()
+    raw = read_text(allow_file_fallback=False)
     if raw is None:
         return False, "empty", 0, 0
     cleaned = normalize_copied_text(raw)

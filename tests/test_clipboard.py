@@ -79,6 +79,30 @@ class ClipboardTests(unittest.TestCase):
         self.assertIn("hello fallback", path.read_text(encoding="utf-8"))
         path.unlink(missing_ok=True)
 
+    def test_read_ignores_stale_fallback_file(self) -> None:
+        from hackbot.clipboard import clipboard_fallback_path, read_text
+
+        path = clipboard_fallback_path()
+        path.write_text("STALE_HUNT_OUTPUT_DO_NOT_PASTE", encoding="utf-8")
+        try:
+            with mock.patch("hackbot.clipboard.sys.platform", "linux"):
+                with mock.patch("hackbot.clipboard.shutil.which", return_value=None):
+                    import builtins
+
+                    real_import = builtins.__import__
+
+                    def _no_pyperclip(name, *a, **k):  # noqa: ANN001
+                        if name == "pyperclip":
+                            raise ImportError("nope")
+                        return real_import(name, *a, **k)
+
+                    with mock.patch("builtins.__import__", side_effect=_no_pyperclip):
+                        self.assertIsNone(read_text())
+                        # Explicit opt-in still works for debugging
+                        self.assertIn("STALE", read_text(allow_file_fallback=True) or "")
+        finally:
+            path.unlink(missing_ok=True)
+
     @unittest.skipUnless(sys.platform == "win32", "Windows clipboard")
     def test_windows_roundtrip(self) -> None:
         marker = f"hb-clip-test-{uuid.uuid4().hex[:8]}"

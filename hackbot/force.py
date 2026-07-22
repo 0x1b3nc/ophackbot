@@ -33,7 +33,16 @@ FORCE_WORDS = (
 
 
 def is_forced() -> bool:
-    return _FORCE_ACTIVE
+    """True if session /force is on, or YOLO is on (YOLO implies force)."""
+    if _FORCE_ACTIVE:
+        return True
+    # Lazy import — yolo.py imports force; avoid cycle at module load.
+    try:
+        from . import yolo as yolo_mod
+
+        return bool(yolo_mod.is_yolo())
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def enable_force(*, quiet: bool = False) -> None:
@@ -43,11 +52,22 @@ def enable_force(*, quiet: bool = False) -> None:
         ui.markdown_panel(FORCE_BANNER, title="force")
 
 
-def disable_force(*, quiet: bool = False) -> None:
+def disable_force(*, quiet: bool = False) -> bool:
+    """Turn force off. Refuses while YOLO is on (YOLO keeps force/OOS override)."""
     global _FORCE_ACTIVE
+    try:
+        from . import yolo as yolo_mod
+
+        if yolo_mod.is_yolo():
+            if not quiet:
+                ui.warn("force stays ON while /yolo is on — `/yolo off` first")
+            return False
+    except Exception:  # noqa: BLE001
+        pass
     _FORCE_ACTIVE = False
     if not quiet:
-        ui.success("force OFF — SCOPE soft gates restored")
+        ui.success("force OFF — SCOPE gates restored")
+    return True
 
 
 def set_force(on: bool) -> None:
@@ -72,9 +92,9 @@ def prompt_wants_force(text: str) -> bool:
 
 
 def effective_force(*, prompt_force: bool = False, arg_force: bool | None = None) -> bool:
-    """Session OR prompt OR explicit tool arg."""
+    """Session OR prompt OR explicit tool arg (YOLO counts as session force)."""
     if arg_force is True:
         return True
-    if arg_force is False and not prompt_force and not _FORCE_ACTIVE:
+    if arg_force is False and not prompt_force and not is_forced():
         return False
-    return _FORCE_ACTIVE or prompt_force or bool(arg_force)
+    return is_forced() or prompt_force or bool(arg_force)
