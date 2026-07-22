@@ -405,11 +405,11 @@ class HackbotTUI(App[None]):
         chat = self._chat()
         self._msg_i += 1
         line = f"› {text}"
-            chat.mount(
-                CopyableStatic(
-                    line, plain=line, classes="msg-user", id=f"u{self._msg_i}"
-                )
+        chat.mount(
+            CopyableStatic(
+                line, plain=line, classes="msg-user", id=f"u{self._msg_i}"
             )
+        )
         self._chat_plain.append(line)
         self._maybe_scroll_end(force=True)
 
