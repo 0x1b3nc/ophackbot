@@ -72,8 +72,8 @@ Plain REPL stays for thin SSH. Optional external host: [docs/TOAD.md](docs/TOAD.
 if you want only our brand. `hackbot ui` (browser) is deprecated.
 
 **Copy in the TUI:** click a message, or `F2` / `Ctrl+Y` / `/copy`.
-**Paste:** multiline composer — Ctrl+V keeps every line; `Enter` sends;
-`Shift+Enter` newline (`Ctrl+J` fallback). **Scroll:** wheel + scrollbar + PgUp/PgDn always on.
+**Paste:** multiline composer — Ctrl+V keeps every line; `Enter` inserts a newline;
+`Ctrl+Enter` or the **Send** button submits. **Scroll:** wheel + scrollbar + PgUp/PgDn always on.
 
 ## Brains
 
