@@ -275,7 +275,15 @@ def _apply_tool_calls(
                 }
             )
             continue
-        ui.tool_line(name, "run")
+        bits = [name]
+        if args.get("method"):
+            bits.append(str(args.get("method")).upper())
+        if args.get("url"):
+            bits.append(str(args.get("url")))
+        elif args.get("host"):
+            bits.append(str(args.get("host")))
+        # Same visual language as Codex shell runs.
+        ui.activity("run", "hackbot " + " ".join(bits), style="hb.cmd")
         result = tools.execute_tool(name, args, approve_fn=approve_fn)
         try:
             parsed = json.loads(result)
@@ -285,14 +293,13 @@ def _apply_tool_calls(
             parsed = None
             ok = not result.startswith("(")
             err = None if ok else result[:200]
-        if ok:
-            ui.tool_line(name, "ok")
-        else:
-            ui.tool_line(name, "fail")
-            if err:
-                ui.error(str(err)[:300])
         clipped = result if len(result) <= _MAX_TOOL_RESULT_CHARS else (
             result[: _MAX_TOOL_RESULT_CHARS - 1] + "…"
+        )
+        ui.activity(
+            "out/ok" if ok else "out/fail",
+            clipped if ok else (str(err) if err else clipped),
+            style="hb.ok" if ok else "hb.warn",
         )
         applied.append(
             {
@@ -919,6 +926,7 @@ def _fmt_command(cmd: Any) -> str:
     Default = raw Codex look (``/usr/bin/zsh -lc 'for … curl …'``).
     Compact one-liners only when ``HACKBOT_STREAM_COMPACT=1``.
     """
+    cmd = ui.coerce_command(cmd)
     if ui.stream_command_compact():
         return ui.summarize_command(cmd)
     return ui.format_stream_command(cmd)
@@ -1004,16 +1012,8 @@ def _handle_event(
         shown = True
 
     etype = str(obj.get("type") or "")
-    if etype == "turn.started":
-        line("turn", "started")
-        return shown
-    if etype == "turn.completed":
-        usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
-        if usage:
-            line(
-                "turn",
-                f"done  in={usage.get('input_tokens', '?')} out={usage.get('output_tokens', '?')}",
-            )
+    # Skip turn lifecycle noise — operators want think/run like Claude CLI / the screenshot.
+    if etype in {"thread.started", "turn.started", "turn.completed"}:
         return shown
     if etype in {"error", "turn.failed"}:
         msg = obj.get("message") or obj.get("error") or etype
@@ -1030,29 +1030,56 @@ def _handle_event(
         item_id = str(item.get("id") or "")
 
         if "reason" in ilow:
-            snippet = _clip(_item_text(item), 200)
-            # Dedupe noisy item.updated floods by item id + prefix.
-            dedupe = f"think:{item_id}:{snippet[:80]}"
-            if snippet and not printed_hdr.get(dedupe):
-                printed_hdr[dedupe] = True
-                line("think", snippet)
+            full = _item_text(item)
+            if full:
+                key = f"think_full:{item_id}"
+                prev = str(printed_hdr.get(key) or "")
+                if before_print:
+                    before_print()
+                hdr()
+                if full.startswith(prev) and len(full) > len(prev):
+                    ui.think_delta(full[len(prev) :], first=not prev)
+                    printed_hdr[f"think_open:{item_id}"] = True
+                    shown = True
+                elif full != prev:
+                    # Non-prefix update (rare) — print a fresh think line.
+                    line("think", full if len(full) <= 400 else full[:399] + "…")
+                printed_hdr[key] = full
+                if etype == "item.completed" and printed_hdr.get(f"think_open:{item_id}"):
+                    ui.console.print()
+                    printed_hdr.pop(f"think_open:{item_id}", None)
 
         elif "command" in ilow or "exec" in ilow:
-            raw_cmd = str(item.get("command") or item.get("cmd") or "")
+            raw_cmd = item.get("command") if item.get("command") is not None else item.get("cmd")
+            cmd_text = ui.command_as_text(raw_cmd)
             if meta is not None:
-                for url in _shell_http_urls(raw_cmd):
+                for url in _shell_http_urls(cmd_text):
                     meta.setdefault("shell_http", []).append(url)
             status = str(item.get("status") or "").lower()
             pretty = _fmt_command(raw_cmd) or "(command)"
-            if etype == "item.started" or status in {"in_progress", ""}:
+            run_key = f"run_shown:{item_id or pretty[:120]}"
+            if (
+                (etype == "item.started" or status in {"in_progress", ""})
+                and not printed_hdr.get(run_key)
+            ):
+                # Close any open think stream before the command dump.
+                if any(k.startswith("think_open:") for k in printed_hdr):
+                    ui.console.print()
+                    for k in list(printed_hdr):
+                        if k.startswith("think_open:"):
+                            printed_hdr.pop(k, None)
                 line("run", pretty, "hb.cmd")
+                printed_hdr[run_key] = True
             if etype == "item.completed" or status in {"completed", "failed", "declined"}:
+                if not printed_hdr.get(run_key):
+                    line("run", pretty, "hb.cmd")
+                    printed_hdr[run_key] = True
                 exit_code = item.get("exit_code")
                 out = str(item.get("aggregated_output") or "").strip()
                 mark = "ok" if status != "failed" and exit_code in {0, None, "0"} else "fail"
                 # Raw stream: show real command output (truncated only if huge).
                 if out:
-                    max_out = 1200 if not ui.stream_command_compact() else 180
+                    max_out = 4000 if not ui.stream_command_compact() else 180
                     shown_out = out if len(out) <= max_out else out[: max_out - 1] + "…"
                     line(
                         f"out/{mark}",
@@ -1122,18 +1149,21 @@ def _handle_event(
         if snippet:
             line("think", snippet)
     elif mtype == "exec_command_begin":
-        raw_cmd = str(msg.get("command") or "")
+        raw_cmd = msg.get("command")
         if meta is not None:
-            for url in _shell_http_urls(raw_cmd):
+            for url in _shell_http_urls(ui.command_as_text(raw_cmd)):
                 meta.setdefault("shell_http", []).append(url)
         line("run", _fmt_command(raw_cmd), "hb.cmd")
     elif mtype == "exec_command_end":
-        out = _clip(str(msg.get("aggregated_output") or msg.get("output") or ""), 180)
-        detail = _fmt_command(msg.get("command") or "")
-        if msg.get("exit_code") is not None:
-            detail += f"  exit={msg.get('exit_code')}"
-        if out:
-            detail += f"  │ {out}"
+        out = str(msg.get("aggregated_output") or msg.get("output") or "").strip()
+        max_out = 4000 if not ui.stream_command_compact() else 180
+        if out and len(out) > max_out:
+            out = out[: max_out - 1] + "…"
+        detail = out or _fmt_command(msg.get("command") or "")
+        if msg.get("exit_code") is not None and out:
+            detail = f"exit={msg.get('exit_code')}\n{detail}"
+        elif msg.get("exit_code") is not None:
+            detail = f"exit={msg.get('exit_code')}"
         line("out", detail)
     elif mtype == "error":
         line("err", str(msg.get("message") or "error"), "hb.warn")

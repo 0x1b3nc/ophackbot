@@ -56,6 +56,15 @@ class UiPolishTests(unittest.TestCase):
         self.assertIn("adultforce.com", raw)
         self.assertIn("for u in", raw)
 
+    def test_stream_command_does_not_str_list_badly(self) -> None:
+        # Regression: str(['zsh','-lc',...]) used to produce ugly Python repr.
+        raw = format_stream_command(
+            ["/usr/bin/zsh", "-lc", "curl -k -sS https://www.adultforce.com/api/"]
+        )
+        self.assertNotIn("[", raw.split("-lc", 1)[0])
+        self.assertNotIn("'/usr/bin/zsh'", raw)
+        self.assertIn("/usr/bin/zsh -lc", raw)
+
     def test_ensure_prompt_line_stops_live(self) -> None:
         with mock.patch("hackbot.ui.console.clear_live") as clear:
             with mock.patch("hackbot.ui.console.print") as pr:

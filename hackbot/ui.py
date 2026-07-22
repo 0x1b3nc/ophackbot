@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -243,8 +244,28 @@ def normalize_agent_text(text: str) -> str:
     return text
 
 
+def coerce_command(cmd: object) -> object:
+    """Normalize Codex command payloads (list argv, JSON list string, or str)."""
+    if isinstance(cmd, list):
+        return cmd
+    if isinstance(cmd, tuple):
+        return list(cmd)
+    if isinstance(cmd, str):
+        s = cmd.strip()
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                parsed = json.loads(s)
+            except json.JSONDecodeError:
+                return cmd
+            if isinstance(parsed, list):
+                return parsed
+        return cmd
+    return cmd
+
+
 def format_stream_command(cmd: object) -> str:
     """Full command for live stream — Codex-style ``/usr/bin/zsh -lc '…'``."""
+    cmd = coerce_command(cmd)
     if isinstance(cmd, list) and cmd:
         if len(cmd) >= 3 and str(cmd[-2]) in {"-lc", "-c"}:
             shell = str(cmd[0])
@@ -252,12 +273,20 @@ def format_stream_command(cmd: object) -> str:
             body = str(cmd[-1])
             if "'" in body and '"' not in body:
                 return f'{shell} {flag} "{body}"'
-            # Match the raw Codex transcript look.
+            # Match the raw Codex transcript look from the operator screenshot.
             esc = body.replace("'", "'\\''")
             return f"{shell} {flag} '{esc}'"
         return " ".join(str(p) for p in cmd)
     text = str(cmd or "").strip()
     return text or "(empty)"
+
+
+def command_as_text(cmd: object) -> str:
+    """Flatten command to a searchable string (for URL sniffing etc.)."""
+    cmd = coerce_command(cmd)
+    if isinstance(cmd, list):
+        return " ".join(str(p) for p in cmd)
+    return str(cmd or "")
 
 
 def summarize_command(cmd: object, *, max_len: int = 96) -> str:
@@ -326,8 +355,12 @@ def activity(kind: str, detail: str, *, style: str = "hb.muted") -> None:
     detail = detail or ""
     if not detail.strip():
         return
-    # Codex-style: "run: /usr/bin/zsh -lc '…'" — plain text, wrap freely.
-    if kind.startswith("run") or kind.startswith("out") or kind in {"log", "dbg"}:
+    # Codex/Claude-CLI style: "run: /usr/bin/zsh -lc '…'" — plain text, wraps.
+    if (
+        kind.startswith("run")
+        or kind.startswith("out")
+        or kind in {"log", "dbg", "think", "plan", "tool"}
+    ):
         console.print(Text(f"{kind}: ", style="hb.label") + Text(detail, style=style))
         return
     # Safe for short labels; escape brackets that break Rich markup.
@@ -335,6 +368,15 @@ def activity(kind: str, detail: str, *, style: str = "hb.muted") -> None:
     console.print(
         Text.from_markup(f"[hb.label]{kind}[/] [{style}]{safe}[/]")
     )
+
+
+def think_delta(text: str, *, first: bool = False) -> None:
+    """Append-only reasoning stream (dim), Claude Code style."""
+    if not text:
+        return
+    if first:
+        console.print(Text("think", style="hb.label"))
+    console.print(Text(text, style="hb.muted"), end="")
 
 
 def stop_live() -> None:

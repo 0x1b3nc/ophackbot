@@ -20,10 +20,10 @@ class CodexStreamEventTests(unittest.TestCase):
         self.assertFalse(shown)
         self.assertEqual(printed, [])
 
-    def test_turn_started_shows(self) -> None:
+    def test_turn_started_silent(self) -> None:
         hdr: dict = {}
         shown = _handle_event({"type": "turn.started"}, hdr)
-        self.assertTrue(shown)
+        self.assertFalse(shown)
 
     def test_reasoning_shows_think(self) -> None:
         hdr: dict = {}
@@ -85,16 +85,20 @@ class CodexStreamEventTests(unittest.TestCase):
         )
         self.assertTrue(shown)
 
-    def test_command_shows_run_and_output(self) -> None:
+    def test_command_list_argv_shows_raw_zsh(self) -> None:
         hdr: dict = {}
         meta: dict = {"shell_http": []}
+        script = (
+            "for u in 'https://www.adultforce.com/api/' 'https://www.adultforce.com/api'; do "
+            "curl -k -sS -H 'X-Bug-Bounty: durkzprg' \"$u\"; done"
+        )
         shown1 = _handle_event(
             {
                 "type": "item.started",
                 "item": {
                     "id": "c1",
                     "type": "command_execution",
-                    "command": "curl -s https://example.com/api/",
+                    "command": ["/usr/bin/zsh", "-lc", script],
                     "status": "in_progress",
                     "aggregated_output": "",
                     "exit_code": None,
@@ -109,9 +113,9 @@ class CodexStreamEventTests(unittest.TestCase):
                 "item": {
                     "id": "c1",
                     "type": "command_execution",
-                    "command": "curl -s https://example.com/api/",
+                    "command": ["/usr/bin/zsh", "-lc", script],
                     "status": "completed",
-                    "aggregated_output": '{"ok":true}',
+                    "aggregated_output": "200 https://www.adultforce.com/api/\n",
                     "exit_code": 0,
                 },
             },
@@ -120,7 +124,7 @@ class CodexStreamEventTests(unittest.TestCase):
         )
         self.assertTrue(shown1)
         self.assertTrue(shown2)
-        self.assertIn("https://example.com/api/", meta["shell_http"])
+        self.assertTrue(any("adultforce.com" in u for u in meta["shell_http"]))
 
 
 if __name__ == "__main__":
