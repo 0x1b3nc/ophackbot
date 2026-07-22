@@ -275,15 +275,27 @@ def _run_send(agent: Any, prompt: str, *, selection: Any) -> tuple[str, str]:
     except TypeError:
         run = agent.send(prompt)
 
+    def _cancelled() -> bool:
+        try:
+            from .turn_bus import turn_cancel_requested
+
+            return turn_cancel_requested()
+        except Exception:  # noqa: BLE001
+            return False
+
     stream_answer = ""
     # Live token print is off (mangled spaces); keep a spinner so the REPL isn't silent.
     wait_status = ui.console.status("[cyan]thinking…[/]", spinner="dots")
     wait_status.start()
+    cancelled = False
     try:
         if streaming_enabled():
             try:
                 stream = run.messages() if hasattr(run, "messages") else run.stream()
                 for message in stream:
+                    if _cancelled():
+                        cancelled = True
+                        break
                     mtype = getattr(message, "type", None)
                     if mtype == "assistant":
                         piece = _assistant_text_from_messages([message])
@@ -316,10 +328,25 @@ def _run_send(agent: Any, prompt: str, *, selection: Any) -> tuple[str, str]:
             except Exception:
                 pass
 
+        if cancelled or _cancelled():
+            try:
+                close_cursor_agent()
+            except Exception:  # noqa: BLE001
+                pass
+            wait_status.stop()
+            ui.stop_live()
+            return "(cancelled)", format_selection_label(selection)
+
         if stream_output_allowed():
             wait_status.start()
             wait_status.update("[cyan]thinking…[/]")
         result = run.wait() if hasattr(run, "wait") else None
+        if _cancelled():
+            try:
+                close_cursor_agent()
+            except Exception:  # noqa: BLE001
+                pass
+            return "(cancelled)", format_selection_label(selection)
     finally:
         wait_status.stop()
         ui.stop_live()
@@ -373,6 +400,15 @@ def run_cursor_turn(
     """Run one turn through the Cursor SDK local agent and display the answer."""
     del history  # durable Agent holds conversation; REPL still stores for /clear UX
     orig = _orig_user_prompt if _orig_user_prompt is not None else user_prompt
+
+    try:
+        from .turn_bus import turn_cancel_requested
+
+        if turn_cancel_requested():
+            ui.warn("cancelled")
+            return "(cancelled)"
+    except Exception:  # noqa: BLE001
+        pass
 
     if allow_file_ops and _fileop_depth == 0:
         direct = _try_direct_file_create(user_prompt, approve_fn)

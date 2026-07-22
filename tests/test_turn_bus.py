@@ -12,6 +12,9 @@ from hackbot.turn_bus import TurnBus, set_bus, turn_cancel_requested
 class TurnBusTests(unittest.TestCase):
     def tearDown(self) -> None:
         set_bus(None)
+        # Ensure process-global cancel does not leak across tests.
+        bus = TurnBus(sync=True)
+        bus.clear_cancel()
 
     def test_sync_runs_inline(self) -> None:
         seen: list[str] = []
@@ -48,7 +51,7 @@ class TurnBusTests(unittest.TestCase):
         deadline = time.time() + 3.0
         while time.time() < deadline and "second" not in ran:
             time.sleep(0.05)
-        bus.shutdown()
+        bus.shutdown(wait=True, timeout=2.0)
         self.assertIn("first", ran)
         self.assertIn("second", ran)
 
@@ -57,6 +60,9 @@ class TurnBusTests(unittest.TestCase):
         set_bus(bus)
         self.assertFalse(turn_cancel_requested())
         bus.request_interrupt()
+        self.assertTrue(turn_cancel_requested())
+        # Survives clearing the bus pointer (shutdown race).
+        set_bus(None)
         self.assertTrue(turn_cancel_requested())
         bus.clear_cancel()
         self.assertFalse(turn_cancel_requested())

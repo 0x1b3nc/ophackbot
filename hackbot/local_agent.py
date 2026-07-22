@@ -2658,6 +2658,14 @@ def run_local_agent(
 
     i = 0
     while i < len(plan):
+        try:
+            from .turn_bus import turn_cancel_requested
+
+            if turn_cancel_requested():
+                ui.warn("cancelled")
+                return
+        except Exception:  # noqa: BLE001
+            pass
         action = plan[i]
         i += 1
         ui.rule(f"step {i}/{len(plan)}")

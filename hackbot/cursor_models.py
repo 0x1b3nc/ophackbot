@@ -67,6 +67,11 @@ class ResolvedCursorModel:
     source: str  # curated | live
     label: str = ""
 
+    @property
+    def id(self) -> str:
+        """Alias for entry.id — matches cursor_sdk.ModelSelection shape."""
+        return self.entry.id
+
     def fingerprint(self) -> str:
         return f"{self.entry.id}|{self.effort or '-'}|fast={int(self.fast)}"
 
@@ -292,11 +297,13 @@ def resolve_cursor_model(
 
 
 def build_model_selection(resolved: ResolvedCursorModel) -> Any:
-    """Build cursor_sdk.ModelSelection (or plain id string if import fails)."""
+    """Build cursor_sdk.ModelSelection (or ResolvedCursorModel if SDK missing)."""
     try:
         from cursor_sdk import ModelParameterValue, ModelSelection
     except ImportError:
-        return resolved.entry.id
+        # Keep effort/fast in the object so format_selection_label / tests work
+        # without cursor-sdk installed.
+        return resolved
 
     params: list[Any] = []
     if resolved.effort and resolved.entry.effort_param:

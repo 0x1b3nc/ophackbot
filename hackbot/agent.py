@@ -262,6 +262,16 @@ def run_agent(
 
             round_fileops: list[dict[str, Any]] = []
             for tc in response.tool_calls:
+                try:
+                    from .turn_bus import turn_cancel_requested
+
+                    if turn_cancel_requested():
+                        ui.warn("cancelled")
+                        _trim_history(messages)
+                        ui.turn_timing(time.perf_counter() - started, tools_used)
+                        return messages
+                except Exception:  # noqa: BLE001
+                    pass
                 tools_used += 1
                 if _verbose():
                     ui.kv("tool", tc.name)

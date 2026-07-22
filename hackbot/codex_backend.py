@@ -754,6 +754,9 @@ def run_codex_turn(
     (SCOPE.md etc.) do not strand the hunt waiting for the user to re-ask.
     """
     global _CODEX_SESSION_READY, _CODEX_AVAIL, _CODEX_LAST_SANDBOX
+    if codex_cancel_requested():
+        ui.warn("cancelled")
+        return "(cancelled)"
     orig = _orig_user_prompt if _orig_user_prompt is not None else user_prompt
     if allow_file_ops and _fileop_depth == 0:
         direct = _try_direct_file_create(user_prompt, approve_fn)
@@ -911,6 +914,9 @@ def run_codex_turn(
         and shell_http
         and _fileop_depth == 0
     ):
+        if codex_cancel_requested():
+            ui.warn("cancelled")
+            return "(cancelled)"
         ui.warn("raw shell HTTP detected — forcing hackbot-tool http_request")
         hist = list(history or [])
         hist.append(("user", orig))
@@ -927,15 +933,25 @@ def run_codex_turn(
             _orig_user_prompt=orig,
         )
 
+    if codex_cancel_requested():
+        ui.warn("cancelled")
+        return "(cancelled)"
+
     ui.markdown_panel(answer, title="hackbot (codex)")
     applied_tools: list[dict[str, Any]] = []
     if tool_calls:
         applied_tools = _apply_tool_calls(
             tool_calls, approve_fn, default_prompt=orig
         )
+    if codex_cancel_requested():
+        ui.warn("cancelled")
+        return "(cancelled)"
     applied: list[dict[str, Any]] = []
     if ops:
         applied = _apply_fileops(ops, approve_fn)
+    if codex_cancel_requested():
+        ui.warn("cancelled")
+        return "(cancelled)"
     _CODEX_SESSION_READY = True
     _CODEX_LAST_SANDBOX = sandbox
 
@@ -1244,6 +1260,24 @@ def _handle_event(
     return shown
 
 
+def _reap_proc(proc: subprocess.Popen[str] | None, *, timeout: float = 5.0) -> None:
+    """Ensure a killed/finished Codex child does not linger as a zombie."""
+    if proc is None:
+        return
+    try:
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=timeout)
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _run_quiet(
     cmd: list[str], prompt: str, timeout: int
 ) -> tuple[str, str, dict[str, Any]] | None:
@@ -1263,6 +1297,7 @@ def _run_quiet(
         return "", f"(could not launch codex: {exc})", {}
     with _CODEX_PROC_LOCK:
         _CODEX_PROC = proc
+    timed_out = False
     try:
         with ui.console.status("[cyan]codex is thinking...[/]", spinner="dots"):
             assert proc.stdin is not None
@@ -1271,7 +1306,12 @@ def _run_quiet(
             try:
                 stdout, stderr = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
+                timed_out = True
                 proc.kill()
+                try:
+                    stdout, stderr = proc.communicate(timeout=5)
+                except Exception:  # noqa: BLE001
+                    stdout, stderr = "", ""
                 return "", f"(codex timed out after {timeout}s)", {}
         if codex_cancel_requested():
             return "", "(cancelled)", {}
@@ -1280,6 +1320,8 @@ def _run_quiet(
         proc.kill()
         raise
     finally:
+        if timed_out or codex_cancel_requested() or (proc.poll() is None):
+            _reap_proc(proc)
         with _CODEX_PROC_LOCK:
             if _CODEX_PROC is proc:
                 _CODEX_PROC = None
@@ -1320,6 +1362,7 @@ def _run_streaming(
     status = ui.console.status("[cyan]codex is thinking...[/]", spinner="dots")
     status_live = False
     cancelled = False
+    timed_out = False
     trace = os.environ.get("HACKBOT_CODEX_TRACE", "").strip().lower() in {
         "1",
         "true",
@@ -1375,6 +1418,7 @@ def _run_streaming(
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
+                timed_out = True
                 proc.kill()
                 return "", f"(codex timed out after {timeout}s)", meta
     except KeyboardInterrupt:
@@ -1383,6 +1427,8 @@ def _run_streaming(
     finally:
         _stop_spinner()
         ui.stop_live()
+        if cancelled or timed_out or codex_cancel_requested() or (proc.poll() is None):
+            _reap_proc(proc)
         with _CODEX_PROC_LOCK:
             if _CODEX_PROC is proc:
                 _CODEX_PROC = None

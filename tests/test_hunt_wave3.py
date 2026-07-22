@@ -102,10 +102,20 @@ class CaptureHelpersTests(unittest.TestCase):
             def __exit__(self, *_a):
                 return False
 
+        # Inject a stub playwright package so this test runs without the dep.
+        import sys
+        import types
+
+        fake_pw_mod = types.ModuleType("playwright")
+        fake_sync = types.ModuleType("playwright.sync_api")
+        fake_sync.sync_playwright = lambda: FakePW()  # type: ignore[attr-defined]
         with (
+            patch.dict(
+                sys.modules,
+                {"playwright": fake_pw_mod, "playwright.sync_api": fake_sync},
+            ),
             patch("hackbot.runners.browser.playwright_available", return_value=True),
             patch("hackbot.runners.browser._guarded_page") as gp,
-            patch("playwright.sync_api.sync_playwright", return_value=FakePW()),
             patch(
                 "hackbot.auth_continuity.session_smoke",
                 return_value={"ok": True, "skipped": False, "reason": "whoami_ok"},

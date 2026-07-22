@@ -65,11 +65,18 @@ def require_in_scope(
 
 
 def _default_cancel_check() -> bool:
-    """Honor hunt /hunt stop while a subprocess is running."""
+    """Honor hunt stop + REPL interrupt while a subprocess is running."""
     try:
         from .. import hunt_controller
 
-        return bool(getattr(hunt_controller, "_STOP_REQUESTED", False))
+        if bool(getattr(hunt_controller, "_STOP_REQUESTED", False)):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from ..turn_bus import turn_cancel_requested
+
+        return turn_cancel_requested()
     except Exception:  # noqa: BLE001
         return False
 

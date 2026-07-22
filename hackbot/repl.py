@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Prompt
 
 from . import ui
 from .agent import run_agent
@@ -60,6 +60,14 @@ def _approve(prompt: str) -> bool:
                 "[bold yellow]Allow this action?[/] [dim]y/n[/]",
                 default="n",
             )
+            try:
+                from .turn_bus import turn_cancel_requested
+
+                if turn_cancel_requested():
+                    ui.warn("cancelled — denying pending action")
+                    return False
+            except Exception:  # noqa: BLE001
+                pass
             ans = (raw or "").strip().lower()
             if ans in {"y", "yes", "approve", "--approve", "/approve"}:
                 return True
@@ -389,7 +397,7 @@ def _repl_loop(brain: dict, session: _Session, bus: TurnBus) -> int:
             user = ask_operator_line(tag, fallback=Prompt.ask)
         except EOFError:
             ui.console.print()
-            bus.shutdown()
+            bus.shutdown(wait=True)
             set_bus(None)
             ui.info("bye")
             return 0
@@ -399,7 +407,7 @@ def _repl_loop(brain: dict, session: _Session, bus: TurnBus) -> int:
                 bus.request_interrupt()
                 ui.warn("interrupted — keep typing, or /exit")
                 continue
-            bus.shutdown()
+            bus.shutdown(wait=True)
             set_bus(None)
             ui.info("bye")
             return 0
@@ -409,15 +417,18 @@ def _repl_loop(brain: dict, session: _Session, bus: TurnBus) -> int:
             continue
         # Fresh line so turn banners never share a row with the echoed input.
         ui.console.print()
-        # Stray approve keystrokes after a raced prompt — do not start a new turn.
+        # Stray approve keystrokes only while a permission prompt is active.
         if text.lower() in {"y", "n", "yy", "nn", "yes", "no"}:
-            ui.warn(
-                "no permission prompt is waiting — type a real task "
-                "(or answer Allow this action? when it appears)"
-            )
-            continue
+            from .operator_gate import stream_output_allowed
+
+            if not stream_output_allowed():
+                ui.warn(
+                    "answer the Allow this action? prompt (y/n), "
+                    "not the main hackbot line"
+                )
+                continue
         if text in {"/exit", "/quit", "exit", "quit"}:
-            bus.shutdown()
+            bus.shutdown(wait=True)
             set_bus(None)
             ui.info("bye")
             return 0
@@ -621,10 +632,12 @@ def _repl_loop(brain: dict, session: _Session, bus: TurnBus) -> int:
             if not bearer and not cookie:
                 ui.error("pass --bearer and/or --cookie")
                 continue
-            if not Confirm.ask(
-                f"[bold yellow]Write session {name_s} to secrets/sessions.yaml?[/]",
-                default=False,
-            ):
+            with operator_prompt_active():
+                ans = ask_yes_no(
+                    f"[bold yellow]Write session {name_s} to secrets/sessions.yaml?[/] [dim]y/n[/]",
+                    default="n",
+                )
+            if (ans or "").strip().lower() not in {"y", "yes"}:
                 ui.warn("denied")
                 continue
             ident = save_session(

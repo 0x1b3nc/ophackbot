@@ -16,6 +16,10 @@ TurnFn = Callable[[str], None]
 
 _SENTINEL = object()
 
+# Process-wide cancel — survives ``set_bus(None)`` during shutdown so in-flight
+# turns still see interrupt after the REPL tears down the bus pointer.
+_GLOBAL_CANCEL = threading.Event()
+
 
 class TurnBus:
     def __init__(self, *, sync: bool = False) -> None:
@@ -30,6 +34,8 @@ class TurnBus:
         self._started = False
         self._lock = threading.Lock()
         self._queued_preview: list[str] = []
+        self._idle = threading.Event()
+        self._idle.set()
 
     def start(self, turn_fn: TurnFn) -> None:
         self._turn_fn = turn_fn
@@ -40,10 +46,15 @@ class TurnBus:
             self._started = True
             self._thread.start()
 
-    def shutdown(self) -> None:
+    def shutdown(self, *, wait: bool = True, timeout: float = 8.0) -> None:
+        """Interrupt in-flight work, stop the worker, optionally wait until idle."""
         self.request_interrupt()
         if not self._sync:
             self._inbox.put(_SENTINEL)
+            if wait:
+                self._idle.wait(timeout=timeout)
+                if self._thread.is_alive():
+                    self._thread.join(timeout=max(0.1, timeout / 2))
 
     def is_busy(self) -> bool:
         return self._busy.is_set()
@@ -53,14 +64,16 @@ class TurnBus:
             return len(self._queued_preview)
 
     def cancel_requested(self) -> bool:
-        return self._cancel.is_set()
+        return self._cancel.is_set() or _GLOBAL_CANCEL.is_set()
 
     def clear_cancel(self) -> None:
         self._cancel.clear()
+        _GLOBAL_CANCEL.clear()
 
     def request_interrupt(self) -> None:
         """Pause/kill the in-flight turn (codex proc + hunt stop)."""
         self._cancel.set()
+        _GLOBAL_CANCEL.set()
         try:
             from .codex_backend import request_codex_cancel
 
@@ -71,6 +84,14 @@ class TurnBus:
             from .hunt_controller import request_stop
 
             request_stop()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from .cursor_backend import close_cursor_agent
+
+            # Best-effort: drop durable agent so a cancelled run cannot resume.
+            if self.is_busy():
+                close_cursor_agent()
         except Exception:  # noqa: BLE001
             pass
 
@@ -108,6 +129,7 @@ class TurnBus:
             clear_stop()
         except Exception:  # noqa: BLE001
             pass
+        self._idle.clear()
         self._busy.set()
         try:
             self._turn_fn(text)
@@ -116,6 +138,7 @@ class TurnBus:
         finally:
             self._busy.clear()
             self.clear_cancel()
+            self._idle.set()
 
     def _loop(self) -> None:
         while True:
@@ -123,6 +146,7 @@ class TurnBus:
             if item is _SENTINEL:
                 break
             self._run_one(str(item))
+        self._idle.set()
 
 
 # Process-global bus used by cancel checks in backends.
@@ -139,5 +163,8 @@ def set_bus(bus: TurnBus | None) -> None:
 
 
 def turn_cancel_requested() -> bool:
+    """True if the operator interrupted the current turn (queue / Ctrl+C / exit)."""
+    if _GLOBAL_CANCEL.is_set():
+        return True
     bus = _BUS
     return bool(bus and bus.cancel_requested())

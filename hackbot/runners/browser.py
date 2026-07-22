@@ -144,11 +144,12 @@ def _gate(
     """Return early RunnerResult for missing dep / dry-run; else None to proceed."""
     require_in_scope(target_dir, url, action=action, force=force)
     ui.code_panel(json.dumps(plan, indent=2), title=title, lexer="json")
-    if not playwright_available():
-        return _missing_result(cmd)
+    # Dry-run must work without Playwright installed (plan preview only).
     if not approve:
         ui.dry_run_banner()
         return RunnerResult(cmd, False, None, json.dumps({"dry_run": True, **plan}), "", "dry-run")
+    if not playwright_available():
+        return _missing_result(cmd)
     return None
 
 
@@ -1223,8 +1224,7 @@ def browser_capture_session(
     }
     cmd = ["browser_capture_session", full, session]
     ui.code_panel(json.dumps(plan, indent=2), title="browser_capture_session", lexer="json")
-    if not playwright_available():
-        return _missing_result(cmd)
+    # Dry-run before Playwright check — operators can preview without the dep.
     if not approve:
         ui.dry_run_banner()
         return RunnerResult(
@@ -1241,6 +1241,8 @@ def browser_capture_session(
             "",
             "dry-run",
         )
+    if not playwright_available():
+        return _missing_result(cmd)
 
     from ..auth_continuity import session_smoke, sso_needs_setup_payload
     from ..hunt_jar import merge_set_cookie
