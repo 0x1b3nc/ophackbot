@@ -34,8 +34,17 @@ Each agent step should state:
 
 Prefer authz / business-logic over generic reflected XSS. Use `hunt_cockpit` for summary.
 
+## API + AI packs
+
+- Ingest: `import_openapi`, `import_postman` → HuntMemory + coverage cells.
+- API probes: `api_authz_matrix`, `api_*` canary probes (dry-run default).
+- AI probes: `llm_prompt_probe`, `llm_rag_probe`, `mcp_agent_probe`, `ai_eval_run`.
+- Playbooks: `prompt-injection`, `rag`, `agentic`, `mcp`, `system-boundary`, …
+- Knowledge keywords: `llm`, `rag`, `mcp`, `prompt-injection`, `agentic`.
+- AI payloads are canary-only (`HB_CANARY_*`); stop on cross-tenant data or real tool execution.
+
 ## Extreme study
 
-`open_knowledge` task keywords: `extreme`, `business-logic`, `saml`, `smuggle`, `prohibited`, …
+`open_knowledge` task keywords: `extreme`, `business-logic`, `saml`, `smuggle`, `prohibited`, `llm`, `rag`, `mcp`, …
 
 Playbooks: `invite-idor`, `dom-xss`, `cache-detect`, `prohibited-stop`.

@@ -281,10 +281,36 @@ def map_surface(
 
 def seed_candidates_from_surface(memory: HuntMemory) -> list[dict[str, Any]]:
     """Heuristic hypotheses from mapped surface (for Decide offline)."""
+    from .api_rank import endpoint_risk_score
+
     ideas: list[dict[str, Any]] = []
     for ep in memory.endpoints():
-        if ep.has_id_param() or re.search(r"/\d+(?:/|$)", ep.url):
+        risk = endpoint_risk_score(ep)
+        path_l = urllib.parse.urlparse(ep.url).path.lower()
+        # API/authz before generic reflected XSS
+        if risk >= 55 and (
+            ep.has_id_param()
+            or re.search(r"/\d+(?:/|$)", ep.url)
+            or any(x in path_l for x in ("/users", "/accounts", "/orgs", "/orders", "/invites"))
+        ):
             idor_params: dict[str, str] = {}
+            id_like = {"id", "user_id", "userid", "uid", "account_id", "order_id", "object_id", "uuid"}
+            for p in ep.params:
+                if p.lower() in id_like or p.lower().endswith("_id"):
+                    idor_params["param"] = p
+                    idor_params["swap_value"] = "999999"
+                    break
+            ideas.append(
+                {
+                    "module": "idor",
+                    "url": ep.url,
+                    "title": f"IDOR probe on {ep.url}",
+                    "priority": min(98, 90 + risk // 10),
+                    "params": idor_params,
+                }
+            )
+        elif ep.has_id_param() or re.search(r"/\d+(?:/|$)", ep.url):
+            idor_params = {}
             id_like = {"id", "user_id", "userid", "uid", "account_id", "order_id", "object_id", "uuid"}
             for p in ep.params:
                 if p.lower() in id_like or p.lower().endswith("_id"):
@@ -298,6 +324,26 @@ def seed_candidates_from_surface(memory: HuntMemory) -> list[dict[str, Any]]:
                     "title": f"IDOR probe on {ep.url}",
                     "priority": 90,
                     "params": idor_params,
+                }
+            )
+        if any(x in path_l for x in ("/chat", "/completions", "/messages", "/mcp", "/agents", "/rag")):
+            ideas.append(
+                {
+                    "module": "prompt-injection",
+                    "url": ep.url,
+                    "title": f"AI surface probe on {ep.url}",
+                    "priority": 88,
+                }
+            )
+        if risk >= 60 and any(
+            x in path_l for x in ("/billing", "/invite", "/admin", "/export", "/transfer", "/role")
+        ):
+            ideas.append(
+                {
+                    "module": "business-logic",
+                    "url": ep.url,
+                    "title": f"Business-logic candidate {ep.url}",
+                    "priority": 85,
                 }
             )
         for param in ep.url_like_params():
@@ -328,12 +374,14 @@ def seed_candidates_from_surface(memory: HuntMemory) -> list[dict[str, Any]]:
                         "params": {"param": inj_params[0]},
                     }
                 )
+                # Deprioritize generic XSS vs authenticated API object reads
+                xss_prio = 35 if risk >= 55 else 50
                 ideas.append(
                     {
                         "module": "xss",
                         "url": ep.url,
                         "title": f"XSS reflect param={inj_params[0]}",
-                        "priority": 50,
+                        "priority": xss_prio,
                         "params": {"param": inj_params[0]},
                     }
                 )

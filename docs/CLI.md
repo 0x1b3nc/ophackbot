@@ -131,6 +131,10 @@ login). Resume with "resume hunt" / `run_hunt resume=true`. I don't bypass MFA.
 | Create/edit/delete file or folder | `write_file` / `edit_file` / `delete_path` / `make_dir` |
 | Read image / screenshot | `read_image` |
 | HAR / Burp export | `import_har` / `import_burp_xml` |
+| OpenAPI / Swagger | `import_openapi` |
+| Postman collection | `import_postman` |
+| AI / LLM / MCP | `llm_prompt_probe`, `llm_rag_probe`, `mcp_agent_probe`, `ai_eval_run` |
+| API authz / canary probes | `api_authz_matrix`, `api_mass_assignment_probe`, … |
 | Analyze `app.js` / bundle URL | `analyze_js` |
 | Decode JWT | `analyze_jwt` |
 | GraphQL introspection | `graphql_probe` |

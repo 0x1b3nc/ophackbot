@@ -207,6 +207,10 @@ Packs: `HACKBOT_TOOL_PACK=auto|all|core,recon,inject,browser,mobile,report`.
 | You say roughly | Tool |
 | --- | --- |
 | HAR / Burp XML in this file | `import_har` / `import_burp_xml` |
+| OpenAPI / Swagger JSON or YAML | `import_openapi` |
+| Postman Collection v2 JSON | `import_postman` |
+| AI / LLM / RAG / MCP chat endpoint | `llm_prompt_probe`, `llm_rag_probe`, `mcp_agent_probe`, `ai_eval_run` |
+| API authz matrix / mass-assign canaries | `api_authz_matrix`, `api_mass_assignment_probe`, … |
 | Look at this JS bundle | `analyze_js` |
 | Subdomains / wayback | `crt_subdomains` / `wayback_urls` |
 | Run httpx / katana / nuclei / ffuf | `run_tool` (dry-run first) |
@@ -217,6 +221,32 @@ Packs: `HACKBOT_TOOL_PACK=auto|all|core,recon,inject,browser,mobile,report`.
 | What's up on this box? | `/tools` or `capabilities` |
 
 Bigger table + env knobs (OOB, Burp, Interactsh): [docs/CLI.md](docs/CLI.md).
+
+### API upgrade (OpenAPI / Postman)
+
+```text
+import_openapi path=./swagger.yaml base_url=https://api.example.com
+import_postman path=./collection.json
+api_authz_matrix url=https://api.example.com/users/1   # dry-run default
+api_mass_assignment_probe url=https://api.example.com/me
+```
+
+OpenAPI/Postman seed `HuntMemory` with method, URL, params, body templates, auth flags,
+tags, and risk scores. Ranking prefers authz/BOLA/business-logic paths over static assets;
+coverage cells track method × path × param × authz.
+
+### AI / LLM target hunting
+
+Payloads are **offensive but canary-only** (`HB_CANARY_*`). Active AI tools default to
+dry-run. Stop on cross-tenant data, real tool execution, or SCOPE prohibitions.
+See `bounty_knowledge/study_notes/ai-security/hackbot-ai-hunting.md`.
+
+```text
+llm_prompt_probe url=https://chat.example.com/v1/chat session=A
+llm_rag_probe url=https://chat.example.com/v1/chat
+mcp_agent_probe url=https://mcp.example.com/rpc
+ai_eval_run url=https://chat.example.com/v1/chat families=prompt-injection,rag,tool-abuse
+```
 
 ## Safety (the short version)
 

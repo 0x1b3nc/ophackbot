@@ -28,7 +28,13 @@ def mass_assignment_probe(
         force=force,
         tool="mass_assignment_probe",
     )
-    fields = extra_fields or {"role": "admin", "isAdmin": True, "admin": True}
+    fields = extra_fields or {
+        "role": "hb_canary_role",
+        "isAdmin": False,
+        "plan": "hb_canary_plan",
+        "account_id": "HB_OTHER_ACCOUNT_CANARY",
+        "tenant_id": "HB_OTHER_TENANT_CANARY",
+    }
     plan = {"url": url, "fields": list(fields.keys()), "approve": approve}
     ui.code_panel(json.dumps(plan, indent=2), title="mass_assignment_probe", lexer="json")
     cmd = ["mass_assignment_probe", url]

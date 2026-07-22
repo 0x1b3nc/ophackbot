@@ -2536,6 +2536,10 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
 ]
 
+from .api_ai_tool_specs import API_AI_TOOL_SPECS
+
+TOOL_SPECS.extend(API_AI_TOOL_SPECS)
+
 
 def _safe_path(path: str) -> Path:
     """Resolve a path that must stay under the kit root."""
@@ -3268,6 +3272,40 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         return _tool_graphql_probe(args, approve_fn=approve_fn)
     if name == "import_har":
         return _tool_import_har(args)
+    if name == "import_openapi":
+        from .openapi_parse import ingest_openapi_file
+
+        target = _target_path(args["target_dir"])
+        path = Path(args["path"])
+        if not path.is_absolute():
+            path = ROOT / path
+        return json.dumps(
+            ingest_openapi_file(
+                target,
+                path,
+                base_url=str(args.get("base_url") or ""),
+                host=host_from_target(str(args.get("base_url") or "")) or "",
+            )
+        )
+    if name == "import_postman":
+        from .postman_parse import ingest_postman_file
+
+        target = _target_path(args["target_dir"])
+        path = Path(args["path"])
+        if not path.is_absolute():
+            path = ROOT / path
+        env_raw = str(args.get("environment_path") or "").strip()
+        env_path = Path(env_raw) if env_raw else None
+        if env_path and not env_path.is_absolute():
+            env_path = ROOT / env_path
+        return json.dumps(
+            ingest_postman_file(
+                target,
+                path,
+                base_url=str(args.get("base_url") or ""),
+                environment_path=env_path,
+            )
+        )
     if name == "cors_probe":
         return _tool_cors_probe(args, approve_fn=approve_fn)
     if name == "open_redirect_probe":

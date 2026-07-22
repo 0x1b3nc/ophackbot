@@ -28,6 +28,9 @@ class Endpoint:
     auth_required: bool = False
     source: str = "seed"
     notes: str = ""
+    body_template: str = ""
+    tags: list[str] = field(default_factory=list)
+    risk_score: int = 0
 
     def has_id_param(self) -> bool:
         id_like = {"id", "user_id", "userid", "uid", "account_id", "order_id", "object_id", "uuid"}
@@ -36,6 +39,9 @@ class Endpoint:
     def url_like_params(self) -> list[str]:
         urlish = {"url", "uri", "link", "redirect", "next", "callback", "webhook", "target", "dest", "destination"}
         return [p for p in self.params if p.lower() in urlish or "url" in p.lower()]
+
+    def memory_key(self) -> str:
+        return f"{(self.method or 'GET').upper()} {self.url}"
 
 
 @dataclass
@@ -135,6 +141,9 @@ class HuntMemory:
                     auth_required=bool(item.get("auth_required")),
                     source=str(item.get("source") or "unknown"),
                     notes=str(item.get("notes") or ""),
+                    body_template=str(item.get("body_template") or ""),
+                    tags=list(item.get("tags") or []),
+                    risk_score=int(item.get("risk_score") or 0),
                 )
             )
         return out
@@ -144,22 +153,27 @@ class HuntMemory:
             data = self._load_surface_unlocked()
             if host:
                 data["host"] = host
-            by_url = {e.url: e for e in self._endpoints_from_raw(data.get("endpoints") or [])}
+            by_key = {e.memory_key(): e for e in self._endpoints_from_raw(data.get("endpoints") or [])}
             for ep in endpoints:
-                prev = by_url.get(ep.url)
+                key = ep.memory_key()
+                prev = by_key.get(key)
                 if prev:
                     merged_params = sorted(set(prev.params) | set(ep.params))
-                    by_url[ep.url] = Endpoint(
+                    merged_tags = sorted(set(prev.tags) | set(ep.tags))
+                    by_key[key] = Endpoint(
                         url=ep.url,
                         method=ep.method or prev.method,
                         params=merged_params,
                         auth_required=ep.auth_required or prev.auth_required,
                         source=ep.source or prev.source,
                         notes=ep.notes or prev.notes,
+                        body_template=ep.body_template or prev.body_template,
+                        tags=merged_tags,
+                        risk_score=max(int(ep.risk_score or 0), int(prev.risk_score or 0)),
                     )
                 else:
-                    by_url[ep.url] = ep
-            data["endpoints"] = [asdict(e) for e in by_url.values()]
+                    by_key[key] = ep
+            data["endpoints"] = [asdict(e) for e in by_key.values()]
             return self._save_surface_unlocked(data)
 
     def add_tech_hints(self, hints: list[str]) -> Path:

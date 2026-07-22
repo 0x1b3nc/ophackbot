@@ -87,12 +87,32 @@ CLASS_ROUTES: dict[str, tuple[str, ...]] = {
     "takeover": ("recon/subdomain-takeover.md",),
     "recon": ("recon/content-discovery.md",),
     "discovery": ("recon/content-discovery.md",),
-    "llm": ("ai-security/promptfoo-lm-security-db.md",),
+    "llm": (
+        "ai-security/promptfoo-lm-security-db.md",
+        "ai-security/hackbot-ai-hunting.md",
+    ),
     "mcp": (
         "ai-security/promptfoo-lm-security-db.md",
         "red-team/bishopfox-advisories-ai-mcp.md",
+        "ai-security/hackbot-ai-hunting.md",
     ),
-    "prompt-injection": ("ai-security/promptfoo-lm-security-db.md",),
+    "prompt-injection": (
+        "ai-security/promptfoo-lm-security-db.md",
+        "ai-security/hackbot-ai-hunting.md",
+    ),
+    "rag": (
+        "ai-security/promptfoo-lm-security-db.md",
+        "ai-security/hackbot-ai-hunting.md",
+    ),
+    "agentic": (
+        "ai-security/promptfoo-lm-security-db.md",
+        "red-team/bishopfox-advisories-ai-mcp.md",
+        "ai-security/hackbot-ai-hunting.md",
+    ),
+    "confused-deputy": (
+        "ai-security/hackbot-ai-hunting.md",
+        "red-team/bishopfox-advisories-ai-mcp.md",
+    ),
 }
 
 
@@ -150,6 +170,23 @@ def classify(task: str) -> list[str]:
         hits.append("secrets")
     if any(w in norm for w in ("outra conta", "outro usuario", "trocar id", "acesso horizontal", "idor", "bola")):
         hits.append("idor")
+    if any(
+        w in norm
+        for w in (
+            "prompt injection",
+            "prompt-injection",
+            "indirect prompt",
+            "jailbreak",
+            "system prompt",
+        )
+    ):
+        hits.append("prompt-injection")
+    if any(w in norm for w in ("rag ", " retrieval", "vector store", "embeddings")):
+        hits.append("rag")
+    if any(w in norm for w in ("mcp", "model context protocol", "tools/list")):
+        hits.append("mcp")
+    if any(w in norm for w in ("agentic", "confused deputy", "tool calling", "tool-use")):
+        hits.append("agentic")
     for key in CLASS_ROUTES:
         if key in ("rate-limit", "rate_limit"):
             continue

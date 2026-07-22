@@ -192,6 +192,11 @@ def untested_priorities(
         "bfla",
         "business-logic",
         "ssrf",
+        "llm",
+        "rag",
+        "mcp",
+        "prompt-injection",
+        "agentic",
     ),
     limit: int = 12,
 ) -> list[dict[str, Any]]:

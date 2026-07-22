@@ -22,6 +22,7 @@ for that surface/bug class.
 | [smuggling-cache.md](api-security/smuggling-cache.md) | Smuggling / cache poison+deception | **DEEP 2026-07-12** (PS smuggling+finding+cache+design flaws, HT desync+Gotta Cache, WSTG-16, VRT) |
 | [mobile-maui-banking-api.md](api-security/mobile-maui-banking-api.md) | Mobile banking / MAUI API | **2026-07-14** (method: MAUI/.NET, cert APIs, pre-auth, XS2A, WebView bridge, no-go) |
 | [promptfoo-lm-security-db.md](ai-security/promptfoo-lm-security-db.md) | AI / LLM security | tech backlog 2026-07-20 (Promptfoo LM Security DB; 931 entries; for agentic/RAG/MCP/tool-calling hunting, not DEEP yet) |
+| [hackbot-ai-hunting.md](ai-security/hackbot-ai-hunting.md) | AI / LLM / RAG / MCP | **Hackbot pack** — canary payloads, tools, outcomes, stop rules |
 | [awesome-llms-vulnerability-detection.md](ai-security/awesome-llms-vulnerability-detection.md) | AI / vulnerability detection | **DEEP INDEX PASS 2026-07-20** (repo mapped as operational router; LLMs for function/repo-level vuln detection, agentic scanners, CPG/dataflow, FP triage; individual papers not marked DEEP) |
 | [subdomain-takeover.md](recon/subdomain-takeover.md) | Takeover | **DEEP 2026-07-12** (HT, WSTG-CONF-10, OWASP CS, H1 Guide 2.0, nuclei ~73, VRT P3, persona) |
 | [content-discovery.md](recon/content-discovery.md) | Recon / discovery | **DEEP 2026-07-12** (TBHM 01–03, TOOLCHAIN, guide §5–7, awesome, reconFTW, SecLists, persona) |

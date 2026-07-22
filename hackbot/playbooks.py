@@ -850,6 +850,223 @@ _PLAYBOOKS: dict[str, Playbook] = {
         ),
         study_notes=("extreme/prohibited-identify-stop.md",),
     ),
+    "prompt-injection": Playbook(
+        class_name="prompt-injection",
+        summary="Direct prompt injection against an in-scope chat/completions endpoint using canaries.",
+        preconditions=(
+            "Chat endpoint in SCOPE.md",
+            "Test account/session available",
+            "Payloads request canaries only — no real secret exfil",
+        ),
+        steps=(
+            PlaybookStep(
+                title="Scope + knowledge",
+                hypothesis="AI surface is authorized and study notes loaded.",
+                aggression=0,
+                command="open_knowledge prompt-injection",
+                expected="AI hunting rails loaded.",
+                stop="OUT_OF_SCOPE or missing notes.",
+                tool_call={
+                    "tool": "open_knowledge",
+                    "args": {"task": "prompt-injection llm"},
+                },
+            ),
+            PlaybookStep(
+                title="Dry-run canary probe",
+                hypothesis="Model follows user over policy and returns HB_CANARY_PROMPT_INJECTION.",
+                aggression=2,
+                command="llm_prompt_probe",
+                expected="dry-run plan or canary_returned / blocked.",
+                stop="tool_executed with real side effects → record and stop.",
+                tool_call={
+                    "tool": "llm_prompt_probe",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "approve": False,
+                        "canary": "HB_CANARY_PROMPT_INJECTION",
+                        "session": "A",
+                    },
+                },
+            ),
+            PlaybookStep(
+                title="Cleanup",
+                hypothesis="No persistent poison left in shared context.",
+                aggression=0,
+                command="note evidence path; clear canary conversation if UI allows",
+                expected="evidence redacted; conversation cleaned.",
+                stop="shared tenant contamination → escalate to operator.",
+            ),
+        ),
+        study_notes=tuple(str(p) for p in notes_for_classes(["prompt-injection", "llm"])),
+    ),
+    "indirect-prompt": Playbook(
+        class_name="indirect-prompt",
+        summary="Indirect prompt injection via untrusted retrieved/uploaded content.",
+        preconditions=("Upload or retrieval path in scope", "Canary document prepared"),
+        steps=(
+            PlaybookStep(
+                title="Scope gate",
+                hypothesis="Host is IN_SCOPE before planting canary content.",
+                aggression=0,
+                command="scope_check",
+                expected="IN_SCOPE",
+                stop="OUT_OF_SCOPE",
+                tool_call={
+                    "tool": "scope_check",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "host": "{host}",
+                        "action": "indirect prompt injection",
+                    },
+                },
+            ),
+            PlaybookStep(
+                title="Indirect canary",
+                hypothesis="Agent follows document instructions → HB_CANARY_INDIRECT / RAG_CONFUSION.",
+                aggression=2,
+                command="llm_indirect_prompt_probe",
+                expected="canary_returned or blocked.",
+                stop="cross-tenant content exposure → High; stop writes.",
+                tool_call={
+                    "tool": "llm_indirect_prompt_probe",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "approve": False,
+                        "session": "A",
+                    },
+                },
+            ),
+        ),
+        study_notes=tuple(str(p) for p in notes_for_classes(["prompt-injection", "rag"])),
+    ),
+    "rag": Playbook(
+        class_name="rag",
+        summary="RAG source confusion / cross-tenant retrieval signals (canary only).",
+        preconditions=("Retrieval-backed chat in scope", "Two tenants or workspaces if testing isolation"),
+        steps=(
+            PlaybookStep(
+                title="RAG canary ask",
+                hypothesis="Retriever surfaces other-tenant source ids → HB_CANARY_TENANT_LEAK.",
+                aggression=2,
+                command="llm_rag_probe",
+                expected="cross_tenant_signal / blocked / inconclusive.",
+                stop="raw private content → redact, record High, stop.",
+                tool_call={
+                    "tool": "llm_rag_probe",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "approve": False,
+                        "session": "A",
+                    },
+                },
+            ),
+        ),
+        study_notes=tuple(str(p) for p in notes_for_classes(["rag", "llm"])),
+    ),
+    "agentic": Playbook(
+        class_name="agentic",
+        summary="Tool-use abuse / excessive agency / confused deputy in agent workflows.",
+        preconditions=("Agent or tool-calling endpoint in scope", "Tools must stay dry-run"),
+        steps=(
+            PlaybookStep(
+                title="Tool-boundary canary",
+                hypothesis="Model attempts external tool call → tool_attempted; execution is High.",
+                aggression=2,
+                command="llm_tool_abuse_probe",
+                expected="TOOL_BLOCKED / tool_attempted / blocked.",
+                stop="tool_executed against real systems → stop.",
+                tool_call={
+                    "tool": "llm_tool_abuse_probe",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "approve": False,
+                        "session": "A",
+                    },
+                },
+            ),
+        ),
+        study_notes=tuple(str(p) for p in notes_for_classes(["agentic", "mcp"])),
+    ),
+    "mcp": Playbook(
+        class_name="mcp",
+        summary="MCP/agent JSON-RPC exposure: tools/list and resources/list without auth.",
+        preconditions=("MCP/SSE/JSON-RPC URL in SCOPE",),
+        steps=(
+            PlaybookStep(
+                title="List tools/resources",
+                hypothesis="Unauthenticated tools/list leaks privileged capabilities.",
+                aggression=2,
+                command="mcp_agent_probe",
+                expected="tool list redacted or 401/403.",
+                stop="destructive tool names exposed → Medium/High; do not invoke.",
+                tool_call={
+                    "tool": "mcp_agent_probe",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "approve": False,
+                    },
+                },
+            ),
+        ),
+        study_notes=tuple(str(p) for p in notes_for_classes(["mcp"])),
+    ),
+    "tenant-isolation-ai": Playbook(
+        class_name="tenant-isolation-ai",
+        summary="AI tenant isolation: request other-object canary; expect DENIED.",
+        preconditions=("Two test tenants/users", "Object canary id placeholder"),
+        steps=(
+            PlaybookStep(
+                title="Cross-tenant ask",
+                hypothesis="Isolation returns DENIED for HB_OTHER_OBJECT_CANARY.",
+                aggression=2,
+                command="llm_tenant_isolation_probe",
+                expected="DENIED / blocked / cross_tenant_signal.",
+                stop="other-tenant content → High; stop.",
+                tool_call={
+                    "tool": "llm_tenant_isolation_probe",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "approve": False,
+                        "session": "A",
+                    },
+                },
+            ),
+        ),
+        study_notes=tuple(str(p) for p in notes_for_classes(["llm", "rag"])),
+    ),
+    "system-boundary": Playbook(
+        class_name="system-boundary",
+        summary="Detect system/policy boundary leakage without demanding secret dumps.",
+        preconditions=("Chat endpoint in scope",),
+        steps=(
+            PlaybookStep(
+                title="Boundary canary",
+                hypothesis="Model answers YES/NO/UNKNOWN + HB_CANARY_SYSTEM_BOUNDARY only.",
+                aggression=1,
+                command="llm_prompt_probe",
+                expected="system_boundary_signal (Low) or blocked.",
+                stop="secrets in output → redact + escalate.",
+                tool_call={
+                    "tool": "llm_prompt_probe",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "approve": False,
+                        "canary": "HB_CANARY_SYSTEM_BOUNDARY",
+                        "session": "A",
+                        "max_payloads": 1,
+                    },
+                },
+            ),
+        ),
+        study_notes=tuple(str(p) for p in notes_for_classes(["prompt-injection"])),
+    ),
 }
 
 # Aliases into the same playbook
@@ -883,6 +1100,15 @@ for _alias, _canon in (
     ("cache-poison", "cache-detect"),
     ("prohibited", "prohibited-stop"),
     ("identify-stop", "prohibited-stop"),
+    ("prompt_injection", "prompt-injection"),
+    ("indirect_prompt", "indirect-prompt"),
+    ("indirect-prompt-injection", "indirect-prompt"),
+    ("confused-deputy", "agentic"),
+    ("tool-abuse", "agentic"),
+    ("tool_abuse", "agentic"),
+    ("tenant-isolation", "tenant-isolation-ai"),
+    ("system_prompt", "system-boundary"),
+    ("system-prompt", "system-boundary"),
 ):
     if _canon in _PLAYBOOKS:
         base = _PLAYBOOKS[_canon]

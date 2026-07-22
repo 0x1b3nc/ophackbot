@@ -18,8 +18,8 @@ from .coverage_map import (
 from .force import is_forced
 from .fp_signatures import confidence_score, match_fp_signatures
 from .policy_guard import host_from_target
-from .runners import browser as browser_runner
-from .runners import elite_probes
+from .runners import api_probes, browser as browser_runner, elite_probes
+from .runners import ai_probes
 from .workflow_harness import (
     list_workflows,
     load_workflow,
@@ -424,6 +424,158 @@ def dispatch_elite(
                 seed_surface=parse_bool(args.get("seed_surface"), default=True),
             )
         )
+
+    api_url = {
+        "api_authz_matrix": (api_probes.api_authz_matrix, 2),
+        "api_mass_assignment_probe": (api_probes.api_mass_assignment_probe, 2),
+        "api_method_override_probe": (api_probes.api_method_override_probe, 3),
+        "api_hpp_probe": (api_probes.api_hpp_probe, 2),
+        "api_content_type_probe": (api_probes.api_content_type_probe, 2),
+        "api_version_diff_probe": (api_probes.api_version_diff_probe, 2),
+        "api_error_schema_probe": (api_probes.api_error_schema_probe, 1),
+        "api_cors_probe": (api_probes.api_cors_probe, 2),
+        "api_cache_detect_probe": (api_probes.api_cache_detect_probe, 2),
+        "api_graphql_batch_alias_probe": (api_probes.api_graphql_batch_alias_probe, 2),
+        "api_oauth_oidc_probe": (api_probes.api_oauth_oidc_probe, 2),
+    }
+    if name in api_url:
+        runner, agg = api_url[name]
+        approve = parse_bool(args.get("approve"))
+        force = _force(args)
+        url = args["url"]
+        if approve:
+            refusal = _approve_active(
+                approve_fn,
+                tool=name,
+                url=url,
+                force=force,
+                aggression=agg,
+                require_approval=require_approval,
+            )
+            if refusal:
+                return refusal
+        kwargs: dict[str, Any] = {"approve": approve, "force": force}
+        if name == "api_authz_matrix":
+            kwargs["method"] = str(args.get("method") or "GET")
+            kwargs["session_a"] = str(args.get("session_a") or "A")
+            kwargs["session_b"] = str(args.get("session_b") or "B")
+        elif name == "api_hpp_probe":
+            kwargs["param"] = str(args.get("param") or "id")
+            kwargs["owned_id"] = str(args.get("owned_id") or "owned")
+            kwargs["other_id"] = str(args.get("other_id") or "other")
+            kwargs["session"] = str(args.get("session") or "A")
+        elif name in {
+            "api_mass_assignment_probe",
+            "api_method_override_probe",
+            "api_content_type_probe",
+            "api_version_diff_probe",
+            "api_error_schema_probe",
+        }:
+            kwargs["session"] = str(args.get("session") or "A")
+        elif name == "api_cors_probe":
+            kwargs["origin"] = str(args.get("origin") or "https://hb-canary.example")
+        return _runner_json(runner(_target(args["target_dir"]), url, **kwargs))
+
+    if name == "api_graphql_variable_authz":
+        approve = parse_bool(args.get("approve"))
+        force = _force(args)
+        if approve:
+            refusal = _approve_active(
+                approve_fn,
+                tool=name,
+                url=args["url"],
+                force=force,
+                aggression=2,
+                require_approval=require_approval,
+            )
+            if refusal:
+                return refusal
+        return _runner_json(
+            api_probes.api_graphql_variable_authz(
+                _target(args["target_dir"]),
+                args["url"],
+                query=str(args.get("query") or ""),
+                session_a=str(args.get("session_a") or "A"),
+                session_b=str(args.get("session_b") or "B"),
+                approve=approve,
+                force=force,
+            )
+        )
+
+    if name == "api_jwt_claim_diff":
+        approve = parse_bool(args.get("approve"))
+        force = _force(args)
+        if approve:
+            refusal = _approve_active(
+                approve_fn,
+                tool=name,
+                url=args["url"],
+                force=force,
+                aggression=2,
+                require_approval=require_approval,
+            )
+            if refusal:
+                return refusal
+        return _runner_json(
+            api_probes.api_jwt_claim_diff(
+                _target(args["target_dir"]),
+                args["url"],
+                token=str(args.get("token") or ""),
+                session=str(args.get("session") or "A"),
+                approve=approve,
+                force=force,
+            )
+        )
+
+    ai_tools = {
+        "llm_prompt_probe": (ai_probes.llm_prompt_probe, 2),
+        "llm_indirect_prompt_probe": (ai_probes.llm_indirect_prompt_probe, 2),
+        "llm_rag_probe": (ai_probes.llm_rag_probe, 2),
+        "llm_tool_abuse_probe": (ai_probes.llm_tool_abuse_probe, 2),
+        "llm_tenant_isolation_probe": (ai_probes.llm_tenant_isolation_probe, 2),
+        "mcp_agent_probe": (ai_probes.mcp_agent_probe, 2),
+        "ai_eval_run": (ai_probes.ai_eval_run, 2),
+    }
+    if name in ai_tools:
+        runner, agg = ai_tools[name]
+        approve = parse_bool(args.get("approve"))
+        force = _force(args)
+        url = args["url"]
+        if approve:
+            refusal = _approve_active(
+                approve_fn,
+                tool=name,
+                url=url,
+                force=force,
+                aggression=agg,
+                require_approval=require_approval,
+            )
+            if refusal:
+                return refusal
+        kwargs = {
+            "approve": approve,
+            "force": force,
+            "canary": str(args.get("canary") or ""),
+            "session": str(args.get("session") or ""),
+        }
+        if name == "mcp_agent_probe":
+            kwargs["max_payloads"] = int(args.get("max_payloads") or 2)
+        elif name == "ai_eval_run":
+            kwargs.update(
+                families=str(args.get("families") or "prompt-injection,rag,tool-abuse"),
+                prompt_field=str(args.get("prompt_field") or "message"),
+                session_field=str(args.get("session_field") or "conversation_id"),
+                method=str(args.get("method") or "POST"),
+                max_payloads=int(args.get("max_payloads") or 1),
+            )
+        else:
+            kwargs.update(
+                prompt_field=str(args.get("prompt_field") or "message"),
+                session_field=str(args.get("session_field") or "conversation_id"),
+                method=str(args.get("method") or "POST"),
+                max_payloads=int(args.get("max_payloads") or 3),
+            )
+        return _runner_json(runner(_target(args["target_dir"]), url, **kwargs))
 
     return None
 
