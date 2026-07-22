@@ -1,4 +1,4 @@
-"""Click-to-copy chat bubbles."""
+"""Click-to-copy stream pins. Final Markdown copies via F2 / /copy only."""
 
 from __future__ import annotations
 
@@ -11,12 +11,11 @@ from textual.widgets import Markdown, Static
 class CopyableStatic(Static):
     """Static that stores plain source text for clean click-to-copy.
 
-    Live stream pins and the updating think/draft line use this so click/F2
-    paths can copy tool dumps the same way as final bot replies.
+    Used for live stream / tool dumps. Final Markdown replies do NOT use
+    click-to-copy (Markdown links looked like targets and confused operators).
     """
 
     def __init__(self, renderable: str = "", *, plain: str | None = None, **kwargs: Any) -> None:
-        # markup=False — JSON/tool dumps contain [ ] that Rich markup would eat.
         kwargs.setdefault("markup", False)
         super().__init__(renderable, **kwargs)
         self.plain_source = plain if plain is not None else (renderable or "")
@@ -33,15 +32,14 @@ class CopyableStatic(Static):
             copy_fn(self.plain_source, label="stream")
 
 
-class CopyableMarkdown(Markdown):
-    """Markdown bubble with plain source for clean click-to-copy."""
+class ReplyMarkdown(Markdown):
+    """Final / mid-turn assistant Markdown — no click-to-copy, no link navigation.
+
+    Clicking headings/paths used to steal focus and copy opaque text. Copy via
+    F2 / Ctrl+Y / /copy instead.
+    """
 
     def __init__(self, markdown: str, *, plain: str, **kwargs: Any) -> None:
+        kwargs.setdefault("open_links", False)
         super().__init__(markdown, **kwargs)
         self.plain_source = plain
-
-    def on_click(self, event: Click) -> None:
-        event.stop()
-        copy_fn = getattr(self.app, "copy_plain", None)
-        if callable(copy_fn):
-            copy_fn(self.plain_source, label="message")

@@ -1179,7 +1179,7 @@ def _handle_event(
                 mark = "ok" if status != "failed" and exit_code in {0, None, "0"} else "fail"
                 # Raw stream: show real command output (truncated only if huge).
                 if out:
-                    max_out = 4000 if not ui.stream_command_compact() else 180
+                    max_out = 24_000 if not ui.stream_command_compact() else 180
                     shown_out = out if len(out) <= max_out else out[: max_out - 1] + "…"
                     line(
                         f"out/{mark}",

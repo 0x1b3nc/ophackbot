@@ -12,7 +12,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Button, Footer, Header, OptionList, Static, TextArea
+from textual.widgets import Button, Collapsible, Footer, Header, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .. import live_feed
@@ -37,7 +37,7 @@ from .theme import (
     SECONDARY,
     TEXT,
 )
-from .widgets import CopyableMarkdown, CopyableStatic
+from .widgets import CopyableStatic, ReplyMarkdown
 
 
 def status_line_text() -> str:
@@ -135,6 +135,28 @@ class HackbotTUI(App[None]):
         height: auto;
         color: {SECONDARY};
     }}
+    .msg-out {{
+        width: 100%;
+        height: auto;
+        color: {TEXT};
+        padding: 0 1;
+    }}
+    Collapsible {{
+        width: 100%;
+        height: auto;
+        color: {SECONDARY};
+        padding: 0;
+        margin-bottom: 0;
+    }}
+    Collapsible Title {{
+        color: {INFO};
+    }}
+    Collapsible Contents {{
+        width: 100%;
+        height: auto;
+        padding: 0 0 0 1;
+        border-left: tall {BORDER};
+    }}
     #composer {{
         width: 100%;
         height: auto;
@@ -227,6 +249,8 @@ class HackbotTUI(App[None]):
         self._think_buf: str = ""
         self._live_widget_id: str | None = None
         self._feed_dirty = False
+        self._active_run_body_id: str | None = None
+        self._saw_stream_notes = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -253,7 +277,8 @@ class HackbotTUI(App[None]):
             "_**Newline:** `Enter`. **Send:** `Ctrl+J` or the **Send** button "
             "(`Ctrl+Enter` only on Kitty/Ghostty/Windows Terminal — "
             "Kali's default terminal maps it to nothing useful). "
-            "**Copy:** click any message or stream pin (tool/out), or `F2` / `/copy`. "
+            "**Copy:** click a stream/tool block, or `F2` / `/copy` for the last reply "
+            "(Markdown headings are not click-to-copy). "
             "**Scroll:** wheel + scrollbar + PgUp/PgDn. "
             "Stop: `ctrl+c` then send a new prompt._"
         )
@@ -324,11 +349,13 @@ class HackbotTUI(App[None]):
             return
         kind = (kind or "info").strip().lower()
         text = text or ""
-        # Mid-turn assistant narration (from markdown_panel) — durable bubble.
+        # Mid-turn assistant narration — durable Markdown bubble (no click-copy).
         if kind in {"note", "answer", "assistant"}:
             body = (text or "").strip()
             if not body:
                 return
+            self._saw_stream_notes = True
+            self._active_run_body_id = None
             self._append_md(body)
             self._ensure_live_line().update("◌ …")
             return
@@ -349,6 +376,9 @@ class HackbotTUI(App[None]):
         else:
             if not text.strip():
                 return
+            # Codex emits "out/ok", "out/fail" — treat as "out".
+            base = kind.split("/", 1)[0]
+            mark = kind.split("/", 1)[1] if "/" in kind else ""
             label = {
                 "tool": "tool",
                 "run": "run",
@@ -359,22 +389,27 @@ class HackbotTUI(App[None]):
                 "dbg": "dbg",
                 "plan": "plan",
                 "err": "err",
-            }.get(kind, kind[:8] or "·")
+            }.get(base, base[:8] or "·")
             body = text.strip()
-            if label in {"tool", "run", "out", "err", "log"}:
+            if label == "run":
+                self._append_run_block(body)
+                return
+            if label in {"out", "tool", "err", "log"}:
                 if len(body) > LIVE_OUT_CHARS:
                     omitted = len(body) - LIVE_OUT_CHARS
                     body = body[:LIVE_OUT_CHARS] + f"\n… (+{omitted} chars)"
-                # Cursor/Claude-style markers on tool lifecycle lines.
-                if label == "run" or body.startswith("[run]"):
-                    pin = f"▶ {label}  {body.removeprefix('[run]').strip()}"
-                elif body.startswith("[ok]"):
-                    pin = f"✓ {label}  {body.removeprefix('[ok]').strip()}"
-                elif body.startswith("[fail]"):
-                    pin = f"✗ {label}  {body.removeprefix('[fail]').strip()}"
-                else:
-                    pin = f"· {label}  {body}"
-                self._append_live_pin(pin, raw=True)
+                if label == "out":
+                    self._fill_run_output(body, mark=mark)
+                    return
+                prefix = "ok" if body.startswith("[ok]") or mark == "ok" else (
+                    "fail" if body.startswith("[fail]") or mark == "fail" else "tool"
+                )
+                shown = body
+                for p in ("[ok]", "[fail]", "[run]"):
+                    if shown.startswith(p):
+                        shown = shown[len(p) :].strip()
+                tag = {"ok": "ok", "fail": "fail"}.get(prefix, "tool")
+                self._append_live_pin(f"{tag}  {shown}", raw=True)
                 return
             body = plain_text(body)
             if len(body) > 500:
@@ -383,6 +418,57 @@ class HackbotTUI(App[None]):
         w = self._ensure_live_line()
         w.update(f"◌ {line}")
         self._maybe_scroll_end()
+
+    def _append_run_block(self, cmd: str) -> None:
+        """Open a real Collapsible: title = command, body fills when out arrives."""
+        chat = self._chat()
+        old_id = self._live_widget_id
+        self._msg_i += 1
+        body_id = f"out{self._msg_i}"
+        col_id = f"run{self._msg_i}"
+        title = cmd if len(cmd) <= 160 else cmd[:157] + "…"
+        body = CopyableStatic(
+            "(waiting for output…)",
+            plain="",
+            classes="msg-out",
+            id=body_id,
+        )
+        # Textual Collapsible ▶ is real — expands/collapses Contents.
+        chat.mount(
+            Collapsible(
+                body,
+                title=f"run  {title}",
+                collapsed=False,
+                id=col_id,
+            )
+        )
+        self._chat_plain.append(f"run  {cmd}")
+        self._active_run_body_id = body_id
+        if old_id:
+            try:
+                self.query_one(f"#{old_id}", Static).remove()
+            except Exception:  # noqa: BLE001
+                pass
+            self._live_widget_id = None
+        self._ensure_live_line().update("◌ …")
+        self._maybe_scroll_end()
+
+    def _fill_run_output(self, text: str, *, mark: str = "") -> None:
+        """Put stdout/stderr into the open run Collapsible (or a plain pin)."""
+        body = text.strip()
+        if mark and not body.startswith("exit="):
+            # Keep exit= lines as-is; otherwise optional status prefix is noise.
+            pass
+        if self._active_run_body_id:
+            try:
+                w = self.query_one(f"#{self._active_run_body_id}", CopyableStatic)
+                w.update(body or "(no output)")
+                self._chat_plain.append(body or "(no output)")
+                self._maybe_scroll_end()
+                return
+            except Exception:  # noqa: BLE001
+                self._active_run_body_id = None
+        self._append_live_pin(f"out  {body}", raw=True)
 
     def _append_live_pin(self, line: str, *, raw: bool = False) -> None:
         chat = self._chat()
@@ -395,6 +481,7 @@ class HackbotTUI(App[None]):
             )
         )
         self._chat_plain.append(pin)
+        self._active_run_body_id = None
         if old_id:
             try:
                 self.query_one(f"#{old_id}", Static).remove()
@@ -407,6 +494,7 @@ class HackbotTUI(App[None]):
     def _clear_live(self) -> None:
         self._think_buf = ""
         live_feed.clear()
+        self._active_run_body_id = None
         if self._live_widget_id:
             try:
                 self.query_one(f"#{self._live_widget_id}", Static).remove()
@@ -435,7 +523,7 @@ class HackbotTUI(App[None]):
         self._msg_i += 1
         plain = text or "(empty)"
         chat.mount(
-            CopyableMarkdown(plain, plain=plain, classes="msg-md", id=f"m{self._msg_i}")
+            ReplyMarkdown(plain, plain=plain, classes="msg-md", id=f"m{self._msg_i}")
         )
         self._last_plain = plain
         self._chat_plain.append(plain)
