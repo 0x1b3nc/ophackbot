@@ -123,6 +123,8 @@ def start_tui() -> int:
         """Static that stores plain source text for clean click-to-copy."""
 
         def __init__(self, renderable: str, *, plain: str, **kwargs) -> None:  # noqa: ANN003
+            # markup=False — JSON/tool dumps contain [ ] that Rich markup would eat.
+            kwargs.setdefault("markup", False)
             super().__init__(renderable, **kwargs)
             self.plain_source = plain
 
@@ -414,7 +416,7 @@ def start_tui() -> int:
                     self._live_widget_id = None
             self._msg_i += 1
             self._live_widget_id = f"live{self._msg_i}"
-            w = Static("◌ …", classes="msg-live", id=self._live_widget_id)
+            w = Static("◌ …", classes="msg-live", id=self._live_widget_id, markup=False)
             chat.mount(w)
             self._maybe_scroll_end()
             return w
@@ -452,13 +454,15 @@ def start_tui() -> int:
                     "plan": "plan",
                     "err": "err",
                 }.get(kind, kind[:8] or "·")
-                body = _plain_text(text.strip())
+                body = text.strip()
+                # Tool/out dumps: keep raw text (JSON [ ] must not be markdown-stripped).
                 if label in {"tool", "run", "out", "err", "log"}:
                     if len(body) > _LIVE_OUT_CHARS:
                         omitted = len(body) - _LIVE_OUT_CHARS
                         body = body[:_LIVE_OUT_CHARS] + f"\n… (+{omitted} chars)"
                     self._append_live_pin(f"{label}  {body}")
                     return
+                body = _plain_text(body)
                 if len(body) > 500:
                     body = body[:500] + "…"
                 line = f"{label}  {body}"
@@ -472,7 +476,9 @@ def start_tui() -> int:
             self._msg_i += 1
             # Keep newlines so file dumps / shell output stay readable.
             pin = f"· {line}"
-            chat.mount(Static(pin, classes="msg-live", id=f"pin{self._msg_i}"))
+            chat.mount(
+                Static(pin, classes="msg-live", id=f"pin{self._msg_i}", markup=False)
+            )
             self._chat_plain.append(pin)
             if old_id:
                 try:

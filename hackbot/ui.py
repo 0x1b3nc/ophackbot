@@ -640,6 +640,13 @@ def code_panel(code: str, *, title: str = "command", lexer: str = "bash") -> Non
     body = compact_text(code, max_chars=2400) if lexer in {"text", "html", "xml"} else code
     if lexer == "text" and ("<html" in body[:200].lower() or "<!doctype" in body[:80].lower()):
         body = compact_text(body, max_chars=1800)
+    # TUI mutes Rich console.print — mirror plain body into the live feed.
+    try:
+        from .live_feed import emit
+
+        emit("out", f"{title}\n{body}")
+    except Exception:  # noqa: BLE001
+        pass
     console.print(
         Panel(
             Syntax(body, lexer, theme="monokai", word_wrap=True),
@@ -688,10 +695,17 @@ def blocked(msg: str) -> None:
 
 
 def file_panel(path: str, text: str, *, title: str | None = None) -> None:
+    shown_title = title or path
+    try:
+        from .live_feed import emit
+
+        emit("out", f"{shown_title}\n{text}")
+    except Exception:  # noqa: BLE001
+        pass
     console.print(
         Panel(
             Markdown(text) if text.lstrip().startswith("#") else Text(text),
-            title=title or path,
+            title=shown_title,
             subtitle=str(path),
             subtitle_align="right",
             border_style="dim",
