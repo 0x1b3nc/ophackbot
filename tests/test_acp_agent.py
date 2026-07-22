@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from unittest import mock
 
@@ -53,6 +54,25 @@ class SlashCommandTests(unittest.TestCase):
     def test_plain_text_not_handled(self) -> None:
         result = handle_slash("check scope on example.com")
         self.assertFalse(result.handled)
+
+    def test_effort_high_fast(self) -> None:
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "HACKBOT_PROVIDER": "cursor",
+                "HACKBOT_MODEL": "grok-4.5",
+                "HACKBOT_EFFORT": "auto",
+                "HACKBOT_CURSOR_FAST": "0",
+            },
+            clear=False,
+        ):
+            result = handle_slash("/effort high fast")
+            self.assertTrue(result.handled)
+            body = "\n".join(result.messages).lower()
+            self.assertIn("high", body)
+            self.assertIn("fast", body)
+            self.assertEqual(os.environ.get("HACKBOT_EFFORT"), "high")
+            self.assertEqual(os.environ.get("HACKBOT_CURSOR_FAST"), "1")
 
 
 class TurnBridgeModeTests(unittest.TestCase):

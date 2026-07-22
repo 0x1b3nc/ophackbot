@@ -47,7 +47,9 @@ HACKBOT_SLASH: list[tuple[str, str]] = [
     ("/models", "List allowed model ids"),
     ("/models refresh", "Refetch live model catalog"),
     ("/model ", "Set model id (e.g. /model composer-2.5)"),
-    ("/effort ", "Set effort auto|low|medium|high"),
+    ("/effort ", "Set effort: /effort high fast | medium | high nofast"),
+    ("/fast on", "Cursor ModelSelection fast=true (grok/composer)"),
+    ("/fast off", "Cursor fast=false (standard)"),
     ("/tools", "Installed tool stack status"),
     ("/config", "Show effective config"),
     ("/hunt ", "Start hunt prompt (needs /target)"),
@@ -222,16 +224,10 @@ def handle_slash(text: str) -> CmdResult:
         return _cmd_model_set(raw)
 
     if low.startswith("/effort"):
-        arg = raw[len("/effort") :].strip().lower()
-        if not arg:
-            return CmdResult(
-                messages=[
-                    f"effort: `{os.environ.get('HACKBOT_EFFORT', 'auto')}`",
-                    "set: `/effort auto|minimal|low|medium|high|xhigh`",
-                ]
-            )
-        os.environ["HACKBOT_EFFORT"] = arg.split()[0]
-        return CmdResult(messages=[f"effort → **{os.environ['HACKBOT_EFFORT']}**"])
+        return _cmd_effort(raw)
+
+    if low.startswith("/fast"):
+        return _cmd_fast(raw)
 
     if low in {"/sessions", "/identity"}:
         active = get_active()
@@ -312,6 +308,11 @@ def _cmd_models_text(raw: str) -> CmdResult:
         except Exception:  # noqa: BLE001
             pass
     lines.append("set: `/model <id>`")
+    if prov == "cursor":
+        lines.append("")
+        lines.append("effort+fast (grok-4.5 / composer-2.5):")
+        lines.append("- `/effort high fast` · `/effort medium` · `/effort high nofast`")
+        lines.append("- `/fast on` · `/fast off`")
     return CmdResult(messages=["\n".join(lines)])
 
 
@@ -340,4 +341,112 @@ def _cmd_model_set(raw: str) -> CmdResult:
     except ValueError as exc:
         return CmdResult(messages=[str(exc), "list valid ids: `/models`"])
     os.environ["HACKBOT_MODEL"] = canonical
-    return CmdResult(messages=[f"model → **{canonical}** [{source}]"])
+    msg = f"model → **{canonical}** [{source}]"
+    if prov == "cursor":
+        try:
+            from .cursor_backend import close_cursor_agent
+            from .cursor_models import resolve_cursor_model
+
+            close_cursor_agent()
+            resolved = resolve_cursor_model(canonical, require_known=True)
+            msg += f"\nwill request: `{resolved.display()}`"
+            msg += "\neffort+fast: `/effort high fast` · `/effort medium` · `/fast on|off`"
+        except Exception:  # noqa: BLE001
+            msg += "\neffort+fast: `/effort high fast` · `/fast on|off`"
+    return CmdResult(messages=[msg])
+
+
+def _cmd_effort(raw: str) -> CmdResult:
+    from .cursor_models import parse_effort_fast
+
+    arg = raw[len("/effort") :].strip()
+    fast_on = os.environ.get("HACKBOT_CURSOR_FAST", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not arg:
+        return CmdResult(
+            messages=[
+                f"effort: `{os.environ.get('HACKBOT_EFFORT', 'auto')}`",
+                f"fast: `{'on' if fast_on else 'off'}`",
+                "levels: `auto | minimal | low | medium | high | xhigh`",
+                "cursor (grok-4.5 / composer-2.5):",
+                "- `/effort high fast`",
+                "- `/effort medium`",
+                "- `/effort high nofast`",
+                "- `/fast on` · `/fast off`",
+            ]
+        )
+    level, fast = parse_effort_fast(arg)
+    if not level:
+        return CmdResult(
+            messages=[
+                f"unknown effort `{arg}`",
+                "examples: `low` · `medium` · `high` · `high fast` · `medium nofast`",
+            ]
+        )
+    os.environ["HACKBOT_EFFORT"] = level
+    if fast is not None:
+        os.environ["HACKBOT_CURSOR_FAST"] = "1" if fast else "0"
+        try:
+            from .cursor_backend import close_cursor_agent
+
+            close_cursor_agent()
+        except Exception:  # noqa: BLE001
+            pass
+    msg = f"effort → **{level}**"
+    if fast is True:
+        msg += " + **fast**"
+    elif fast is False:
+        msg += " + standard (nofast)"
+    mode, _ = resolve_mode()
+    if mode == "cursor" or os.environ.get("HACKBOT_PROVIDER", "").lower() == "cursor":
+        try:
+            from .cursor_models import resolve_cursor_model
+
+            resolved = resolve_cursor_model(
+                os.environ.get("HACKBOT_MODEL"),
+                effort=level,
+                fast=fast if fast is not None else None,
+                require_known=False,
+            )
+            msg += f"\nwill request: `{resolved.display()}`"
+        except Exception:  # noqa: BLE001
+            pass
+    return CmdResult(messages=[msg])
+
+
+def _cmd_fast(raw: str) -> CmdResult:
+    arg = raw[len("/fast") :].strip().lower()
+    if arg in {"on", "1", "true", "yes"}:
+        os.environ["HACKBOT_CURSOR_FAST"] = "1"
+        try:
+            from .cursor_backend import close_cursor_agent
+
+            close_cursor_agent()
+        except Exception:  # noqa: BLE001
+            pass
+        return CmdResult(messages=["cursor fast: **on** (ModelSelection `fast=true`)"])
+    if arg in {"off", "0", "false", "no"}:
+        os.environ["HACKBOT_CURSOR_FAST"] = "0"
+        try:
+            from .cursor_backend import close_cursor_agent
+
+            close_cursor_agent()
+        except Exception:  # noqa: BLE001
+            pass
+        return CmdResult(messages=["cursor fast: **off** (standard)"])
+    cur = os.environ.get("HACKBOT_CURSOR_FAST", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    return CmdResult(
+        messages=[
+            f"fast: `{'on' if cur else 'off'}`",
+            "set: `/fast on|off` · or `/effort high fast`",
+        ]
+    )

@@ -9,6 +9,7 @@ import os
 import sys
 from pathlib import Path
 
+from .operator_gate import set_tui_console_mute
 from .session import get_active, status_line
 from .tui_commands import filter_slash_commands, handle_slash
 from .turn_bridge import resolve_mode, run_bridged_turn
@@ -16,11 +17,34 @@ from .yolo import enable_yolo, is_yolo
 
 
 def _status_line() -> str:
-    _, label = resolve_mode()
+    mode, label = resolve_mode()
     active = get_active()
     tgt = active.name if active else "—"
     yolo = "yolo" if is_yolo() else "ask"
-    return f"hackbot · {label} · {tgt} · {yolo} · {status_line()}"
+    bits = [f"hackbot · {label} · {tgt} · {yolo}"]
+    if mode == "cursor" or os.environ.get("HACKBOT_PROVIDER", "").lower() == "cursor":
+        effort = os.environ.get("HACKBOT_EFFORT", "auto")
+        fast = os.environ.get("HACKBOT_CURSOR_FAST", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        bits.append(f"effort={effort}")
+        bits.append("fast" if fast else "standard")
+    bits.append(status_line())
+    return " · ".join(bits)
+
+
+def _write_md(chat: object, text: str) -> None:
+    """Write Markdown (or plain) into a RichLog without leaking Rich markup."""
+    from rich.markdown import Markdown
+
+    body = (text or "").rstrip()
+    if not body:
+        return
+    # RichLog.renderable accepts Rich renderables
+    chat.write(Markdown(body, code_theme="monokai"))  # type: ignore[attr-defined]
 
 
 def start_tui() -> int:
@@ -37,8 +61,9 @@ def start_tui() -> int:
         ui.error("Textual missing. Install:  pip install 'hackbot-kit[tui]'")
         return 1
 
-    # Keep Rich banners off stdout/stderr before the TUI owns the screen.
+    # Keep Rich banners off the screen the TUI owns.
     os.environ.setdefault("HACKBOT_PLAIN", "1")
+    set_tui_console_mute(True)
     try:
         from . import ui
 
@@ -48,7 +73,6 @@ def start_tui() -> int:
         pass
 
     if not is_yolo():
-        # Non-interactive approve in TUI until we add a modal.
         enable_yolo(quiet=True)
 
     class HackbotTUI(App[None]):
@@ -123,8 +147,9 @@ def start_tui() -> int:
                         "Authorized hunt\n\n"
                         "/help\n"
                         "/target demo\n"
-                        "/provider codex\n"
-                        "/models\n"
+                        "/provider cursor\n"
+                        "/model grok-4.5\n"
+                        "/effort high fast\n"
                         "/yolo on\n\n"
                         "Enter = send\n"
                         "/ = commands",
@@ -149,7 +174,7 @@ def start_tui() -> int:
             chat = self.query_one("#chat", RichLog)
             chat.can_focus = False
             chat.write("[bold #d4a574]hackbot[/] ready")
-            chat.write(f"[dim]{_status_line()}[/]")
+            _write_md(chat, f"_{_status_line()}_")
             self.query_one("#prompt", Input).focus()
 
         def _refresh_status(self) -> None:
@@ -222,12 +247,11 @@ def start_tui() -> int:
                     return
                 if result.handled:
                     for msg in result.messages:
-                        chat.write(msg)
+                        _write_md(chat, msg)
                     if result.refresh_status:
                         self._refresh_status()
                     return
             self._busy = True
-            # @work method — do NOT call it inline inside run_worker(...)
             self.run_hunt_turn(text)
 
         @work(thread=True, exclusive=True, exit_on_error=False)
@@ -241,7 +265,7 @@ def start_tui() -> int:
         def _finish_turn(self, answer: str) -> None:
             self._busy = False
             chat = self.query_one("#chat", RichLog)
-            chat.write(answer)
+            _write_md(chat, answer)
             self._refresh_status()
             self.query_one("#prompt", Input).focus()
 
@@ -258,13 +282,14 @@ def start_tui() -> int:
         def action_show_help(self) -> None:
             self._submit("/help")
 
-    # Re-enable console for any post-exit messages, keep stderr.
     try:
-        from . import ui
+        HackbotTUI().run()
+    finally:
+        set_tui_console_mute(False)
+        try:
+            from . import ui
 
-        ui.console.quiet = False
-    except Exception:  # noqa: BLE001
-        pass
-
-    HackbotTUI().run()
+            ui.console.quiet = False
+        except Exception:  # noqa: BLE001
+            pass
     return 0

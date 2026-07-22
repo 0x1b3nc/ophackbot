@@ -18,6 +18,15 @@ _approve_depth = 0
 _approve_guard = threading.Lock()
 _ui_force_depth = 0
 _ui_force_guard = threading.Lock()
+_tui_mute = False
+_tui_mute_guard = threading.Lock()
+
+
+def set_tui_console_mute(on: bool) -> None:
+    """Mute Rich console while the Textual TUI owns the screen."""
+    global _tui_mute
+    with _tui_mute_guard:
+        _tui_mute = bool(on)
 
 
 def stream_output_allowed() -> bool:
@@ -28,9 +37,13 @@ def stream_output_allowed() -> bool:
 
 def console_output_allowed() -> bool:
     """Rich console gate: muted during approve unless permission UI forces it."""
+    with _tui_mute_guard:
+        tui_muted = _tui_mute
     with _ui_force_guard:
         if _ui_force_depth > 0:
             return True
+    if tui_muted:
+        return False
     return stream_output_allowed()
 
 
