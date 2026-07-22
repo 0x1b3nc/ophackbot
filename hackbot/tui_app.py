@@ -6,10 +6,11 @@ Layout: status · scrollable chat · multiline composer · footer.
 Final replies use Markdown; live stream (think/tool/plan) stays plain text.
 
 Composer is a TextArea (not single-line Input) so multiline paste keeps the
-**full** prompt. ``Enter`` sends; ``Shift+Enter`` inserts a newline (Kitty
-keyboard protocol — Textual enables it; works in Windows Terminal / Kitty /
-WezTerm / Ghostty). ``Ctrl+J`` / ``Alt+Enter`` are fallbacks if Shift+Enter
-is indistinguishable from Enter in a given terminal.
+**full** prompt. ``Enter`` sends. Newline: ``Ctrl+J`` (always) and
+``Alt+Enter`` (we patch Textual's Esc+CR→enter bug). ``Shift+Enter`` only
+when the terminal speaks the Kitty keyboard protocol (Kitty / Ghostty /
+Windows Terminal / WezTerm with kitty keys on) — most Kali defaults send
+plain Enter for Shift+Enter, which no app can disambiguate.
 
 Copy: ``F2`` / ``Ctrl+Y`` / ``/copy`` / click message. ``/cleanclip`` after a
 messy native select. ``/paste`` loads the OS clipboard into the composer.
@@ -34,6 +35,56 @@ from .session import get_active, status_line
 from .tui_commands import filter_slash_commands, handle_slash
 from .turn_bridge import resolve_mode, run_bridged_turn
 from .yolo import enable_yolo, is_yolo
+
+# Keys that insert a newline instead of submitting the composer.
+_NEWLINE_KEYS = frozenset(
+    {
+        "shift+enter",
+        "alt+enter",
+        "ctrl+enter",
+        "ctrl+j",
+        "meta+enter",
+        "alt+ctrl+j",
+    }
+)
+
+
+def _rewrite_key_for_alt(key: str, *, alt: bool) -> str:
+    """Apply Alt to special keys Textual maps via ANSI tuples (drops ``alt``).
+
+    Esc+CR is reissued as ``enter`` with ``alt=True`` ignored. Without this,
+    Alt+Enter always submits in the composer.
+    """
+    if not alt:
+        return key
+    if key == "enter":
+        return "alt+enter"
+    if key == "ctrl+j":
+        return "alt+enter"
+    return key
+
+
+def _patch_textual_alt_enter() -> None:
+    """Fix Textual dropping Alt on Enter (Esc+CR → plain ``enter``)."""
+    try:
+        from textual import events
+        from textual._xterm_parser import XTermParser
+    except ImportError:
+        return
+    if getattr(XTermParser._sequence_to_key_events, "_hackbot_alt_enter", False):
+        return
+    orig = XTermParser._sequence_to_key_events
+
+    def _wrapped(self, sequence: str, alt: bool = False):  # noqa: ANN001
+        for ev in orig(self, sequence, alt=alt):
+            new_key = _rewrite_key_for_alt(ev.key, alt=alt)
+            if new_key != ev.key:
+                yield events.Key(new_key, None)
+            else:
+                yield ev
+
+    _wrapped._hackbot_alt_enter = True  # type: ignore[attr-defined]
+    XTermParser._sequence_to_key_events = _wrapped  # type: ignore[method-assign]
 
 _BG = "#0D0D26"
 _PANEL = "#191970"
@@ -119,6 +170,9 @@ def start_tui() -> int:
 
     from .clipboard import clean_clipboard
 
+    # Esc+CR must become alt+enter or Alt+Enter always submits.
+    _patch_textual_alt_enter()
+
     class CopyableStatic(Static):
         """Static that stores plain source text for clean click-to-copy."""
 
@@ -150,7 +204,7 @@ def start_tui() -> int:
                 copy_fn(self.plain_source, label="message")
 
     class PromptArea(TextArea):
-        """Multiline composer — Enter sends; Shift+Enter = newline.
+        """Multiline composer — Enter sends; Ctrl+J / Alt+Enter = newline.
 
         Textual's TextArea hardcodes enter→newline in ``_on_key`` (before
         bindings), so we must override that handler or Enter can never send.
@@ -158,23 +212,27 @@ def start_tui() -> int:
 
         BINDINGS = [
             Binding("enter", "submit_prompt", "send", show=True, priority=True),
-            Binding("shift+enter", "newline", "newline", show=True, priority=True),
-            Binding("ctrl+j", "newline", "newline", show=False, priority=True),
-            Binding("alt+enter", "newline", "newline", show=False, priority=True),
+            Binding("ctrl+j", "newline", "newline", show=True, priority=True),
+            Binding("alt+enter", "newline", "newline", show=True, priority=True),
+            Binding("ctrl+enter", "newline", "newline", show=False, priority=True),
+            Binding("shift+enter", "newline", "newline", show=False, priority=True),
         ]
 
         async def _on_key(self, event) -> None:  # noqa: ANN001
-            """Intercept Enter/Shift+Enter before TextArea inserts a newline."""
-            key = getattr(event, "key", "") or ""
+            """Intercept Enter / newline combos before TextArea handles them."""
+            key = (getattr(event, "key", "") or "").lower()
+            aliases = {
+                (a or "").lower() for a in (getattr(event, "aliases", None) or [])
+            }
+            if key in _NEWLINE_KEYS or aliases & _NEWLINE_KEYS:
+                event.stop()
+                event.prevent_default()
+                self.action_newline()
+                return
             if key == "enter":
                 event.stop()
                 event.prevent_default()
                 self.action_submit_prompt()
-                return
-            if key in {"shift+enter", "ctrl+j", "alt+enter"}:
-                event.stop()
-                event.prevent_default()
-                self.action_newline()
                 return
             await super()._on_key(event)
 
@@ -343,7 +401,7 @@ def start_tui() -> int:
                         tab_behavior="indent",
                         show_line_numbers=False,
                         placeholder=(
-                            "Message…  Enter send · Shift+Enter newline · F2 copy · /paste"
+                            "Message…  Enter send · Ctrl+J / Alt+Enter newline · F2 copy"
                         ),
                         id="prompt",
                     )
@@ -354,8 +412,9 @@ def start_tui() -> int:
             self.set_interval(0.1, self._pump_feed)
             self._append_md(
                 "**hackbot** — `/provider` `/model` `/effort` `/target`\n\n"
-                "_**Send:** `Enter`. **Newline:** `Shift+Enter` "
-                "(fallback `Ctrl+J` / `Alt+Enter` if your terminal can't tell them apart). "
+                "_**Send:** `Enter`. **Newline:** `Ctrl+J` or `Alt+Enter` "
+                "(Shift+Enter only on Kitty/Ghostty/Windows Terminal — "
+                "Kali's default terminal usually can't tell Shift+Enter from Enter). "
                 "**Copy:** `F2` / click message / `/copy`. "
                 "**Scroll:** wheel + scrollbar + PgUp/PgDn. "
                 "Stop: `ctrl+c` then send a new prompt._"
