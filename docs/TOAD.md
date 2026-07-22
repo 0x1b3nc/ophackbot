@@ -1,11 +1,12 @@
-# Toad + hackbot (visual CLI)
+# Toad + hackbot (optional external host)
 
-Hackbot stays a **Python hunt kit**. The polished terminal UI is
-**[Toad](https://github.com/batrachianai/toad)** (Textual), which talks to agents
-over the [Agent Client Protocol](https://agentclientprotocol.com/) (ACP).
+**Prefer `python -m hackbot tui`** for a Textual UI with hackbot branding and
+slash commands (`/models`, `/target`, …). That app is ours.
 
-We do **not** vendor Toad (AGPL). Install it separately; run hackbot as an ACP
-agent.
+This page is only if you still want **[Toad](https://github.com/batrachianai/toad)**
+as an external host (AGPL — we do not vendor it). Toad will show its own title
+and `/toad:` commands in the picker; that is expected. Use `hackbot tui` to avoid
+that.
 
 ## Kali / Linux quickstart
 

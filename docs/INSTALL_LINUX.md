@@ -36,7 +36,8 @@ python -m hackbot scope-check targets/demo --host example.com
 python -m pytest -q
 ```
 
-Visual TUI (Toad + ACP): see [TOAD.md](TOAD.md).
+Visual TUI: `pip install -e '.[tui]'` then `python -m hackbot tui`.
+Optional Toad host: [TOAD.md](TOAD.md).
 
 Also: `playwright install chromium` if you want browser tools.
 

@@ -17,6 +17,7 @@ from typing import Any
 from uuid import uuid4
 
 from . import ui
+from .tui_commands import handle_slash
 from .turn_bridge import clear_bridge_histories, resolve_mode, run_bridged_turn
 from .yolo import enable_yolo, is_yolo
 
@@ -153,6 +154,17 @@ def start_acp_agent() -> int:
                     update=update_agent_message(text_block("(empty prompt)")),
                 )
                 return PromptResponse(stop_reason="end_turn")
+
+            # Operator slash commands stay local — never go to the model.
+            if text.startswith("/"):
+                result = await asyncio.to_thread(handle_slash, text)
+                if result.handled:
+                    body = "\n\n".join(result.messages) or "(ok)"
+                    await self._conn.session_update(
+                        session_id=session_id,
+                        update=update_agent_message(text_block(body)),
+                    )
+                    return PromptResponse(stop_reason="end_turn")
 
             _, label_now = resolve_mode()
             await self._conn.session_update(

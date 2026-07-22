@@ -39,6 +39,7 @@ SUBCOMMANDS = frozenset(
         "demo",
         "ui",
         "acp",
+        "tui",
     }
 )
 
@@ -390,7 +391,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ui_p = sub.add_parser(
         "ui",
-        help="(deprecated) Local browser UI — prefer Toad + `hackbot acp`",
+        help="(deprecated) Browser UI — prefer `hackbot tui`",
     )
     ui_p.add_argument("--host", default="127.0.0.1", help="Bind address (default 127.0.0.1)")
     ui_p.add_argument("--port", type=int, default=8765, help="Port (default 8765)")
@@ -402,6 +403,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "acp",
         help="Run as ACP agent for Toad/Zed (stdio JSON-RPC; stdout reserved)",
+    )
+    sub.add_parser(
+        "tui",
+        help="Fullscreen Textual TUI (hackbot brand + slash commands)",
     )
 
     return parser
@@ -416,6 +421,10 @@ def _dispatch(args: argparse.Namespace) -> int:
         from .acp_agent import start_acp_agent
 
         return start_acp_agent()
+    if args.subcommand == "tui":
+        from .tui_app import start_tui
+
+        return start_tui()
     ui.rule(f"hackbot {args.subcommand}")
     if args.subcommand == "target-init":
         return target_init(args.name)
@@ -530,7 +539,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         ui.code_panel(json.dumps(out, indent=2), title="demo smoke", lexer="json")
         return 0 if out.get("ok") else 1
     if args.subcommand == "ui":
-        ui.warn("deprecated: prefer Toad TUI → `toad acp \"python -m hackbot acp\" .` (see docs/TOAD.md)")
+        ui.warn("deprecated: prefer `python -m hackbot tui`")
         from .web_server import start_web_ui
 
         return start_web_ui(

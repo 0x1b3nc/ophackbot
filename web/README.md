@@ -1,10 +1,9 @@
 # hackbot web UI (deprecated)
 
-Prefer the **Toad** Textual TUI + ACP agent:
+Prefer:
 
 ```bash
-# see docs/TOAD.md
-toad acp "python -m hackbot acp" .
+python -m hackbot tui
 ```
 
 This browser surface (`python -m hackbot ui`) remains for compatibility only.

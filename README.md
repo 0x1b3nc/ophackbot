@@ -49,29 +49,26 @@ Then:
 ```bash
 python -m hackbot demo    # fake target + dry-run smoke
 python -m hackbot         # REPL (headless / SSH)
-# Visual CLI: Toad (Textual TUI) + hackbot as ACP agent — see docs/TOAD.md
+python -m hackbot tui     # fullscreen Textual UI (hackbot brand + /commands)
 ```
 
-### Visual CLI — Toad + ACP
+### Visual CLI — `hackbot tui`
 
-The good visual is **[Toad](https://github.com/batrachianai/toad)** (Textual TUI
-in the terminal), not a browser. Hackbot speaks
-[ACP](https://agentclientprotocol.com/) over stdio:
+The good visual is **our** Textual TUI (Toad-like layout, **hackbot** branding and
+`/models` `/target` `/yolo` …). Slash commands are handled locally — they never
+go to the model as a “hunt step”.
 
 ```bash
 cd ~/testhackbot/ophackbot
 source .venv/bin/activate
-pip install -U 'hackbot-kit[acp]'   # agent-client-protocol
-export HACKBOT_PROVIDER=codex       # or cursor / leave unset for offline
-
-# Install Toad (needs Python 3.14+ on PATH for uv tool)
-uv tool install -U batrachian-toad --python 3.14
-
-toad acp "python -m hackbot acp" .
+pip install -U -e '.[tui]'
+export HACKBOT_PROVIDER=codex
+python -m hackbot tui
 ```
 
-Full notes: [docs/TOAD.md](docs/TOAD.md). Plain REPL (`python -m hackbot`) stays
-for thin SSH / scripting. `hackbot ui` (browser) is deprecated.
+Plain REPL stays for thin SSH. Optional external host: [docs/TOAD.md](docs/TOAD.md)
+(`toad acp` + `hackbot acp`) — that UI still says “Toad”; prefer `hackbot tui`
+if you want only our brand. `hackbot ui` (browser) is deprecated.
 
 ## Brains
 
