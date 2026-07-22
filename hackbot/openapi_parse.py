@@ -39,20 +39,111 @@ def _load_spec(text: str) -> dict[str, Any] | None:
     return None
 
 
-def _resolve_ref(spec: dict[str, Any], node: Any, *, depth: int = 0) -> Any:
-    if depth > 6 or not isinstance(node, dict):
-        return node
-    ref = node.get("$ref")
-    if not isinstance(ref, str) or not ref.startswith("#/"):
-        return node
-    cur: Any = spec
-    for part in ref[2:].split("/"):
-        if not isinstance(cur, dict):
+class _RefResolver:
+    """Resolve local (#/…) and relative file refs (./schemas.yaml#/components/…)."""
+
+    def __init__(self, root: dict[str, Any], *, base_dir: Path | None = None) -> None:
+        self.root = root
+        self.base_dir = Path(base_dir) if base_dir else None
+        self._file_cache: dict[str, dict[str, Any]] = {}
+
+    def resolve(self, node: Any, *, depth: int = 0) -> Any:
+        if depth > 24:
             return node
-        cur = cur.get(part)
-    if isinstance(cur, dict):
-        return _resolve_ref(spec, cur, depth=depth + 1)
-    return cur if cur is not None else node
+        if isinstance(node, list):
+            return [self.resolve(x, depth=depth + 1) for x in node[:80]]
+        if not isinstance(node, dict):
+            return node
+        # allOf merge (shallow useful fields)
+        if "allOf" in node and isinstance(node["allOf"], list):
+            merged: dict[str, Any] = {k: v for k, v in node.items() if k != "allOf"}
+            props: dict[str, Any] = {}
+            for part in node["allOf"][:12]:
+                resolved = self.resolve(part, depth=depth + 1)
+                if isinstance(resolved, dict):
+                    for k, v in resolved.items():
+                        if k == "properties" and isinstance(v, dict):
+                            props.update(v)
+                        elif k not in merged:
+                            merged[k] = v
+            if props:
+                merged_props = dict(merged.get("properties") or {})
+                merged_props.update(props)
+                merged["properties"] = merged_props
+            node = merged
+        ref = node.get("$ref")
+        if not isinstance(ref, str) or not ref:
+            # Recurse into common containers
+            out = dict(node)
+            for key in ("schema", "items", "properties", "content", "parameters", "requestBody"):
+                if key in out:
+                    out[key] = self.resolve(out[key], depth=depth + 1)
+            return out
+        target = self._load_ref(ref)
+        if target is None:
+            return node
+        if isinstance(target, dict):
+            # Keep sibling extensions occasionally present beside $ref
+            siblings = {k: v for k, v in node.items() if k != "$ref"}
+            resolved = self.resolve(target, depth=depth + 1)
+            if siblings and isinstance(resolved, dict):
+                return {**resolved, **siblings}
+            return resolved
+        return target
+
+    def _load_ref(self, ref: str) -> Any:
+        if ref.startswith("#/"):
+            return self._pointer(self.root, ref[1:])
+        # file ref: path#/pointer or path only
+        file_part, _, ptr = ref.partition("#")
+        file_part = file_part.strip()
+        if not file_part or not self.base_dir:
+            return None
+        path = (self.base_dir / file_part).resolve()
+        try:
+            path.relative_to(self.base_dir.resolve())
+        except ValueError:
+            # allow sibling dirs one level up within same parent
+            try:
+                path.relative_to(self.base_dir.resolve().parent)
+            except ValueError:
+                return None
+        key = str(path)
+        if key not in self._file_cache:
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return None
+            loaded = _load_spec(text)
+            if not loaded:
+                return None
+            self._file_cache[key] = loaded
+        doc = self._file_cache[key]
+        if ptr:
+            return self._pointer(doc, ptr if ptr.startswith("/") else "/" + ptr)
+        return doc
+
+    @staticmethod
+    def _pointer(doc: dict[str, Any], pointer: str) -> Any:
+        cur: Any = doc
+        for part in pointer.strip("/").split("/"):
+            part = part.replace("~1", "/").replace("~0", "~")
+            if not isinstance(cur, dict):
+                return None
+            cur = cur.get(part)
+        return cur
+
+
+def _resolve_ref(
+    spec: dict[str, Any],
+    node: Any,
+    *,
+    depth: int = 0,
+    base_dir: Path | None = None,
+    resolver: _RefResolver | None = None,
+) -> Any:
+    res = resolver or _RefResolver(spec, base_dir=base_dir)
+    return res.resolve(node, depth=depth)
 
 
 def _base_from_spec(spec: dict[str, Any], base_url: str = "") -> str:
@@ -112,14 +203,20 @@ def _example_from_schema(schema: dict[str, Any]) -> Any:
     return None
 
 
-def _param_names(spec: dict[str, Any], path_item: dict[str, Any], op: dict[str, Any]) -> list[str]:
+def _param_names(
+    spec: dict[str, Any],
+    path_item: dict[str, Any],
+    op: dict[str, Any],
+    *,
+    resolver: _RefResolver,
+) -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
     for block in (path_item.get("parameters") or [], op.get("parameters") or []):
         if not isinstance(block, list):
             continue
         for p in block:
-            p = _resolve_ref(spec, p) if isinstance(p, dict) else p
+            p = resolver.resolve(p) if isinstance(p, dict) else p
             if not isinstance(p, dict) or not p.get("name"):
                 continue
             name = str(p["name"])
@@ -127,17 +224,18 @@ def _param_names(spec: dict[str, Any], path_item: dict[str, Any], op: dict[str, 
                 continue
             seen.add(name)
             names.append(name)
-            # examples / defaults / enums as soft hints in notes only — keep params as names
-            schema = p.get("schema") if isinstance(p.get("schema"), dict) else {}
-            if not schema and p.get("type"):
-                schema = {"type": p.get("type"), "enum": p.get("enum"), "default": p.get("default")}
     return names[:40]
 
 
-def _body_template(spec: dict[str, Any], op: dict[str, Any]) -> str:
+def _body_template(
+    spec: dict[str, Any],
+    op: dict[str, Any],
+    *,
+    resolver: _RefResolver,
+) -> str:
     # OAS3 requestBody
     rb = op.get("requestBody")
-    rb = _resolve_ref(spec, rb) if isinstance(rb, dict) else rb
+    rb = resolver.resolve(rb) if isinstance(rb, dict) else rb
     if isinstance(rb, dict):
         content = rb.get("content") or {}
         if isinstance(content, dict):
@@ -158,7 +256,7 @@ def _body_template(spec: dict[str, Any], op: dict[str, Any]) -> str:
                         return json.dumps(val, ensure_ascii=False)[:2000]
                     except (TypeError, ValueError):
                         pass
-                schema = _resolve_ref(spec, media.get("schema") or {})
+                schema = resolver.resolve(media.get("schema") or {})
                 if isinstance(schema, dict):
                     ex = _example_from_schema(schema)
                     if ex is not None:
@@ -168,9 +266,9 @@ def _body_template(spec: dict[str, Any], op: dict[str, Any]) -> str:
                             pass
     # Swagger 2 body param
     for p in op.get("parameters") or []:
-        p = _resolve_ref(spec, p) if isinstance(p, dict) else p
+        p = resolver.resolve(p) if isinstance(p, dict) else p
         if isinstance(p, dict) and str(p.get("in") or "") == "body":
-            schema = _resolve_ref(spec, p.get("schema") or {})
+            schema = resolver.resolve(p.get("schema") or {})
             if isinstance(schema, dict):
                 ex = _example_from_schema(schema)
                 if ex is not None:
@@ -225,10 +323,16 @@ def _security_notes(spec: dict[str, Any], op: dict[str, Any]) -> str:
     return "; ".join(bits)[:300]
 
 
-def parse_openapi_dict(spec: dict[str, Any], *, base_url: str = "") -> list[Endpoint]:
+def parse_openapi_dict(
+    spec: dict[str, Any],
+    *,
+    base_url: str = "",
+    base_dir: Path | None = None,
+) -> list[Endpoint]:
     endpoints: list[Endpoint] = []
     if not isinstance(spec, dict):
         return endpoints
+    resolver = _RefResolver(spec, base_dir=base_dir)
     base = _base_from_spec(spec, base_url)
     paths = spec.get("paths") or {}
     if not isinstance(paths, dict):
@@ -236,14 +340,14 @@ def parse_openapi_dict(spec: dict[str, Any], *, base_url: str = "") -> list[Endp
     for path, path_item in list(paths.items())[:200]:
         if not isinstance(path_item, dict):
             continue
-        path_item = _resolve_ref(spec, path_item) if "$ref" in path_item else path_item
+        path_item = resolver.resolve(path_item) if "$ref" in path_item else path_item
         if not isinstance(path_item, dict):
             continue
         for method, op in path_item.items():
             if method.lower() not in _METHODS or not isinstance(op, dict):
                 continue
-            params = _param_names(spec, path_item, op)
-            body = _body_template(spec, op)
+            params = _param_names(spec, path_item, op, resolver=resolver)
+            body = _body_template(spec, op, resolver=resolver)
             auth_req = _op_auth_required(spec, op)
             tags = [str(t) for t in (op.get("tags") or []) if t][:8]
             if op.get("deprecated"):
@@ -277,11 +381,12 @@ def ingest_openapi_text(
     base_url: str = "",
     host: str = "",
     seed_coverage: bool = True,
+    base_dir: Path | None = None,
 ) -> dict[str, Any]:
     spec = _load_spec(text)
     if not spec:
         return {"ok": False, "error": "invalid_openapi", "seeded": 0}
-    eps = parse_openapi_dict(spec, base_url=base_url)
+    eps = parse_openapi_dict(spec, base_url=base_url, base_dir=base_dir)
     if eps:
         HuntMemory(target_dir).upsert_endpoints(eps, host=host)
         if seed_coverage:
@@ -293,6 +398,7 @@ def ingest_openapi_text(
             {"method": e.method, "url": e.url, "risk": e.risk_score, "auth": e.auth_required}
             for e in sorted(eps, key=lambda x: -x.risk_score)[:8]
         ],
+        "base_dir": str(base_dir) if base_dir else "",
     }
 
 
@@ -304,10 +410,16 @@ def ingest_openapi_file(
     host: str = "",
     seed_coverage: bool = True,
 ) -> dict[str, Any]:
+    path = Path(path)
     try:
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return {"ok": False, "error": str(exc), "seeded": 0}
     return ingest_openapi_text(
-        target_dir, text, base_url=base_url, host=host, seed_coverage=seed_coverage
+        target_dir,
+        text,
+        base_url=base_url,
+        host=host,
+        seed_coverage=seed_coverage,
+        base_dir=path.parent,
     )

@@ -91,8 +91,11 @@ PACKS: dict[str, tuple[str, ...]] = {
     ),
     "inject": (
         "http_request",
+        "curl_request",
         "assert_diff",
         "idor_probe",
+        "ai_surface_upsert",
+        "ai_surface_list",
         "session_bootstrap",
         "detect_login",
         "session_smoke",

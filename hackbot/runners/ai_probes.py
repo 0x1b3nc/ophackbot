@@ -134,6 +134,34 @@ def _run_family(
     return RunnerResult([tool, url], True, 0, json.dumps(out), "", "executed")
 
 
+def _hydrate_from_surface(
+    target_dir: Path,
+    url: str,
+    *,
+    prompt_field: str,
+    session_field: str,
+    method: str,
+    surface_id: str = "",
+) -> tuple[str, str, str, str]:
+    """Fill chat shape from hunt/ai_surfaces.yaml when args are defaults."""
+    try:
+        from ..ai_target import get_ai_surface
+
+        surf = get_ai_surface(target_dir, surface_id)
+    except Exception:  # noqa: BLE001
+        surf = None
+    if not surf:
+        return url, prompt_field, session_field, method
+    return (
+        url or surf.chat_url,
+        prompt_field if prompt_field != "message" else (surf.prompt_field or prompt_field),
+        session_field
+        if session_field != "conversation_id"
+        else (surf.session_field or session_field),
+        method if method != "POST" else (surf.method or method),
+    )
+
+
 def llm_prompt_probe(
     target_dir: Path,
     url: str,
@@ -146,7 +174,16 @@ def llm_prompt_probe(
     session_field: str = "conversation_id",
     method: str = "POST",
     max_payloads: int = 3,
+    surface_id: str = "",
 ) -> RunnerResult:
+    url, prompt_field, session_field, method = _hydrate_from_surface(
+        target_dir,
+        url,
+        prompt_field=prompt_field,
+        session_field=session_field,
+        method=method,
+        surface_id=surface_id,
+    )
     return _run_family(
         tool="llm_prompt_probe",
         family="prompt-injection",

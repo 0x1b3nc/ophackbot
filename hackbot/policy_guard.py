@@ -98,6 +98,7 @@ TOOL_AGGRESSION: dict[str, int] = {
     "oauth_probe": 2,
     "jwt_active": 2,
     "http_request": 2,
+    "curl_request": 2,
     "workflow_run": 2,
     "http_smuggle_probe": 3,
     "cache_poison_probe": 2,

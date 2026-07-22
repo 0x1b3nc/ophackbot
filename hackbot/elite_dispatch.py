@@ -459,6 +459,11 @@ def dispatch_elite(
             kwargs["method"] = str(args.get("method") or "GET")
             kwargs["session_a"] = str(args.get("session_a") or "A")
             kwargs["session_b"] = str(args.get("session_b") or "B")
+            kwargs["include_anon"] = parse_bool(args.get("include_anon"), default=True)
+            kwargs["param"] = str(args.get("param") or "")
+            kwargs["owned_id"] = str(args.get("owned_id") or "")
+            kwargs["other_id"] = str(args.get("other_id") or "")
+            kwargs["body"] = str(args.get("body") or "")
         elif name == "api_hpp_probe":
             kwargs["param"] = str(args.get("param") or "id")
             kwargs["owned_id"] = str(args.get("owned_id") or "owned")
@@ -575,7 +580,79 @@ def dispatch_elite(
                 method=str(args.get("method") or "POST"),
                 max_payloads=int(args.get("max_payloads") or 3),
             )
+            if name == "llm_prompt_probe":
+                kwargs["surface_id"] = str(args.get("surface_id") or "")
         return _runner_json(runner(_target(args["target_dir"]), url, **kwargs))
+
+    if name == "curl_request":
+        from .runners import curl_request as curl_mod
+
+        approve = parse_bool(args.get("approve"))
+        force = _force(args)
+        url = args["url"]
+        if approve:
+            refusal = _approve_active(
+                approve_fn,
+                tool=name,
+                url=url,
+                force=force,
+                aggression=2,
+                require_approval=require_approval,
+            )
+            if refusal:
+                return refusal
+        return _runner_json(
+            curl_mod.curl_request(
+                _target(args["target_dir"]),
+                url,
+                method=str(args.get("method") or "GET"),
+                session=str(args.get("session") or ""),
+                body=str(args.get("body") or ""),
+                content_type=str(args.get("content_type") or ""),
+                approve=approve,
+                force=force,
+                timeout=float(args.get("timeout") or 20),
+                label=str(args.get("label") or ""),
+            )
+        )
+
+    if name == "ai_surface_upsert":
+        from .ai_target import upsert_ai_surface
+
+        def _csv(v: Any) -> list[str]:
+            return [x.strip() for x in str(v or "").split(",") if x.strip()]
+
+        return json.dumps(
+            upsert_ai_surface(
+                _target(args["target_dir"]),
+                surface_id=str(args.get("surface_id") or ""),
+                chat_url=str(args.get("chat_url") or ""),
+                method=str(args.get("method") or "POST"),
+                prompt_field=str(args.get("prompt_field") or "message"),
+                session_field=str(args.get("session_field") or "conversation_id"),
+                upload_urls=_csv(args.get("upload_urls")),
+                retrieval_urls=_csv(args.get("retrieval_urls")),
+                tool_urls=_csv(args.get("tool_urls")),
+                mcp_urls=_csv(args.get("mcp_urls")),
+                auth_state=str(args.get("auth_state") or ""),
+                tenant=str(args.get("tenant") or ""),
+                account=str(args.get("account") or ""),
+                tags=_csv(args.get("tags")),
+                notes=str(args.get("notes") or ""),
+            )
+        )
+
+    if name == "ai_surface_list":
+        from .ai_target import get_ai_surface, list_ai_surfaces
+
+        target = _target(args["target_dir"])
+        sid = str(args.get("surface_id") or "").strip()
+        if sid:
+            s = get_ai_surface(target, sid)
+            return json.dumps({"ok": True, "surface": s.as_dict() if s else None})
+        return json.dumps(
+            {"ok": True, "surfaces": [s.as_dict() for s in list_ai_surfaces(target)]}
+        )
 
     return None
 

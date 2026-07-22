@@ -36,11 +36,12 @@ Prefer authz / business-logic over generic reflected XSS. Use `hunt_cockpit` for
 
 ## API + AI packs
 
-- Ingest: `import_openapi`, `import_postman` → HuntMemory + coverage cells.
-- API probes: `api_authz_matrix`, `api_*` canary probes (dry-run default).
+- Ingest: `import_openapi` (multi-file `$ref`), `import_postman` → HuntMemory + coverage.
+- HTTP: `http_request` **and** scoped `curl_request` (same SCOPE/approve/session rails).
+- API probes: `api_authz_matrix` requires A/B in `secrets/sessions.yaml`, runs `assert_idor_diff`, caches labels.
+- AI surfaces: `ai_surface_upsert` / `ai_surface_list` → `hunt/ai_surfaces.yaml`.
 - AI probes: `llm_prompt_probe`, `llm_rag_probe`, `mcp_agent_probe`, `ai_eval_run`.
 - Playbooks: `prompt-injection`, `rag`, `agentic`, `mcp`, `system-boundary`, …
-- Knowledge keywords: `llm`, `rag`, `mcp`, `prompt-injection`, `agentic`.
 - AI payloads are canary-only (`HB_CANARY_*`); stop on cross-tenant data or real tool execution.
 
 ## Extreme study

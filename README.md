@@ -227,7 +227,9 @@ Bigger table + env knobs (OOB, Burp, Interactsh): [docs/CLI.md](docs/CLI.md).
 ```text
 import_openapi path=./swagger.yaml base_url=https://api.example.com
 import_postman path=./collection.json
-api_authz_matrix url=https://api.example.com/users/1   # dry-run default
+# A/B need secrets/sessions.yaml first — matrix asserts + caches labels for assert_diff
+api_authz_matrix url=https://api.example.com/users/1 session_a=A session_b=B
+curl_request url=https://api.example.com/users/1 session=A   # scoped curl
 api_mass_assignment_probe url=https://api.example.com/me
 ```
 
@@ -242,6 +244,8 @@ dry-run. Stop on cross-tenant data, real tool execution, or SCOPE prohibitions.
 See `bounty_knowledge/study_notes/ai-security/hackbot-ai-hunting.md`.
 
 ```text
+ai_surface_upsert chat_url=https://chat.example.com/v1/chat prompt_field=messages mcp_urls=https://chat.example.com/mcp
+ai_surface_list
 llm_prompt_probe url=https://chat.example.com/v1/chat session=A
 llm_rag_probe url=https://chat.example.com/v1/chat
 mcp_agent_probe url=https://mcp.example.com/rpc

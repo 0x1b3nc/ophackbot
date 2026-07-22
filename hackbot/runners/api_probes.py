@@ -28,6 +28,40 @@ def _mark(target_dir: Path, cls: str, url: str, status: str, method: str = "GET"
     mark_coverage_url(target_dir, cls=cls, url=url, method=method, status=status, note="api_probe")
 
 
+def _cache_authz_response(target_dir: Path, label: str, payload: dict[str, Any]) -> None:
+    """Seed tools._RESPONSE_CACHE so assert_diff works after matrix."""
+    try:
+        from ..tools import _RESPONSE_CACHE, _cache_key
+
+        _RESPONSE_CACHE[_cache_key(target_dir, label)] = payload
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _swap_path_or_query(url: str, *, param: str, value: str) -> str:
+    if not param or not value:
+        return url
+    parsed = urlparse(url if "://" in url else f"https://{url}")
+    # path placeholder {id} or :id
+    path = parsed.path or "/"
+    for token in (f"{{{param}}}", f":{param}"):
+        if token in path:
+            path = path.replace(token, value)
+            return urlunparse((parsed.scheme, parsed.netloc, path, "", parsed.query, ""))
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+    qs[param] = [value]
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            path,
+            "",
+            urlencode({k: v[0] if v else "" for k, v in qs.items()}),
+            "",
+        )
+    )
+
+
 def api_authz_matrix(
     target_dir: Path,
     url: str,
@@ -35,58 +69,138 @@ def api_authz_matrix(
     method: str = "GET",
     session_a: str = "A",
     session_b: str = "B",
+    include_anon: bool = True,
+    param: str = "",
+    owned_id: str = "",
+    other_id: str = "",
+    body: str = "",
     approve: bool = False,
     force: bool = False,
 ) -> RunnerResult:
-    plan = {
-        "url": url,
-        "method": method,
-        "sessions": [session_a, session_b, "anon"],
-        "approve": approve,
-    }
-    early = _gate(
-        target_dir,
-        url,
-        action="api authz matrix",
-        approve=approve,
-        force=force,
-        tool="api_authz_matrix",
-        plan=plan,
+    """Full A/B(/anon) authz matrix with session fixture checks + assert_idor_diff."""
+    from ..diffing import assert_idor_diff
+    from ..identity import load_identity
+
+    identity = load_identity(target_dir)
+    ready = set(identity.ready_sessions())
+    url_base = url if "://" in url else f"https://{url}"
+    url_owned = (
+        _swap_path_or_query(url_base, param=param, value=owned_id)
+        if param and owned_id
+        else url_base
     )
-    if early:
-        return early
+    url_other = (
+        _swap_path_or_query(url_base, param=param, value=other_id)
+        if param and other_id
+        else url_owned
+    )
+    plan = {
+        "url": url_owned,
+        "url_other": url_other if url_other != url_owned else None,
+        "method": method,
+        "sessions": [session_a, session_b] + (["anon"] if include_anon else []),
+        "param": param or None,
+        "approve": approve,
+        "ready": sorted(ready),
+        "fixtures_ok": session_a in ready and session_b in ready,
+    }
+    require_in_scope(target_dir, url_owned, action="api authz matrix", force=force, tool="api_authz_matrix")
+    ui.code_panel(json.dumps(plan, indent=2), title="api_authz_matrix", lexer="json")
+    cmd = ["api_authz_matrix", url_owned, session_a, session_b]
+
+    if session_a not in ready or session_b not in ready:
+        out = {
+            "ok": False,
+            "signal": False,
+            "error": "sessions_missing",
+            "ready": sorted(ready),
+            "hint": "Load A/B into secrets/sessions.yaml (or session_bootstrap) before ACTIVE matrix.",
+            **plan,
+        }
+        _mark(target_dir, "authz", url_owned, "dry", method=method)
+        return RunnerResult(cmd, False, None, json.dumps(out), "", "error")
+
+    if not approve:
+        ui.dry_run_banner()
+        _mark(target_dir, "authz", url_owned, "dry", method=method)
+        return RunnerResult(cmd, False, None, json.dumps({"dry_run": True, **plan}), "", "dry-run")
+
     rows: list[dict[str, Any]] = []
-    for sess in (session_a, session_b, ""):
-        label = sess or "anon"
+    cached: dict[str, dict[str, Any]] = {}
+    pairs = [
+        (session_a, url_owned, f"authz_{session_a}"),
+        (session_b, url_owned, f"authz_{session_b}"),
+    ]
+    if param and other_id:
+        pairs.append((session_b, url_other, f"authz_{session_b}_other"))
+    if include_anon:
+        pairs.append(("", url_owned, "authz_anon"))
+
+    meth = (method or "GET").upper()
+    body_payload = None if meth == "GET" else (body or None)
+
+    for sess, u, label in pairs:
         try:
+            require_in_scope(target_dir, u, action="api authz matrix", force=force)
             result = http_mod.http_request(
                 target_dir,
-                url,
-                method=method.upper(),
+                u,
+                method=meth,
                 session=sess or None,
+                body=body_payload,
                 approve=True,
                 force=force,
-                label=f"authz_{label}",
+                label=label,
             )
             payload = json.loads(result.stdout) if result.stdout else {}
         except Exception as exc:  # noqa: BLE001
-            payload = {"error": type(exc).__name__}
+            payload = {"status": 0, "error": type(exc).__name__, "body_preview": "", "body": ""}
+        _cache_authz_response(target_dir, label, payload)
+        cached[label] = payload
         rows.append(
             {
-                "session": label,
+                "session": sess or "anon",
+                "label": label,
+                "url": u,
                 "status": payload.get("status"),
                 "preview": redact_text(str(payload.get("body_preview") or ""))[:200],
             }
         )
-    statuses = [r.get("status") for r in rows if r.get("status") is not None]
-    signal = False
-    if len(statuses) >= 2 and statuses[0] == 200 and any(s == 200 for s in statuses[1:]):
-        # A and B both 200 on same object URL → possible BOLA (manual triage)
-        signal = statuses[1] == 200
-    out = {"ok": True, "signal": signal, "rows": rows, "reason": "compare A/B/anon"}
-    _save(target_dir, "api_authz_matrix", out)
-    _mark(target_dir, "authz", url, "pos" if signal else "neg", method=method)
-    return RunnerResult(["api_authz_matrix", url], True, 0, json.dumps(out), "", "executed")
+
+    resp_a = cached.get(f"authz_{session_a}") or {}
+    resp_b = cached.get(f"authz_{session_b}") or {}
+    diff = assert_idor_diff(resp_a, resp_b, object_hint=url_owned)
+    # Cross-object: B on other's id vs A on owned
+    cross = None
+    if f"authz_{session_b}_other" in cached:
+        cross = assert_idor_diff(
+            resp_a, cached[f"authz_{session_b}_other"], object_hint=url_other
+        ).as_dict()
+
+    signal = diff.verdict in {"confirmed", "likely"}
+    if cross and cross.get("verdict") in {"confirmed", "likely"}:
+        signal = True
+    anon_status = next((r.get("status") for r in rows if r.get("session") == "anon"), None)
+    out = {
+        "ok": True,
+        "signal": signal,
+        "verdict": diff.verdict,
+        "reason": diff.reason,
+        "diff": diff.as_dict(),
+        "cross_object": cross,
+        "anon_status": anon_status,
+        "rows": rows,
+        "labels": {
+            "assert_diff": [f"authz_{session_a}", f"authz_{session_b}"],
+            "hint": "assert_diff label_a=authz_A label_b=authz_B (same process)",
+        },
+        "fixtures": {"ready": sorted(ready), "session_a": session_a, "session_b": session_b},
+    }
+    path = _save(target_dir, "api_authz_matrix", out)
+    if path:
+        out["evidence"] = path
+    _mark(target_dir, "authz", url_owned, "pos" if signal else "neg", method=method)
+    return RunnerResult(cmd, True, 0, json.dumps(out), "", "executed")
 
 
 def api_mass_assignment_probe(

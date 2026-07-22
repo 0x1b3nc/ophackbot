@@ -40,6 +40,7 @@ def _ai_tool(name: str, description: str) -> dict[str, Any]:
             "session_field": {"type": "string", "default": "conversation_id"},
             "method": {"type": "string", "default": "POST"},
             "max_payloads": {"type": "integer", "default": 3},
+            "surface_id": {"type": "string", "default": ""},
         },
     )
 
@@ -81,13 +82,84 @@ API_AI_TOOL_SPECS: list[dict[str, Any]] = [
     },
     _url_tool(
         "api_authz_matrix",
-        "Compare A/B/anon responses for an API endpoint (BOLA/BFLA matrix). Dry-run default.",
+        "Full A/B(/anon) authz matrix with sessions.yaml fixtures + assert_idor_diff. Dry-run default.",
         {
             "method": {"type": "string", "default": "GET"},
             "session_a": {"type": "string", "default": "A"},
             "session_b": {"type": "string", "default": "B"},
+            "include_anon": {"type": "boolean", "default": True},
+            "param": {"type": "string", "default": ""},
+            "owned_id": {"type": "string", "default": ""},
+            "other_id": {"type": "string", "default": ""},
+            "body": {"type": "string", "default": ""},
         },
     ),
+    {
+        "name": "curl_request",
+        "description": (
+            "First-class scoped curl (or http_request fallback). Same SCOPE/approve/session "
+            "rails as http_request. Dry-run default. Active target HTTP via Hackbot tools only."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "method": {"type": "string", "default": "GET"},
+                "session": {"type": "string", "default": ""},
+                "body": {"type": "string", "default": ""},
+                "content_type": {"type": "string", "default": ""},
+                "label": {"type": "string", "default": ""},
+                "approve": _APPROVE_FALSE,
+                "force": _FORCE,
+                "timeout": {"type": "number", "default": 20},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "ai_surface_upsert",
+        "description": (
+            "Persist an AI/LLM/RAG/MCP target surface into hunt/ai_surfaces.yaml "
+            "(chat URL, prompt/session fields, upload/tool/MCP URLs, tenant/auth tags)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "surface_id": {"type": "string", "default": ""},
+                "chat_url": {"type": "string", "default": ""},
+                "method": {"type": "string", "default": "POST"},
+                "prompt_field": {"type": "string", "default": "message"},
+                "session_field": {"type": "string", "default": "conversation_id"},
+                "upload_urls": {"type": "string", "default": "", "description": "CSV URLs"},
+                "retrieval_urls": {"type": "string", "default": ""},
+                "tool_urls": {"type": "string", "default": ""},
+                "mcp_urls": {"type": "string", "default": ""},
+                "auth_state": {"type": "string", "default": ""},
+                "tenant": {"type": "string", "default": ""},
+                "account": {"type": "string", "default": ""},
+                "tags": {"type": "string", "default": "", "description": "CSV tags"},
+                "notes": {"type": "string", "default": ""},
+            },
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "ai_surface_list",
+        "description": "List persisted AI target surfaces from hunt/ai_surfaces.yaml.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "surface_id": {"type": "string", "default": ""},
+            },
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
     _url_tool(
         "api_mass_assignment_probe",
         "Inject canary privilege fields (role/plan/tenant_id). Never destructive. Dry-run default.",
