@@ -13,7 +13,7 @@ When the requested work is done and there are relevant changes:
 
 1. Commit (concise message; exclude secrets and unrelated junk like demo report noise).
 2. Push to the tracked remote branch.
-3. Do **not** ask “quer que eu faça commit/push?” first.
+3. Do **not** ask “want me to commit/push?” first.
 
 ## Still forbidden (same as global rules)
 
@@ -23,9 +23,6 @@ When the requested work is done and there are relevant changes:
 
 ## Other projects
 
-Outside this repo, ignore this file. Follow global rules:
+Outside this repo, ignore this file. Follow that workspace’s global Cursor rules / user rules.
 
-- `C:\Users\boyzi\OneDrive\Documentos\claude-cursor\CURSOR-RULES.md`
-- User rules / `.cursor/rules` in that other workspace
-
-There: **commit/push only when Boyzi asks explicitly** (including the 3-option commit flow when that file applies).
+There: **commit/push only when the operator asks explicitly**.
