@@ -383,19 +383,21 @@ def activity(kind: str, detail: str, *, style: str = "hb.muted") -> None:
     try:
         from .live_feed import emit
 
-        emit(kind, detail if len(detail) < 400 else detail[:397] + "…")
+        # Full text for TUI — do not clip here (TUI applies its own soft cap).
+        emit(kind, detail)
     except Exception:  # noqa: BLE001
         pass
     # Codex/Claude-CLI style: "run: /usr/bin/zsh -lc '…'" — plain text, wraps.
+    shown = detail if len(detail) <= 8000 else detail[:8000] + "…"
     if (
         kind.startswith("run")
         or kind.startswith("out")
         or kind in {"log", "dbg", "think", "plan", "tool"}
     ):
-        console.print(Text(f"{kind}: ", style="hb.label") + Text(detail, style=style))
+        console.print(Text(f"{kind}: ", style="hb.label") + Text(shown, style=style))
         return
     # Safe for short labels; escape brackets that break Rich markup.
-    safe = detail.replace("[", "\\[").replace("]", "\\]")
+    safe = shown.replace("[", "\\[").replace("]", "\\]")
     console.print(
         Text.from_markup(f"[hb.label]{kind}[/] [{style}]{safe}[/]")
     )
@@ -592,12 +594,13 @@ def action_line(kind: str, detail: str, *, ok: bool | None = None) -> None:
     try:
         from .live_feed import emit
 
-        emit("tool", f"[{mark}] {kind}  {detail[:160]}")
+        emit("tool", f"[{mark}] {kind}  {detail}")
     except Exception:  # noqa: BLE001
         pass
     line = Text()
     line.append(f"{kind}  ", style="hb.label")
-    line.append(detail[:120], style="hb.muted")
+    shown = detail if len(detail) <= 500 else detail[:500] + "…"
+    line.append(shown, style="hb.muted")
     if ok is True:
         line.append("  ✓", style="hb.ok")
     elif ok is False:

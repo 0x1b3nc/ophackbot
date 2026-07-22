@@ -14,8 +14,8 @@ FeedFn = Callable[[str, str], None]  # (kind, text)
 
 _lock = threading.Lock()
 _sink: FeedFn | None = None
-_buffer: deque[tuple[str, str]] = deque(maxlen=120)
-_pending: deque[tuple[str, str]] = deque(maxlen=200)
+_buffer: deque[tuple[str, str]] = deque(maxlen=400)
+_pending: deque[tuple[str, str]] = deque(maxlen=600)
 
 
 def set_feed_sink(fn: FeedFn | None) -> None:

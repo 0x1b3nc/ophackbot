@@ -1722,7 +1722,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Relative or absolute path"},
-                "max_chars": {"type": "integer", "default": 8000},
+                "max_chars": {
+                    "type": "integer",
+                    "default": 100000,
+                    "description": "Max characters to return (raise if truncated=true)",
+                },
             },
             "required": ["path"],
             "additionalProperties": False,
@@ -3683,7 +3687,7 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
                     "hint": "call read_image",
                 }
             )
-        max_chars = int(args.get("max_chars") or 8000)
+        max_chars = int(args.get("max_chars") or 100000)
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             text = handle.read(max_chars + 1)
         truncated = len(text) > max_chars
@@ -3695,6 +3699,11 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
                 "path": str(path),
                 "text": text,
                 "truncated": truncated,
+                "hint": (
+                    f"truncated — re-call read_file with max_chars>{max_chars} or read the rest"
+                    if truncated
+                    else None
+                ),
             }
         )
 

@@ -6,9 +6,10 @@ Layout: status · scrollable chat · multiline composer · footer.
 Final replies use Markdown; live stream (think/tool/plan) stays plain text.
 
 Composer is a TextArea (not single-line Input) so multiline paste keeps the
-**full** prompt. ``Enter`` sends. Newline: ``Ctrl+J`` or ``Alt+Enter``
-(``Shift+Enter`` only works if the terminal speaks Kitty keyboard protocol —
-most do not, so Shift+Enter looks like plain Enter).
+**full** prompt. ``Enter`` sends; ``Shift+Enter`` inserts a newline (Kitty
+keyboard protocol — Textual enables it; works in Windows Terminal / Kitty /
+WezTerm / Ghostty). ``Ctrl+J`` / ``Alt+Enter`` are fallbacks if Shift+Enter
+is indistinguishable from Enter in a given terminal.
 
 Copy: ``F2`` / ``Ctrl+Y`` / ``/copy`` / click message. ``/cleanclip`` after a
 messy native select. ``/paste`` loads the OS clipboard into the composer.
@@ -41,6 +42,11 @@ _PRIMARY = "#8A2BE2"
 _SECONDARY = "#7B68EE"
 _TEXT = "#E8E8FF"
 _INFO = "#64D9E8"
+
+# Live tool/out pins — keep file dumps readable (was hard-clipped at 200 chars).
+_LIVE_OUT_CHARS = 50_000
+_LIVE_THINK_CHARS = 2_000
+_LIVE_DRAFT_CHARS = 2_000
 
 def _plain_text(text: str) -> str:
     """Strip Markdown markers for live stream lines only (think/tool/plan pins)."""
@@ -142,20 +148,17 @@ def start_tui() -> int:
                 copy_fn(self.plain_source, label="message")
 
     class PromptArea(TextArea):
-        """Multiline composer — Enter sends; Ctrl+J / Alt+Enter = newline.
+        """Multiline composer — Enter sends; Shift+Enter = newline.
 
-        Shift+Enter is bound for Kitty-protocol terminals, but most terminals
-        (Windows Terminal default, many SSH clients) send the same bytes for
-        Enter and Shift+Enter — so Shift+Enter would submit. Use Ctrl+J there.
+        Textual enables the Kitty keyboard protocol so Shift+Enter is distinct
+        from Enter in supporting terminals. Ctrl+J / Alt+Enter remain fallbacks.
         """
 
         BINDINGS = [
             Binding("enter", "submit_prompt", "send", show=True, priority=True),
-            # Reliable newline keys (distinct bytes from bare Enter):
-            Binding("ctrl+j", "newline", "newline", show=True, priority=True),
-            Binding("alt+enter", "newline", "newline", show=True, priority=True),
-            # Only distinct when terminal enables Kitty keyboard protocol:
-            Binding("shift+enter", "newline", "newline", show=False, priority=True),
+            Binding("shift+enter", "newline", "newline", show=True, priority=True),
+            Binding("ctrl+j", "newline", "newline", show=False, priority=True),
+            Binding("alt+enter", "newline", "newline", show=False, priority=True),
         ]
 
         def action_submit_prompt(self) -> None:
@@ -237,6 +240,7 @@ def start_tui() -> int:
         }}
         .msg-live {{
             width: 100%;
+            height: auto;
             color: {_SECONDARY};
         }}
         #composer {{
@@ -322,7 +326,7 @@ def start_tui() -> int:
                         tab_behavior="indent",
                         show_line_numbers=False,
                         placeholder=(
-                            "Message…  Enter send · Ctrl+J newline · F2 copy · /paste"
+                            "Message…  Enter send · Shift+Enter newline · F2 copy · /paste"
                         ),
                         id="prompt",
                     )
@@ -333,8 +337,8 @@ def start_tui() -> int:
             self.set_interval(0.1, self._pump_feed)
             self._append_md(
                 "**hackbot** — `/provider` `/model` `/effort` `/target`\n\n"
-                "_**Send:** `Enter`. **Newline:** `Ctrl+J` or `Alt+Enter` "
-                "(paste keeps all lines; `Shift+Enter` only works in Kitty-protocol terminals). "
+                "_**Send:** `Enter`. **Newline:** `Shift+Enter` "
+                "(fallback `Ctrl+J` / `Alt+Enter` if your terminal can't tell them apart). "
                 "**Copy:** `F2` / click message / `/copy`. "
                 "**Scroll:** wheel + scrollbar + PgUp/PgDn. "
                 "Stop: `ctrl+c` then send a new prompt._"
@@ -409,15 +413,15 @@ def start_tui() -> int:
                 if text.startswith("(thinking)"):
                     self._think_buf = text
                 else:
-                    self._think_buf = (self._think_buf + text)[-1500:]
+                    self._think_buf = (self._think_buf + text)[-_LIVE_THINK_CHARS:]
                 display = _plain_text(self._think_buf).replace("\n", " ").strip()
-                if len(display) > 240:
-                    display = "…" + display[-237:]
+                if len(display) > 320:
+                    display = "…" + display[-317:]
                 line = f"think  {display}"
             elif kind == "draft":
                 flat = _plain_text(text).replace("\n", " ").strip()
-                if len(flat) > 240:
-                    flat = "…" + flat[-237:]
+                if len(flat) > _LIVE_DRAFT_CHARS:
+                    flat = "…" + flat[-(_LIVE_DRAFT_CHARS - 1) :]
                 line = f"draft  {flat}"
             else:
                 if not text.strip():
@@ -433,10 +437,15 @@ def start_tui() -> int:
                     "plan": "plan",
                     "err": "err",
                 }.get(kind, kind[:8] or "·")
-                body = _plain_text(text.strip())[:200]
-                if label in {"tool", "run", "out", "err"}:
+                body = _plain_text(text.strip())
+                if label in {"tool", "run", "out", "err", "log"}:
+                    if len(body) > _LIVE_OUT_CHARS:
+                        omitted = len(body) - _LIVE_OUT_CHARS
+                        body = body[:_LIVE_OUT_CHARS] + f"\n… (+{omitted} chars)"
                     self._append_live_pin(f"{label}  {body}")
                     return
+                if len(body) > 500:
+                    body = body[:500] + "…"
                 line = f"{label}  {body}"
             w = self._ensure_live_line()
             w.update(f"◌ {line}")
@@ -446,7 +455,8 @@ def start_tui() -> int:
             chat = self._chat()
             old_id = self._live_widget_id
             self._msg_i += 1
-            pin = f"· {_plain_text(line)}"
+            # Keep newlines so file dumps / shell output stay readable.
+            pin = f"· {line}"
             chat.mount(Static(pin, classes="msg-live", id=f"pin{self._msg_i}"))
             self._chat_plain.append(pin)
             if old_id:
