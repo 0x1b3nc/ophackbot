@@ -127,6 +127,7 @@ def _run_family(
     status = "pos" if best.get("outcome") in {
         "canary_returned",
         "cross_tenant_signal",
+        "tool_attempted",
         "tool_executed",
         "system_boundary_signal",
     } else "neg"
@@ -321,6 +322,45 @@ def llm_tenant_isolation_probe(
     )
 
 
+def llm_system_boundary_probe(
+    target_dir: Path,
+    url: str,
+    *,
+    approve: bool = False,
+    force: bool = False,
+    canary: str = "",
+    session: str = "",
+    prompt_field: str = "message",
+    session_field: str = "conversation_id",
+    method: str = "POST",
+    max_payloads: int = 1,
+    surface_id: str = "",
+) -> RunnerResult:
+    url, prompt_field, session_field, method = _hydrate_from_surface(
+        target_dir,
+        url,
+        prompt_field=prompt_field,
+        session_field=session_field,
+        method=method,
+        surface_id=surface_id,
+    )
+    return _run_family(
+        tool="llm_system_boundary_probe",
+        family="system-boundary",
+        target_dir=target_dir,
+        url=url,
+        approve=approve,
+        force=force,
+        canary=canary,
+        session=session,
+        prompt_field=prompt_field,
+        session_field=session_field,
+        method=method,
+        max_payloads=max_payloads,
+        cls="prompt-injection",
+    )
+
+
 def mcp_agent_probe(
     target_dir: Path,
     url: str,
@@ -376,7 +416,7 @@ def ai_eval_run(
         "tool-abuse": llm_tool_abuse_probe,
         "tenant-isolation": llm_tenant_isolation_probe,
         "mcp": mcp_agent_probe,
-        "system-boundary": llm_prompt_probe,
+        "system-boundary": llm_system_boundary_probe,
     }
     for fam in fams:
         fn = runners.get(fam)

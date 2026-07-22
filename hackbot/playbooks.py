@@ -1049,11 +1049,11 @@ _PLAYBOOKS: dict[str, Playbook] = {
                 title="Boundary canary",
                 hypothesis="Model answers YES/NO/UNKNOWN + HB_CANARY_SYSTEM_BOUNDARY only.",
                 aggression=1,
-                command="llm_prompt_probe",
+                command="llm_system_boundary_probe",
                 expected="system_boundary_signal (Low) or blocked.",
                 stop="secrets in output → redact + escalate.",
                 tool_call={
-                    "tool": "llm_prompt_probe",
+                    "tool": "llm_system_boundary_probe",
                     "args": {
                         "target_dir": "{target_dir}",
                         "url": "{endpoint}",

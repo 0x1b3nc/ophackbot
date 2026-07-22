@@ -538,6 +538,7 @@ def dispatch_elite(
         "llm_rag_probe": (ai_probes.llm_rag_probe, 2),
         "llm_tool_abuse_probe": (ai_probes.llm_tool_abuse_probe, 2),
         "llm_tenant_isolation_probe": (ai_probes.llm_tenant_isolation_probe, 2),
+        "llm_system_boundary_probe": (ai_probes.llm_system_boundary_probe, 1),
         "mcp_agent_probe": (ai_probes.mcp_agent_probe, 2),
         "ai_eval_run": (ai_probes.ai_eval_run, 2),
     }
@@ -580,7 +581,7 @@ def dispatch_elite(
                 method=str(args.get("method") or "POST"),
                 max_payloads=int(args.get("max_payloads") or 3),
             )
-            if name == "llm_prompt_probe":
+            if name in {"llm_prompt_probe", "llm_system_boundary_probe"}:
                 kwargs["surface_id"] = str(args.get("surface_id") or "")
         return _runner_json(runner(_target(args["target_dir"]), url, **kwargs))
 

@@ -155,6 +155,7 @@ PACKS: dict[str, tuple[str, ...]] = {
         "llm_rag_probe",
         "llm_tool_abuse_probe",
         "llm_tenant_isolation_probe",
+        "llm_system_boundary_probe",
         "mcp_agent_probe",
         "ai_eval_run",
         "run_tool",

@@ -72,6 +72,7 @@ TOOL_AGGRESSION: dict[str, int] = {
     "llm_rag_probe": 2,
     "llm_tool_abuse_probe": 2,
     "llm_tenant_isolation_probe": 2,
+    "llm_system_boundary_probe": 1,
     "mcp_agent_probe": 2,
     "ai_eval_run": 2,
     "graphql_probe": 2,

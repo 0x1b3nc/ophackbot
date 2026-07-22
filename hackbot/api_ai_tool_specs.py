@@ -249,6 +249,10 @@ API_AI_TOOL_SPECS: list[dict[str, Any]] = [
         "llm_tenant_isolation_probe",
         "AI tenant isolation canary (DENIED expected). Dry-run default.",
     ),
+    _ai_tool(
+        "llm_system_boundary_probe",
+        "System/policy boundary canary (YES/NO/UNKNOWN + HB_CANARY_SYSTEM_BOUNDARY). Dry-run default.",
+    ),
     _url_tool(
         "mcp_agent_probe",
         "MCP/JSON-RPC tools/list + resources/list exposure probe. Dry-run default.",
