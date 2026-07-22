@@ -152,7 +152,7 @@ def collect_capabilities(*, prompt: str = "", probe_network: bool = True) -> dic
             "browser": "HACKBOT_TOOL_PACK include browser, or say 'browser' in prompt",
             "lab": "stack_prepare / burp_ensure / lab_exec (sudo via .hackbot/sudo_pass)",
             "yolo": "/yolo on → skip y/n (OOS still blocked; step mode still pauses)",
-            "step_mode": "HACKBOT_STEP_MODE=1 (default) pause after each hunt act; =0 full budget",
+            "step_mode": "/step off or HACKBOT_STEP_MODE=0 → full hunt until finding/budget",
             "all_tools": "HACKBOT_TOOL_PACK=all",
         },
     }

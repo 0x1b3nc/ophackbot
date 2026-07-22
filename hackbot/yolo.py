@@ -23,8 +23,9 @@ YOLO_BANNER = (
     "Approve prompts are skipped. Soft SCOPE gates follow `/force` (ON with yolo).\n"
     "Explicit **OUT_OF_SCOPE** hosts stay hard-blocked.\n"
     "Lab tools may use local sudo (`.hackbot/sudo_pass` / `HACKBOT_SUDO_PASS`).\n"
-    "Step mode still pauses after each hunt act - YOLO is not 'run forever'.\n\n"
-    "Turn off with `/yolo off`. Full-budget loop: `HACKBOT_STEP_MODE=0`."
+    "Step mode still pauses after each hunt act unless `/step off`.\n"
+    "YOLO is not 'run forever' by itself.\n\n"
+    "Turn off with `/yolo off`. Full hunt: `/step off` or `HACKBOT_STEP_MODE=0`."
 )
 
 

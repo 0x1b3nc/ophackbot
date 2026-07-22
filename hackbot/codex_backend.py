@@ -228,7 +228,11 @@ def _tool_needs_target_dir(name: str) -> bool:
     return False
 
 
-def _normalize_tool_call(item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def _normalize_tool_call(
+    item: dict[str, Any],
+    *,
+    default_prompt: str = "",
+) -> tuple[str, dict[str, Any]]:
     name = str(
         item.get("tool") or item.get("name") or item.get("op") or ""
     ).strip()
@@ -247,6 +251,8 @@ def _normalize_tool_call(item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         active = get_active()
         if active is not None:
             args["target_dir"] = str(active.target_dir)
+    if name == "run_hunt" and not str(args.get("prompt") or "").strip() and default_prompt:
+        args["prompt"] = default_prompt.strip()
     return name, args
 
 
@@ -255,6 +261,7 @@ def _apply_tool_calls(
     approve_fn: ApproveFn | None,
     *,
     source: str = "codex",
+    default_prompt: str = "",
 ) -> list[dict[str, Any]]:
     """Execute ```hackbot-tool``` proposals through hackbot's gated tools."""
     from . import tools
@@ -263,7 +270,7 @@ def _apply_tool_calls(
     applied: list[dict[str, Any]] = []
     ui.console.print(ui_text(f"{source} proposes {len(calls)} tool call(s):", "hb.label"))
     for item in calls:
-        name, args = _normalize_tool_call(item)
+        name, args = _normalize_tool_call(item, default_prompt=default_prompt)
         if not name or name not in known:
             ui.error(f"unknown tool {name!r} - skipped")
             applied.append(
@@ -858,7 +865,9 @@ def run_codex_turn(
     ui.markdown_panel(answer, title="hackbot (codex)")
     applied_tools: list[dict[str, Any]] = []
     if tool_calls:
-        applied_tools = _apply_tool_calls(tool_calls, approve_fn)
+        applied_tools = _apply_tool_calls(
+            tool_calls, approve_fn, default_prompt=orig
+        )
     applied: list[dict[str, Any]] = []
     if ops:
         applied = _apply_fileops(ops, approve_fn)

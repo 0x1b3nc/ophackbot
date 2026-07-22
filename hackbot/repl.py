@@ -35,6 +35,12 @@ from .providers import (
     resolve_config,
 )
 from .session import clear_active, get_active, set_active, status_line
+from .step_mode import (
+    disable_step_mode,
+    enable_step_mode,
+    maybe_disable_from_prompt,
+    step_mode_enabled,
+)
 from .tools import execute_tool
 from .yolo import boot_yolo_from_env, disable_yolo, enable_yolo, is_yolo, yolo_auto_approve
 
@@ -268,8 +274,11 @@ def start_repl(*, one_shot: str | None = None) -> int:
     if is_yolo():
         ui.warn(
             "YOLO on - approve skipped; OOS still blocked. "
-            "Step mode still pauses after each hunt act. /yolo off to restore prompts."
+            "Step mode still pauses after each hunt act unless /step off. "
+            "/yolo off to restore prompts."
         )
+    if not step_mode_enabled():
+        ui.warn("step mode OFF — full hunt until finding / budget / blocker")
 
     session = _Session()
 
@@ -319,6 +328,10 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.kv("hunt", status_line())
             ui.kv("yolo", "ON" if is_yolo() else "off")
             ui.kv("force", "ON" if is_forced() else "off")
+            ui.kv(
+                "step",
+                "ON (pause each act)" if step_mode_enabled() else "OFF (full hunt)",
+            )
             if mode == "cursor":
                 ui.kv("model", os.environ.get("HACKBOT_MODEL") or "composer-2.5")
                 ui.kv("effort", os.environ.get("HACKBOT_EFFORT", "auto"))
@@ -397,6 +410,18 @@ def start_repl(*, one_shot: str | None = None) -> int:
                 ui.kv("yolo", "ON" if is_yolo() else "off")
                 ui.info("set: /yolo on | off")
                 ui.info("also: HACKBOT_YOLO=1  and  .hackbot/sudo_pass for lab sudo")
+            continue
+
+        if text.startswith("/step"):
+            arg = text[len("/step") :].strip().lower()
+            if arg in {"", "on", "1", "true", "yes"}:
+                enable_step_mode()
+            elif arg in {"off", "0", "false", "no", "full", "hunt"}:
+                disable_step_mode()
+            else:
+                ui.kv("step", "ON (pause each act)" if step_mode_enabled() else "OFF (full hunt)")
+                ui.info("set: /step on | off")
+                ui.info("off = keep hunting until finding / budget / blocker")
             continue
 
         if text.startswith("/hunt"):
@@ -768,6 +793,7 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.info("model:    /models  /models refresh  /model <id>  (unknown ids rejected)")
             ui.info("effort:   /effort <auto|low|medium|high>[ fast]   /fast on|off")
             ui.info("stream:   /stream on|off   (live reasoning)")
+            ui.info("step:     /step on|off     (off = hunt until finding/budget)")
             ui.info("verbose:  /verbose on|off  (full tool panels)")
             ui.info("codex:    /codex-write     (toggle codex file changes; on by default)")
             ui.info("cursor:   /model grok-4.5 | composer-2.5 | auto")
@@ -776,12 +802,14 @@ def start_repl(*, one_shot: str | None = None) -> int:
             ui.info("          HACKBOT_CURSOR_TOOLS=1  CustomTool loop (SCOPE/approve)")
             ui.info("          HACKBOT_CURSOR_MODE=plan|agent  (default agent if tools on)")
             ui.info(
-                "shortcuts:/target  /hunt  /session  /yolo  /force  /status  /tools  /config"
+                "shortcuts:/target  /hunt  /session  /yolo  /step  /force  /status  /tools  /config"
             )
             ui.info("lab:     stack_prepare / burp_ensure / lab_exec  (sudo: .hackbot/sudo_pass)")
             ui.info("stack:    /tools  (httpx/katana/nuclei/ffuf + HexStrike/Burp health)")
             ui.info("session:  /clear  /exit   (Ctrl+C cancels a running turn)")
             continue
 
+        # "não pausa / até achar" → full hunt (step mode off) for this session.
+        maybe_disable_from_prompt(text)
         _run_turn(mode, text, session)
         ui.console.print()

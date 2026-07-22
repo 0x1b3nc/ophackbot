@@ -35,7 +35,7 @@ class StepModeUnitTests(unittest.TestCase):
     def test_can_disable(self) -> None:
         with mock.patch.dict(os.environ, {"HACKBOT_STEP_MODE": "0"}, clear=False):
             self.assertFalse(step_mode_enabled())
-            self.assertEqual(step_mode_preamble(), "")
+            self.assertIn("FULL HUNT MODE", step_mode_preamble())
 
     def test_yolo_banner_mentions_step_pause(self) -> None:
         self.assertIn("not", YOLO_BANNER.lower())

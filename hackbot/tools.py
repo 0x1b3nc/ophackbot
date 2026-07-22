@@ -2369,6 +2369,17 @@ def _normalize_tool_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
             if guessed:
                 out["target"] = guessed
 
+    # run_hunt requires prompt — models often omit it; fill a useful default.
+    if name == "run_hunt" and not str(out.get("prompt") or "").strip():
+        alias = out.get("task") or out.get("goal") or out.get("query") or out.get("instruction")
+        if isinstance(alias, str) and alias.strip():
+            out["prompt"] = alias.strip()
+        else:
+            out["prompt"] = (
+                "autonomous hunt — keep going until finding candidate, "
+                "needs_setup blocker, or budget exhausted"
+            )
+
     # YOLO: coerce active-traffic / force flags so models need not remember them.
     if is_yolo():
         if "approve" in out or name in {
