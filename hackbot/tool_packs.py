@@ -1,4 +1,10 @@
-"""Tool packs — send fewer tools to the model, grouped by hunt phase."""
+"""Tool packs — send fewer tools to the model, grouped by hunt phase.
+
+Elite tools and extreme study notes are **global**: they live inside the normal
+phase packs (core/recon/inject/browser/report). Setting ``advanced`` or
+``study-extreme`` never strips the existing surface — those names expand to the
+full kit (same as ``all``).
+"""
 
 from __future__ import annotations
 
@@ -29,6 +35,7 @@ PACKS: dict[str, tuple[str, ...]] = {
         "write_file",
         "edit_file",
         "append_file",
+        # Study is always on (including extreme notes via open_knowledge routes)
         "open_knowledge",
         "make_plan",
         "open_playbook",
@@ -40,12 +47,20 @@ PACKS: dict[str, tuple[str, ...]] = {
         "hunt_pause",
         "hunt_resume_flag",
         "hunt_telemetry",
+        "hunt_cockpit",
         "submit_ready",
         "import_policy",
         "delete_path",
         "make_dir",
         "move_path",
         "extract_page",
+        "coverage_map",
+        "workflow_load",
+        "workflow_run",
+        "workflow_assert",
+        "finding_score",
+        "dedupe_findings",
+        "chain_validate",
     ),
     "recon": (
         "map_surface",
@@ -62,10 +77,14 @@ PACKS: dict[str, tuple[str, ...]] = {
         "burp_issue_list",
         "burp_replay",
         "burp_replay_history",
+        "burp_watch",
+        "proxy_correlate",
+        "cdn_origin_hint",
+        "takeover_probe",
+        "asset_graph_build",
         "secrets_scan",
         "analyze_jwt",
         "discover_paths",
-        # External recon CLIs + HexStrike (operator sees via /tools + capabilities)
         "run_tool",
     ),
     "inject": (
@@ -85,6 +104,7 @@ PACKS: dict[str, tuple[str, ...]] = {
         "ssti_probe",
         "xxe_probe",
         "ssrf_probe",
+        "ssrf_protocol_matrix",
         "oob_mint",
         "oob_poll",
         "interactsh_status",
@@ -95,11 +115,22 @@ PACKS: dict[str, tuple[str, ...]] = {
         "hpp_probe",
         "race_probe",
         "websocket_probe",
+        "websocket_authz_probe",
         "cors_probe",
         "open_redirect_probe",
         "graphql_probe",
+        "graphql_batch_probe",
+        "graphql_authz_probe",
         "jwt_active_probe",
         "oauth_probe",
+        "saml_probe",
+        "oidc_probe",
+        "session_fixation_probe",
+        "token_binding_check",
+        "cache_poison_probe",
+        "http_smuggle_probe",
+        "host_header_probe",
+        "absolute_url_probe",
         "brute_login",
         "run_tool",
     ),
@@ -117,6 +148,11 @@ PACKS: dict[str, tuple[str, ...]] = {
         "browser_set_cookie",
         "browser_hint",
         "cdp_attach",
+        "browser_map_spa",
+        "dom_xss_probe",
+        "postmessage_probe",
+        "prototype_pollution_probe",
+        "browser_har_seed",
     ),
     "mobile": (
         "mobile_status",
@@ -139,6 +175,9 @@ PACKS: dict[str, tuple[str, ...]] = {
         "redact",
         "write_report_draft",
         "build_chains",
+        "chain_validate",
+        "finding_score",
+        "dedupe_findings",
         "learn_record",
         "learn_suggest",
         "learn_stats",
@@ -146,11 +185,25 @@ PACKS: dict[str, tuple[str, ...]] = {
         "edit_file",
         "append_file",
     ),
+    # Aliases kept for operators / docs — resolve_packs expands them to "all".
+    "advanced": (),
+    "study-extreme": (),
 }
 
 # Avoid tiny substrings that false-positive in PT/EN ("achar"→"har", "objeto"→…).
 PHASE_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "browser": ("browser", "playwright", "screenshot", "cookie", "sessao", "sessão", "cdp"),
+    "browser": (
+        "browser",
+        "playwright",
+        "screenshot",
+        "cookie",
+        "sessao",
+        "sessão",
+        "cdp",
+        "dom xss",
+        "postmessage",
+        "spa",
+    ),
     "mobile": ("apk", "frida", "mobsf", "objection", "adb", "mobile"),
     "inject": (
         "sqli",
@@ -165,7 +218,11 @@ PHASE_KEYWORDS: dict[str, tuple[str, ...]] = {
         "oob",
         "jwt",
         "oauth",
+        "saml",
+        "oidc",
         "cors",
+        "smuggle",
+        "cache poison",
         "inject",
         "vulnerab",
         "vuln",
@@ -175,6 +232,8 @@ PHASE_KEYWORDS: dict[str, tuple[str, ...]] = {
         "no account",
         "bola",
         "broken access",
+        "workflow",
+        "business logic",
     ),
     "recon": (
         "recon",
@@ -194,6 +253,8 @@ PHASE_KEYWORDS: dict[str, tuple[str, ...]] = {
         "httpx",
         "katana",
         "ffuf",
+        "takeover",
+        "cdn",
     ),
     "report": ("report", "write-up", "writeup", "finding", "draft", "graphql", "chain"),
 }
@@ -217,23 +278,37 @@ _HUNT_HINTS: tuple[str, ...] = (
     "no account",
     "unauth",
     "achar vulnerab",
+    "extreme",
+    "estudo",
+    "study",
 )
+
+# Names that mean "give the agent everything" (never a knowledge-only jail).
+_FULL_ALIASES = frozenset({"advanced", "study-extreme", "study_extreme", "elite"})
 
 
 def resolve_packs(prompt: str = "", *, explicit: str = "") -> list[str]:
-    """Return pack names to load. Env HACKBOT_TOOL_PACK=all|auto|core,recon,..."""
+    """Return pack names to load. Env HACKBOT_TOOL_PACK=all|auto|core,recon,...
+
+    ``advanced`` / ``study-extreme`` expand to ``all`` so study + elite tools
+    never replace the normal kit surface.
+    """
     env = (explicit or os.environ.get("HACKBOT_TOOL_PACK") or "auto").strip().lower()
-    if env in {"all", "*"}:
+    if env in {"all", "*"} or env in _FULL_ALIASES:
         return ["all"]
     if env != "auto":
-        return [p.strip() for p in env.split(",") if p.strip()]
+        parts = [p.strip() for p in env.split(",") if p.strip()]
+        # Any full-alias in a comma list → full kit
+        if any(p in _FULL_ALIASES for p in parts):
+            return ["all"]
+        return parts
 
     packs = ["core"]
     low = (prompt or "").lower()
     for pack, words in PHASE_KEYWORDS.items():
         if any(w in low for w in words):
             packs.append(pack)
-    # Open-ended hunt / vuln language → recon + inject + report (not recon-only)
+    # Open-ended hunt / vuln / study language → recon + inject + report (+ browser on SPA cues)
     if any(h in low for h in _HUNT_HINTS) or len(packs) == 1:
         for p in ("recon", "inject", "report"):
             if p not in packs:

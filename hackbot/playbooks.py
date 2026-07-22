@@ -659,6 +659,197 @@ _PLAYBOOKS: dict[str, Playbook] = {
         ),
         study_notes=tuple(str(p) for p in notes_for_classes(["xxe", "injection"])),
     ),
+    "invite-idor": Playbook(
+        class_name="invite-idor",
+        summary="Multi-step invite accept / cross-account IDOR via workflow harness.",
+        preconditions=("Accounts A/B", "workflow YAML or invite endpoints", "SCOPE IN"),
+        steps=(
+            PlaybookStep(
+                title="Scope gate",
+                hypothesis="Host in SCOPE before invite traffic.",
+                aggression=0,
+                command="scope_check",
+                expected="IN_SCOPE",
+                stop="OOS",
+                tool_call={
+                    "tool": "scope_check",
+                    "args": {"target_dir": "{target_dir}", "host": "{host}"},
+                },
+            ),
+            PlaybookStep(
+                title="Load invite workflow",
+                hypothesis="Target has hunt/workflows/idor_invite_accept.yaml",
+                aggression=0,
+                command="workflow_load",
+                expected="steps preview",
+                stop="missing workflow — copy template",
+                tool_call={
+                    "tool": "workflow_load",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "workflow_id": "idor_invite_accept",
+                    },
+                },
+            ),
+            PlaybookStep(
+                title="Dry-run workflow",
+                hypothesis="Plan request/extract/assert without ACTIVE traffic.",
+                aggression=1,
+                command="workflow_run approve=false",
+                expected="dry-run plan + coverage dry marks",
+                stop="OOS in plan URLs",
+                tool_call={
+                    "tool": "workflow_run",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "workflow_id": "idor_invite_accept",
+                        "approve": False,
+                    },
+                },
+            ),
+            PlaybookStep(
+                title="ACTIVE workflow",
+                hypothesis="A creates invite; B accepts; assert proves authz gap.",
+                aggression=2,
+                command="workflow_run approve=true",
+                expected="assert results + cleanup",
+                stop="assert_fail or scope_denied",
+                tool_call={
+                    "tool": "workflow_run",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "workflow_id": "idor_invite_accept",
+                        "approve": True,
+                    },
+                },
+            ),
+        ),
+        study_notes=("extreme/authz-elite.md", "extreme/business-logic-elite.md"),
+    ),
+    "dom-xss": Playbook(
+        class_name="dom-xss",
+        summary="DOM sink inventory then capped confirmation.",
+        preconditions=("Playwright available", "IN_SCOPE URL"),
+        steps=(
+            PlaybookStep(
+                title="Scope",
+                hypothesis="Host in SCOPE.",
+                aggression=0,
+                command="scope_check",
+                expected="IN_SCOPE",
+                stop="OOS",
+                tool_call={
+                    "tool": "scope_check",
+                    "args": {"target_dir": "{target_dir}", "host": "{host}"},
+                },
+            ),
+            PlaybookStep(
+                title="DOM sink scan",
+                hypothesis="Page sources contain dangerous sinks.",
+                aggression=2,
+                command="dom_xss_probe",
+                expected="hits list; signal if assign sinks",
+                stop="no sinks → stop",
+                tool_call={
+                    "tool": "dom_xss_probe",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "approve": "{approve}",
+                    },
+                },
+            ),
+            PlaybookStep(
+                title="postMessage inventory",
+                hypothesis="message listeners without origin checks.",
+                aggression=2,
+                command="postmessage_probe",
+                expected="listener fingerprint",
+                stop="none",
+                tool_call={
+                    "tool": "postmessage_probe",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "approve": "{approve}",
+                    },
+                },
+            ),
+        ),
+        study_notes=("extreme/xss-dom-elite.md",),
+    ),
+    "cache-detect": Playbook(
+        class_name="cache-detect",
+        summary="Web cache deception / unkeyed header detection (safe, capped).",
+        preconditions=("IN_SCOPE URL", "no mass poison"),
+        steps=(
+            PlaybookStep(
+                title="Scope",
+                hypothesis="Host in SCOPE.",
+                aggression=0,
+                command="scope_check",
+                expected="IN_SCOPE",
+                stop="OOS",
+                tool_call={
+                    "tool": "scope_check",
+                    "args": {"target_dir": "{target_dir}", "host": "{host}"},
+                },
+            ),
+            PlaybookStep(
+                title="Cache poison probe",
+                hypothesis="Path suffix or XFH reflection indicates cache risk.",
+                aggression=2,
+                command="cache_poison_probe",
+                expected="findings or neg",
+                stop="WAF ban / rate limit",
+                tool_call={
+                    "tool": "cache_poison_probe",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "url": "{endpoint}",
+                        "approve": "{approve}",
+                    },
+                },
+            ),
+        ),
+        study_notes=("extreme/cache-poison-deception.md",),
+    ),
+    "prohibited-stop": Playbook(
+        class_name="prohibited-stop",
+        summary="Identify techniques programs forbid; document and STOP (no exploit).",
+        preconditions=("Read SCOPE prohibited section",),
+        steps=(
+            PlaybookStep(
+                title="Open prohibited note",
+                hypothesis="Agent must not escalate DoS/social/destructive paths.",
+                aggression=0,
+                command="open_knowledge prohibited",
+                expected="identify+stop guidance",
+                stop="always stop after identify",
+                tool_call={
+                    "tool": "open_knowledge",
+                    "args": {"task": "prohibited techniques identify stop"},
+                },
+            ),
+            PlaybookStep(
+                title="Quote policy",
+                hypothesis="SCOPE prohibited covers DoS/brute/destruction.",
+                aggression=0,
+                command="scope_check",
+                expected="policy quote for prohibited",
+                stop="if operator insists on DoS → refuse",
+                tool_call={
+                    "tool": "scope_check",
+                    "args": {
+                        "target_dir": "{target_dir}",
+                        "host": "{host}",
+                        "action": "dos stress",
+                    },
+                },
+            ),
+        ),
+        study_notes=("extreme/prohibited-identify-stop.md",),
+    ),
 }
 
 # Aliases into the same playbook
@@ -685,6 +876,13 @@ for _alias, _canon in (
     ("local-file-inclusion", "lfi"),
     ("template-injection", "ssti"),
     ("xml-external-entity", "xxe"),
+    ("invite_idor", "invite-idor"),
+    ("dom_xss", "dom-xss"),
+    ("domxss", "dom-xss"),
+    ("cache_detect", "cache-detect"),
+    ("cache-poison", "cache-detect"),
+    ("prohibited", "prohibited-stop"),
+    ("identify-stop", "prohibited-stop"),
 ):
     if _canon in _PLAYBOOKS:
         base = _PLAYBOOKS[_canon]

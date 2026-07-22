@@ -25,6 +25,16 @@ for that surface/bug class.
 | [awesome-llms-vulnerability-detection.md](ai-security/awesome-llms-vulnerability-detection.md) | AI / vulnerability detection | **DEEP INDEX PASS 2026-07-20** (repo mapped as operational router; LLMs for function/repo-level vuln detection, agentic scanners, CPG/dataflow, FP triage; individual papers not marked DEEP) |
 | [subdomain-takeover.md](recon/subdomain-takeover.md) | Takeover | **DEEP 2026-07-12** (HT, WSTG-CONF-10, OWASP CS, H1 Guide 2.0, nuclei ~73, VRT P3, persona) |
 | [content-discovery.md](recon/content-discovery.md) | Recon / discovery | **DEEP 2026-07-12** (TBHM 01–03, TOOLCHAIN, guide §5–7, awesome, reconFTW, SecLists, persona) |
+| [authz-elite.md](extreme/authz-elite.md) | Extreme / AuthZ | **2026-07-22** study-extreme pack |
+| [business-logic-elite.md](extreme/business-logic-elite.md) | Extreme / Logic | **2026-07-22** |
+| [xss-dom-elite.md](extreme/xss-dom-elite.md) | Extreme / DOM XSS | **2026-07-22** |
+| [ssrf-elite.md](extreme/ssrf-elite.md) | Extreme / SSRF | **2026-07-22** |
+| [smuggle-desync-detect.md](extreme/smuggle-desync-detect.md) | Extreme / Smuggle detect-only | **2026-07-22** |
+| [cache-poison-deception.md](extreme/cache-poison-deception.md) | Extreme / Cache | **2026-07-22** |
+| [jwt-saml-oidc.md](extreme/jwt-saml-oidc.md) | Extreme / Federated auth | **2026-07-22** |
+| [race-toctou.md](extreme/race-toctou.md) | Extreme / Race | **2026-07-22** |
+| [prohibited-identify-stop.md](extreme/prohibited-identify-stop.md) | Extreme / Stop rules | **2026-07-22** |
+| [attack-chaining-bb.md](extreme/attack-chaining-bb.md) | Extreme / Chains | **2026-07-22** |
 | [active-directory-exploitation-cheatsheet.md](red-team/active-directory-exploitation-cheatsheet.md) | Red team / Active Directory | **DEEP 2026-07-15** (S1ckB0y1337 full repo: README 1370 lines; enum, ACL, delegation, ADCS, persistence, cross-forest; enterprise/lab scope only) |
 | [specterops-corpus-map.md](red-team/specterops-corpus-map.md) | Red team / SpecterOps | **2026-07-15** (full corpus mapped: 197 posts + 32 resources; themes, reading priorities; not DEEP per article yet) |
 | [specterops-identity-trust-token-track.md](red-team/specterops-identity-trust-token-track.md) | Red team / SpecterOps | **2026-07-15** (consolidated track: AD trusts, Entra SSO cookies, Azure API permission abuse) |

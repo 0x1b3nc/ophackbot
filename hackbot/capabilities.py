@@ -136,6 +136,7 @@ def collect_capabilities(*, prompt: str = "", probe_network: bool = True) -> dic
     ready_bins = [b["name"] for b in bins if b.get("ok")]
     missing_bins = [b["name"] for b in bins if not b.get("ok")]
     from .yolo import is_yolo
+    from .tool_packs import PACKS
 
     return {
         "ok": True,
@@ -145,15 +146,24 @@ def collect_capabilities(*, prompt: str = "", probe_network: bool = True) -> dic
         "missing_binaries": missing_bins,
         "integrations": integ,
         "packs": packs,
+        "available_packs": sorted(PACKS.keys()),
+        "elite_packs": {
+            "note": "Elite tools + extreme study are global (inside core/recon/inject/browser/report)",
+            "advanced": "alias → full kit (all tools)",
+            "study-extreme": "alias → full kit (never strips traffic tools)",
+        },
         "how": {
             "recon_cli": "run_tool tool=httpx|katana|nuclei|ffuf (needs approve; auto under /yolo)",
             "hexstrike": "run_tool tool=hexstrike --approve  then health on :8888",
             "surface": "map_surface / extract_page / analyze_js (pack recon)",
-            "browser": "HACKBOT_TOOL_PACK include browser, or say 'browser' in prompt",
+            "browser": "say 'browser' in prompt, or HACKBOT_TOOL_PACK=all",
+            "elite": "workflows/coverage/probes already in auto packs — no special env needed",
+            "study": "open_knowledge reaches extreme notes always; study-extreme env = all tools",
+            "workflow": "workflow_load / workflow_run (dry default) — see docs/WORKFLOW_HARNESS.md",
             "lab": "stack_prepare / burp_ensure / lab_exec (sudo via .hackbot/sudo_pass)",
             "yolo": "/yolo on → skip y/n (OOS still blocked; step mode still pauses)",
             "step_mode": "/step off or HACKBOT_STEP_MODE=0 → full hunt until finding/budget",
-            "all_tools": "HACKBOT_TOOL_PACK=all",
+            "all_tools": "HACKBOT_TOOL_PACK=all (also: advanced / study-extreme)",
         },
     }
 

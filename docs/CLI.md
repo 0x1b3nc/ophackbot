@@ -113,7 +113,7 @@ Knobs I actually honor: `safety.default_max_rps` / `HACKBOT_MAX_RPS`,
 | `HACKBOT_HUNT_BUDGET` | Act budget (default ~28) |
 | `HACKBOT_HUNT_PHASE_BUDGETS` | e.g. `recon:30,authz:35,inject:35` |
 | `HACKBOT_HUNT_RESUME=1` | Resume from `hunt/state.yaml` |
-| `HACKBOT_TOOL_PACK` | `auto\|all\|core,recon,inject,browser,mobile,report` |
+| `HACKBOT_TOOL_PACK` | `auto\|all\|core,recon,…` — elite tools are inside normal packs; `advanced`/`study-extreme` = `all` |
 | `HACKBOT_REPORT_PLATFORM` | e.g. `bugcrowd` / `generic` |
 | `HACKBOT_AUTO_ROUTE=0` | Kill offline→model JSON router |
 | `HACKBOT_ROUTE_THRESHOLD` | Default `0.68` |
@@ -200,6 +200,20 @@ to route (`HACKBOT_AUTO_ROUTE=1`).
 .\.venv\Scripts\python.exe -m hackbot playbook rate-limit --run --host example.com --target-dir targets/demo
 .\.venv\Scripts\python.exe -m hackbot run targets/demo --tool rate_probe --host example.com
 ```
+
+Extreme playbooks (study + capped tools): `invite-idor`, `dom-xss`, `cache-detect`, `prohibited-stop`.
+
+## Workflows / coverage (always available)
+
+YAML under `targets/<name>/hunt/workflows/`. See [WORKFLOW_HARNESS.md](WORKFLOW_HARNESS.md).
+
+In the agent / REPL tools (no special pack required):
+
+- `workflow_load` → preview
+- `workflow_run` (`approve=false` dry-run; `approve=true` ACTIVE)
+- `coverage_map` / `hunt_cockpit`
+- Extreme notes: `open_knowledge` (task keywords like `extreme`, `saml`, `prohibited`)
+- Optional: `HACKBOT_TOOL_PACK=all` if you want every tool every turn
 
 ## HexStrike
 

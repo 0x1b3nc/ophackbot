@@ -53,13 +53,27 @@ def target_init(name: str) -> int:
             dest = target_dir / path.name
             if not dest.exists():
                 shutil.copyfile(path, dest)
-    for subdir in ("evidence", "evidence/raw", "evidence/safe", "recon", "reports", "secrets"):
+    for subdir in (
+        "evidence",
+        "evidence/raw",
+        "evidence/safe",
+        "recon",
+        "reports",
+        "secrets",
+        "hunt",
+        "hunt/workflows",
+    ):
         (target_dir / subdir).mkdir(parents=True, exist_ok=True)
     # Copy secrets example (safe to commit); live sessions.yaml stays gitignored.
     example_src = TEMPLATE / "secrets" / "sessions.example.yaml"
     example_dst = target_dir / "secrets" / "sessions.example.yaml"
     if example_src.exists() and not example_dst.exists():
         shutil.copyfile(example_src, example_dst)
+    # Example workflow YAML (safe template — edit base_url before ACTIVE).
+    wf_src = TEMPLATE / "hunt" / "workflows" / "idor_invite_accept.yaml"
+    wf_dst = target_dir / "hunt" / "workflows" / "idor_invite_accept.yaml"
+    if wf_src.exists() and not wf_dst.exists():
+        shutil.copyfile(wf_src, wf_dst)
     ui.success("target ready")
     ui.path_line("path", str(target_dir))
     ui.info("copy secrets/sessions.example.yaml -> secrets/sessions.yaml and fill A/B tokens")

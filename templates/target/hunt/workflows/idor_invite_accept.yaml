@@ -1,0 +1,51 @@
+# Example multi-step invite / IDOR workflow (lab or in-scope only).
+# Dry-run: workflow_run approve=false
+# Active:  workflow_run approve=true  (operator confirm)
+
+id: idor_invite_accept
+class: idor
+aggression_max: 2
+accounts: [A, B]
+vars:
+  base_url: "https://app.example.com"
+stop_on: [assert_fail, out_of_scope, max_steps]
+cleanup:
+  - tool: http_request
+    args:
+      url: "{base_url}/api/invites/{invite_id}"
+      method: DELETE
+      session: A
+      label: inv_cleanup
+steps:
+  - id: create_invite
+    kind: request
+    account: A
+    title: Owner A creates invite
+    request:
+      method: POST
+      url: "{base_url}/api/invites"
+      body: '{"email":"b@lab.example"}'
+      content_type: application/json
+      label: inv_create
+    extract:
+      - name: invite_id
+        jsonpath: "$.id"
+    assert:
+      - type: status
+        equals: 201
+  - id: accept_as_B
+    kind: request
+    account: B
+    title: User B accepts invite token
+    request:
+      method: POST
+      url: "{base_url}/api/invites/{invite_id}/accept"
+      label: inv_accept
+  - id: prove_cross_account
+    kind: assert
+    title: Diff create vs accept for authz signal
+    assert:
+      - type: diff_labels
+        label_a: inv_create
+        label_b: inv_accept
+        kind: idor

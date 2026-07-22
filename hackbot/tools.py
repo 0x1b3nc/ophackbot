@@ -2001,6 +2001,539 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "workflow_load",
+        "description": (
+            "List or parse target workflows under hunt/workflows/*.yaml. "
+            "No traffic. Pass workflow_id to preview steps."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "workflow_id": {
+                    "type": "string",
+                    "description": "optional id (filename stem); omit to list",
+                },
+            },
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "workflow_run",
+        "description": (
+            "Dry-run or ACTIVE-run a hunt/workflows/<id>.yaml scenario "
+            "(request/extract/mutate/assert). Default approve=false. "
+            "ACTIVE needs operator confirm; SCOPE gates every request."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "workflow_id": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "workflow_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "workflow_assert",
+        "description": (
+            "Re-run workflow assert steps against saved state / response cache. No new traffic."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "workflow_id": {"type": "string"},
+            },
+            "required": ["target_dir", "workflow_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "coverage_map",
+        "description": (
+            "Read/update hunt/coverage.yaml (class×method×path×param×authz → "
+            "untested|dry|active|neg|pos). action=summary|list|mark|priorities."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "action": {
+                    "type": "string",
+                    "enum": ["summary", "list", "mark", "priorities"],
+                    "default": "summary",
+                },
+                "class": {"type": "string"},
+                "method": {"type": "string"},
+                "path": {"type": "string"},
+                "url": {"type": "string"},
+                "param": {"type": "string"},
+                "authz": {"type": "string"},
+                "status": {
+                    "type": "string",
+                    "enum": ["untested", "dry", "active", "neg", "pos"],
+                },
+                "note": {"type": "string"},
+            },
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "hunt_cockpit",
+        "description": (
+            "Operator summary: surface size, coverage %, budget/phase, next falsifiable "
+            "step, pending priorities. No traffic."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"target_dir": {"type": "string"}},
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "finding_score",
+        "description": (
+            "Score a candidate finding (confidence, FP likelihood) before FINDINGS append. "
+            "Uses fp_signatures + verdict. No traffic."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "module": {"type": "string"},
+                "verdict": {"type": "string"},
+                "observed": {"type": "string"},
+                "url": {"type": "string"},
+                "has_ownership_diff": {"type": "boolean", "default": False},
+            },
+            "required": ["module", "verdict"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "dedupe_findings",
+        "description": (
+            "Dedupe FINDINGS.md entries by class+endpoint+title fingerprint. "
+            "Dry by default (report only); write=true rewrites file after approve."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "write": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "chain_validate",
+        "description": (
+            "Validate an A→B chain from hunt/chains.md or explicit steps with asserts. "
+            "Does not promote FINDINGS unless asserts pass + evidence paths present."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "chain_id": {"type": "string"},
+                "label_a": {"type": "string"},
+                "label_b": {"type": "string"},
+                "kind": {"type": "string", "default": "idor"},
+            },
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "browser_map_spa",
+        "description": (
+            "Playwright SPA map: routes, XHR/fetch, GraphQL ops → evidence + optional surface seed. "
+            "Default approve=false (dry-run)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+                "seed_surface": {"type": "boolean", "default": True},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "dom_xss_probe",
+        "description": (
+            "Capped DOM sink scan (innerHTML/eval/postMessage/location*). "
+            "Detection markers only; default dry-run."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "postmessage_probe",
+        "description": (
+            "Capped postMessage listener / origin-check probe via Playwright. Dry-run default."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "prototype_pollution_probe",
+        "description": (
+            "Capped client-side prototype pollution gadget probe (lab/scoped). Dry-run default."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "browser_har_seed",
+        "description": (
+            "Capture browser network as HAR-like JSON and seed hunt/surface.yaml. Dry-run default."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "saml_probe",
+        "description": (
+            "SAML surface checks (ACS URL, RelayState, signature hints). Capped; dry-run default. "
+            "Level-2; no assertion forge against real IdPs without SCOPE."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "oidc_probe",
+        "description": (
+            "OIDC discovery / redirect_uri looseness checks (beyond oauth_probe). Dry-run default."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string", "description": "issuer or authorize URL"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "session_fixation_probe",
+        "description": (
+            "Session fixation check: capture pre-auth cookie, login, compare. Dry-run default."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "login_url": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "token_binding_check",
+        "description": (
+            "Check if bearer/cookie tokens appear bound to IP/UA/client (passive + optional replay). "
+            "Dry-run default."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "session": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "burp_watch",
+        "description": (
+            "Poll Burp proxy history for new in-scope requests; return prioritized candidates. "
+            "No active attack traffic."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "limit": {"type": "integer", "default": 40},
+            },
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "proxy_correlate",
+        "description": (
+            "Correlate Burp/HAR history → deduped method+path+param+authz candidates; "
+            "seed surface + suggest next falsifiable step."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "limit": {"type": "integer", "default": 40},
+                "seed_surface": {"type": "boolean", "default": True},
+            },
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "cache_poison_probe",
+        "description": (
+            "Web cache deception / unkeyed header detection (safe, capped). Dry-run default. "
+            "Never volume DoS."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "http_smuggle_probe",
+        "description": (
+            "HTTP request smuggling / desync DETECTION only (CL.TE / TE.CL timing hints). "
+            "Never DoS. Dry-run default; L3 needs SCOPE or force."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "host_header_probe",
+        "description": "Host header / password-reset poisoning detection (capped). Dry-run default.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "absolute_url_probe",
+        "description": (
+            "Absolute-form request / URL parser differential probe (detection). Dry-run default."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "graphql_batch_probe",
+        "description": "GraphQL batching / alias abuse detection (capped). Dry-run default.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "graphql_authz_probe",
+        "description": (
+            "GraphQL authz/BOLA probe with session A vs B on a mutation/query. Dry-run default."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "query": {"type": "string"},
+                "session_a": {"type": "string", "default": "A"},
+                "session_b": {"type": "string", "default": "B"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url", "query"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "websocket_authz_probe",
+        "description": (
+            "WebSocket authz beyond handshake: subscribe/read as A vs B. Dry-run default."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "message": {"type": "string"},
+                "session": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "cdn_origin_hint",
+        "description": (
+            "Passive CDN/origin fingerprint hints (headers/DNS claims) for in-scope hosts. "
+            "No origin brute."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "takeover_probe",
+        "description": (
+            "Subdomain takeover fingerprint / dangling DNS claim check (in-scope only). "
+            "No claim registration."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "host": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "host"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "asset_graph_build",
+        "description": (
+            "Build hunt/asset_graph.yaml from surface + JS/params/HAR seeds (unify recon graph)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"target_dir": {"type": "string"}},
+            "required": ["target_dir"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "ssrf_protocol_matrix",
+        "description": (
+            "SSRF protocol matrix: default http(s) canaries; file/gopher/dict only if SCOPE allows. "
+            "Dry-run default."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_dir": {"type": "string"},
+                "url": {"type": "string"},
+                "param": {"type": "string"},
+                "approve": {"type": "boolean", "default": False},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["target_dir", "url", "param"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -3480,6 +4013,14 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
                 "stderr": (result.stderr or "")[:2000],
             }
         )
+
+    from .elite_dispatch import dispatch_elite
+
+    elite = dispatch_elite(
+        name, args, approve_fn=approve_fn, require_approval=_require_approval
+    )
+    if elite is not None:
+        return elite
 
     return json.dumps({"ok": False, "error": f"unknown tool {name}"})
 

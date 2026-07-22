@@ -14,6 +14,7 @@ You pick with `/provider` when you want one.
 - **OpenAI / Claude / etc.** optional brains on the same rails (SCOPE + approve).
 - **Cursor** or **Codex** if you're already paying for those plans.
 - Hunt loop (`/hunt`) that maps surface, chains probes, writes FINDINGS.
+- **Elite is global:** workflows, coverage, SPA/DOM probes, and extreme study notes ship inside the normal packs (`auto`). `advanced` / `study-extreme` are aliases for the full kit — they do not lock you into a subset. See [AGENTS.md](AGENTS.md) + [docs/WORKFLOW_HARNESS.md](docs/WORKFLOW_HARNESS.md).
 - PATH toys (httpx, katana, nuclei, ffuf), Playwright, Burp, HexStrike if you bother to set them up.
 
 Your real program junk lives under `targets/<name>/`. Don't commit secrets. Demo

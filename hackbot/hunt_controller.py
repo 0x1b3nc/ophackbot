@@ -1148,6 +1148,47 @@ def _decide(
     parsed = urlparse(origin)
     origin_base = f"{parsed.scheme}://{parsed.netloc}"
 
+    # Coverage + proxy correlate: boost untested authz/business-logic cells
+    if target_dir:
+        try:
+            from .coverage_map import untested_priorities
+            from .runners.elite_probes import proxy_correlate
+
+            for cell in untested_priorities(target_dir, limit=8):
+                cls = str(cell.get("class") or "idor")
+                path = str(cell.get("path") or "/")
+                mod = "idor" if cls in {"idor", "authz", "bfla", "bola"} else cls
+                if mod in banned:
+                    continue
+                ideas.append(
+                    Hypothesis(
+                        module=mod if mod in MODULE_AGGRESSION else "idor",
+                        url=f"{origin_base}{path}",
+                        title=f"Coverage gap: {cls} {path}",
+                        priority=92 + (5 if cls in {"idor", "authz", "business-logic"} else 0),
+                        aggression=2,
+                        signal_tags=("coverage",),
+                    )
+                )
+            # Soft Burp correlate (no crash if Burp down)
+            try:
+                corr = proxy_correlate(Path(target_dir), limit=20, seed_surface=False)
+                if corr.get("next_step"):
+                    ideas.append(
+                        Hypothesis(
+                            module="idor",
+                            url=origin_base,
+                            title="Proxy correlate next step",
+                            priority=90,
+                            aggression=2,
+                            signal_tags=("proxy",),
+                        )
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001
+            pass
+
     # Early always: secrets + discover
     ideas.append(
         Hypothesis(
@@ -1448,6 +1489,11 @@ def _decide(
         seen.add(key)
         if _already_attempted(memory, hyp):
             continue
+        # Prefer authz / business-logic over generic reflected XSS
+        if hyp.module in {"xss", "second_order_xss"}:
+            hyp.priority -= 15
+        if hyp.module in {"idor", "auth-bypass", "oauth", "graphql"}:
+            hyp.priority += 8
         pending.append(hyp)
 
     pending.sort(key=lambda h: -h.priority)

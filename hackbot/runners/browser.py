@@ -1406,6 +1406,351 @@ def browser_capture_session(
     return RunnerResult(cmd, True, 0, json.dumps(payload), "", "executed")
 
 
+def browser_map_spa(
+    target_dir: Path,
+    url: str,
+    *,
+    approve: bool = False,
+    force: bool = False,
+    seed_surface: bool = True,
+    timeout_ms: int = 25000,
+    limit: int = 120,
+) -> RunnerResult:
+    """Map SPA routes + XHR/fetch + GraphQL ops via Playwright network capture."""
+    plan = {
+        "url": url,
+        "approve": approve,
+        "seed_surface": seed_surface,
+        "limit": limit,
+    }
+    cmd = ["browser_map_spa", url]
+    early = _gate(
+        target_dir,
+        url,
+        action="browser map spa",
+        approve=approve,
+        force=force,
+        cmd=cmd,
+        plan=plan,
+        title="browser_map_spa",
+    )
+    if early:
+        return early
+
+    from playwright.sync_api import sync_playwright
+
+    routes: set[str] = set()
+    xhr: list[dict[str, Any]] = []
+    gql_ops: list[str] = []
+    title = ""
+
+    def on_request(req: Any) -> None:
+        if len(xhr) >= limit:
+            return
+        rurl = req.url
+        method = req.method
+        rtype = req.resource_type
+        if rtype in {"xhr", "fetch"} or "/graphql" in rurl.lower():
+            entry = {
+                "method": method,
+                "url": redact_text(rurl),
+                "resource_type": rtype,
+            }
+            xhr.append(entry)
+            if "/graphql" in rurl.lower():
+                try:
+                    post = req.post_data or ""
+                    if "query" in post or "operationName" in post:
+                        gql_ops.append(redact_text(post[:180]))
+                except Exception:  # noqa: BLE001
+                    pass
+        try:
+            path = urlparse(rurl).path or "/"
+            if path.count("/") <= 6 and not path.endswith(
+                (".js", ".css", ".png", ".jpg", ".woff", ".svg")
+            ):
+                routes.add(path)
+        except Exception:  # noqa: BLE001
+            pass
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        try:
+            _ctx, page, blocked = _guarded_page(
+                browser,
+                target_dir,
+                action="browser map spa",
+                force=force,
+            )
+            page.on("request", on_request)
+            try:
+                page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            except Exception as exc:  # noqa: BLE001
+                if blocked:
+                    return RunnerResult(
+                        cmd,
+                        True,
+                        1,
+                        json.dumps(
+                            {
+                                "ok": False,
+                                "error": "scope_blocked",
+                                "blocked": blocked[:20],
+                                "detail": str(exc)[:200],
+                            }
+                        ),
+                        "",
+                        "scope_blocked",
+                    )
+            # Soft SPA route hints from anchors
+            try:
+                hrefs = page.eval_on_selector_all(
+                    "a[href]",
+                    "els => els.map(e => e.getAttribute('href')).filter(Boolean)",
+                )
+                for h in hrefs or []:
+                    if isinstance(h, str) and h.startswith("/"):
+                        routes.add(h.split("?")[0])
+            except Exception:  # noqa: BLE001
+                pass
+            title = page.title()
+        finally:
+            browser.close()
+
+    base = urlparse(url)
+    if seed_surface:
+        mem = HuntMemory(target_dir)
+        eps: list[Endpoint] = []
+        for r in sorted(routes)[:80]:
+            eps.append(
+                Endpoint(
+                    url=f"{base.scheme}://{base.netloc}{r}",
+                    method="GET",
+                    params=[],
+                    auth_required=False,
+                    source="spa",
+                    notes="browser_map_spa",
+                )
+            )
+        if eps:
+            mem.upsert_endpoints(eps, host=base.hostname or "")
+
+    payload = {
+        "ok": True,
+        "title": redact_text(title),
+        "routes": sorted(routes)[:100],
+        "xhr_fetch": xhr[:limit],
+        "graphql_ops": gql_ops[:40],
+        "seeded": seed_surface,
+        "url": redact_text(url),
+    }
+    try:
+        EvidenceStore(target_dir).save(
+            "browser_map_spa.json", json.dumps(payload, indent=2)
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return RunnerResult(cmd, True, 0, json.dumps(payload), "", "executed")
+
+
+def dom_xss_probe(
+    target_dir: Path,
+    url: str,
+    *,
+    approve: bool = False,
+    force: bool = False,
+    timeout_ms: int = 20000,
+) -> RunnerResult:
+    """Capped DOM sink inventory (detection markers, not exploit chains)."""
+    plan = {
+        "url": url,
+        "sinks": ["innerHTML", "eval", "document.write", "location", "postMessage"],
+        "approve": approve,
+    }
+    cmd = ["dom_xss_probe", url]
+    early = _gate(
+        target_dir,
+        url,
+        action="dom xss probe",
+        approve=approve,
+        force=force,
+        cmd=cmd,
+        plan=plan,
+        title="dom_xss_probe",
+    )
+    if early:
+        return early
+    from playwright.sync_api import sync_playwright
+
+    script = """() => {
+      const hits = [];
+      const html = document.documentElement ? document.documentElement.innerHTML : '';
+      const checks = [
+        [/innerHTML\\s*=/, 'innerHTML_assign'],
+        [/eval\\s*\\(/, 'eval_call'],
+        [/document\\.write\\s*\\(/, 'document_write'],
+        [/location\\.(hash|search|href)\\s*=/, 'location_assign'],
+        [/addEventListener\\s*\\(\\s*['\"]message['\"]/, 'postmessage_listener'],
+      ];
+      for (const [re, name] of checks) {
+        if (re.test(html) || re.test(String(document.body && document.body.innerHTML || ''))) {
+          hits.push(name);
+        }
+      }
+      // Inline script src count
+      hits.push('script_tags:' + document.scripts.length);
+      return hits.slice(0, 20);
+    }"""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        try:
+            _ctx, page, _blocked = _guarded_page(
+                browser, target_dir, action="dom xss probe", force=force
+            )
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            hits = page.evaluate(script)
+        finally:
+            browser.close()
+    payload = {
+        "ok": True,
+        "signal": any(
+            h in {"innerHTML_assign", "eval_call", "document_write", "location_assign"}
+            for h in (hits or [])
+            if isinstance(h, str)
+        ),
+        "hits": hits,
+        "url": redact_text(url),
+        "note": "Fingerprint only — confirm with manual DOM XSS in lab before report.",
+    }
+    try:
+        EvidenceStore(target_dir).save("dom_xss_probe.json", json.dumps(payload, indent=2))
+    except Exception:  # noqa: BLE001
+        pass
+    return RunnerResult(cmd, True, 0, json.dumps(payload), "", "executed")
+
+
+def postmessage_probe(
+    target_dir: Path,
+    url: str,
+    *,
+    approve: bool = False,
+    force: bool = False,
+    timeout_ms: int = 20000,
+) -> RunnerResult:
+    plan = {"url": url, "approve": approve, "mode": "listener_inventory"}
+    cmd = ["postmessage_probe", url]
+    early = _gate(
+        target_dir,
+        url,
+        action="postmessage probe",
+        approve=approve,
+        force=force,
+        cmd=cmd,
+        plan=plan,
+        title="postmessage_probe",
+    )
+    if early:
+        return early
+    from playwright.sync_api import sync_playwright
+
+    script = """() => {
+      let count = 0;
+      const origins = [];
+      const orig = window.addEventListener;
+      // static scan
+      const html = document.documentElement.innerHTML || '';
+      const has = /addEventListener\\s*\\(\\s*['\"]message['\"]/.test(html);
+      return { has_listener_source: has, script_count: document.scripts.length };
+    }"""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        try:
+            _ctx, page, _b = _guarded_page(
+                browser, target_dir, action="postmessage probe", force=force
+            )
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            info = page.evaluate(script)
+        finally:
+            browser.close()
+    payload = {
+        "ok": True,
+        "signal": bool((info or {}).get("has_listener_source")),
+        "detail": info,
+        "url": redact_text(url),
+        "note": "Capped: inventory only; craft origin-mismatch PoC in lab.",
+    }
+    return RunnerResult(cmd, True, 0, json.dumps(payload), "", "executed")
+
+
+def prototype_pollution_probe(
+    target_dir: Path,
+    url: str,
+    *,
+    approve: bool = False,
+    force: bool = False,
+    timeout_ms: int = 20000,
+) -> RunnerResult:
+    plan = {"url": url, "approve": approve, "mode": "client_gadget_probe"}
+    cmd = ["prototype_pollution_probe", url]
+    early = _gate(
+        target_dir,
+        url,
+        action="prototype pollution probe",
+        approve=approve,
+        force=force,
+        cmd=cmd,
+        plan=plan,
+        title="prototype_pollution_probe",
+    )
+    if early:
+        return early
+    from playwright.sync_api import sync_playwright
+
+    # Safe canary: check if __proto__ query reflection mutates Object.prototype (lab)
+    canary_url = url
+    sep = "&" if "?" in url else "?"
+    canary_url = f"{url}{sep}__proto__[hackbotpp]=1"
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        try:
+            _ctx, page, _b = _guarded_page(
+                browser, target_dir, action="prototype pollution probe", force=force
+            )
+            page.goto(canary_url, wait_until="domcontentloaded", timeout=timeout_ms)
+            polluted = page.evaluate("() => ({}.hackbotpp === '1' || {}.hackbotpp === 1)")
+        finally:
+            browser.close()
+    payload = {
+        "ok": True,
+        "signal": bool(polluted),
+        "url": redact_text(url),
+        "note": "Client-side gadget check only; RCE chains lab-only.",
+    }
+    return RunnerResult(cmd, True, 0, json.dumps(payload), "", "executed")
+
+
+def browser_har_seed(
+    target_dir: Path,
+    url: str,
+    *,
+    approve: bool = False,
+    force: bool = False,
+    timeout_ms: int = 25000,
+    limit: int = 100,
+) -> RunnerResult:
+    """Capture network entries and seed surface (HAR-like JSON evidence)."""
+    # Reuse browser_network with seed
+    return browser_network(
+        target_dir,
+        url,
+        approve=approve,
+        force=force,
+        timeout_ms=timeout_ms,
+        seed_surface=True,
+        limit=limit,
+    )
+
+
 def cdp_attach(cdp_url: str = "http://127.0.0.1:9222", *, approve: bool = False) -> dict[str, Any]:
     """Probe a local Chromium remote-debugging CDP HTTP endpoint (no target traffic)."""
     import urllib.request
