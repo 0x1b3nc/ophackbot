@@ -3,6 +3,7 @@
 Run: ``python -m hackbot tui``
 
 Layout: status · scrollable chat · full-width input · footer.
+Final replies use Markdown; live stream (think/tool/plan) stays plain text.
 ``mouse=False`` so the terminal can select/copy bot output (PgUp/PgDn scroll).
 """
 
@@ -31,7 +32,7 @@ _INFO = "#64D9E8"
 
 
 def _plain_text(text: str) -> str:
-    """Strip common Markdown markers for TUI display (no Markdown widget)."""
+    """Strip Markdown markers for live stream lines only (think/tool/plan pins)."""
     import re
 
     s = text or ""
@@ -90,7 +91,7 @@ def start_tui() -> int:
         from textual.app import App, ComposeResult
         from textual.binding import Binding
         from textual.containers import Vertical, VerticalScroll
-        from textual.widgets import Footer, Input, OptionList, Static
+        from textual.widgets import Footer, Input, Markdown, OptionList, Static
         from textual.widgets.option_list import Option
     except ImportError:
         sys.stderr.write("Textual missing. Install:  pip install 'hackbot-kit[tui]'\n")
@@ -147,7 +148,7 @@ def start_tui() -> int:
             text-style: bold;
             margin-top: 1;
         }}
-        .msg-bot {{
+        .msg-md {{
             width: 100%;
             color: {_TEXT};
             margin-bottom: 1;
@@ -233,10 +234,10 @@ def start_tui() -> int:
         def on_mount(self) -> None:
             live_feed.set_feed_sink(self._mark_feed)
             self.set_interval(0.1, self._pump_feed)
-            self._append_bot(
-                "hackbot — /provider /model /effort /target\n\n"
-                "Select text with the mouse to copy. "
-                "ctrl+y = last reply · ctrl+shift+y = full chat · PgUp/PgDn scroll."
+            self._append_md(
+                "**hackbot** — `/provider` `/model` `/effort` `/target`\n\n"
+                "_Select text with the mouse to copy. "
+                "`ctrl+y` = last reply · `ctrl+shift+y` = full chat · PgUp/PgDn scroll._"
             )
             self.query_one("#prompt", Input).focus()
 
@@ -357,22 +358,20 @@ def start_tui() -> int:
             self._chat_plain.append(line)
             chat.scroll_end(animate=False)
 
-        def _append_bot(self, text: str) -> None:
-            """Final + slash replies as plain text (Markdown widget disabled in TUI)."""
+        def _append_md(self, text: str) -> None:
+            """Final + slash replies: real Markdown. Live stream stays plain Static."""
             chat = self._chat()
             self._msg_i += 1
-            raw = text or "(empty)"
-            plain = _plain_text(raw) or raw
-            chat.mount(Static(plain, classes="msg-bot", id=f"m{self._msg_i}"))
-            self._last_plain = raw  # keep original for copy (incl. md if any)
-            self._chat_plain.append(raw)
+            plain = text or "(empty)"
+            chat.mount(Markdown(plain, classes="msg-md", id=f"m{self._msg_i}"))
+            self._last_plain = plain
+            self._chat_plain.append(plain)
             if len(self._chat_plain) > 300:
                 self._chat_plain = self._chat_plain[-300:]
             chat.scroll_end(animate=False)
 
-        # Back-compat alias used nowhere after rename
-        def _append_md(self, text: str) -> None:
-            self._append_bot(text)
+        def _append_bot(self, text: str) -> None:
+            self._append_md(text)
 
         def _copy_text(self, text: str) -> bool:
             data = (text or "").strip()
@@ -480,12 +479,12 @@ def start_tui() -> int:
                         child.remove()
                     self._live_widget_id = None
                     self._chat_plain = []
-                    self._append_bot("cleared")
+                    self._append_md("_cleared_")
                     self._refresh_status()
                     return
                 if result.handled:
                     for msg in result.messages:
-                        self._append_bot(msg)
+                        self._append_md(msg)
                     if result.refresh_status:
                         self._refresh_status()
                     return
@@ -509,7 +508,7 @@ def start_tui() -> int:
                 self._ingest_live(kind, text)
             self._busy = False
             self._clear_live()
-            self._append_bot(answer)
+            self._append_md(answer)
             self._refresh_status()
             self.query_one("#prompt", Input).focus()
 
@@ -522,7 +521,7 @@ def start_tui() -> int:
                 pass
             self._busy = False
             self._clear_live()
-            self._append_bot("stop requested")
+            self._append_md("**stop** requested")
 
         def action_show_help(self) -> None:
             self._submit("/help")
