@@ -6,7 +6,7 @@ Layout: status · scrollable chat · multiline composer · footer.
 Final replies use Markdown; live stream (think/tool/plan) stays plain text.
 
 Composer is a TextArea (not single-line Input) so multiline paste keeps the
-**full** prompt. Send with ``Ctrl+Enter`` (Enter inserts a newline).
+**full** prompt. Send with ``Enter``; ``Shift+Enter`` inserts a newline.
 
 Copy: ``F2`` / ``Ctrl+Y`` / ``/copy`` / click message. ``/cleanclip`` after a
 messy native select. ``/paste`` loads the OS clipboard into the composer.
@@ -140,10 +140,13 @@ def start_tui() -> int:
                 copy_fn(self.plain_source, label="message")
 
     class PromptArea(TextArea):
-        """Multiline composer — full paste (Input only kept the first line)."""
+        """Multiline composer — Enter sends; Shift+Enter = newline."""
 
         BINDINGS = [
-            Binding("ctrl+enter", "submit_prompt", "send", show=True, priority=True),
+            Binding("enter", "submit_prompt", "send", show=True, priority=True),
+            Binding("shift+enter", "newline", "newline", show=True, priority=True),
+            # Fallbacks — some terminals map these oddly
+            Binding("ctrl+enter", "submit_prompt", "send", show=False, priority=True),
             Binding("ctrl+j", "submit_prompt", "send", show=False, priority=True),
         ]
 
@@ -151,6 +154,11 @@ def start_tui() -> int:
             submit = getattr(self.app, "submit_composer", None)
             if callable(submit):
                 submit()
+
+        def action_newline(self) -> None:
+            if self.read_only:
+                return
+            self.insert("\n")
 
         def action_paste(self) -> None:
             """Prefer OS clipboard — app.clipboard is often empty / truncated."""
@@ -266,7 +274,7 @@ def start_tui() -> int:
             Binding("ctrl+c", "interrupt", "stop", show=True),
             Binding("ctrl+q", "quit", "quit", show=True),
             Binding("f1", "show_help", "help", show=True),
-            Binding("ctrl+enter", "submit_composer", "send", show=True, priority=True),
+            Binding("ctrl+enter", "submit_composer", "send", show=False, priority=True),
             # Prefer F2 / Ctrl+Y — Windows Terminal steals Ctrl+Shift+C for itself.
             Binding("f2", "copy_selection", "copy", show=True, priority=True),
             Binding("ctrl+y", "copy_last", "copy last", show=True, priority=True),
@@ -307,8 +315,8 @@ def start_tui() -> int:
                         tab_behavior="indent",
                         show_line_numbers=False,
                         placeholder=(
-                            "Message…  Ctrl+Enter send · paste full multiline OK · "
-                            "F2 copy · /paste from clipboard"
+                            "Message…  Enter send · Shift+Enter newline · "
+                            "F2 copy · /paste"
                         ),
                         id="prompt",
                     )
@@ -319,7 +327,7 @@ def start_tui() -> int:
             self.set_interval(0.1, self._pump_feed)
             self._append_md(
                 "**hackbot** — `/provider` `/model` `/effort` `/target`\n\n"
-                "_**Send:** `Ctrl+Enter` (Enter = newline; paste keeps **all** lines). "
+                "_**Send:** `Enter` · **newline:** `Shift+Enter` (paste keeps all lines). "
                 "**Copy:** `F2` / click message / `/copy` (not terminal-cell select). "
                 "`/cleanclip` if a native select left padding spaces. "
                 "**Scroll:** wheel + scrollbar + PgUp/PgDn (always on). "
