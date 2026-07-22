@@ -33,6 +33,23 @@ FULL HUNT MODE (step mode OFF):
 - Do NOT stop just to ask "continue?" unless you hit needs_setup / MFA / real blocker.
 """
 
+# How professionals (Cursor / Codex / Claude Code) narrate a turn — not one megadump.
+REPORTING_STYLE_BLOCK = """
+OPERATOR REPORTING STYLE (CLI-grade — always on):
+- After EACH tool/result: 2–5 lines on what it means, then continue. Do NOT save
+  everything for one giant final wall of text.
+- Do NOT re-paste full HTTP bodies, JSON dumps, or command logs in your prose —
+  the UI already showed those. Refer briefly ("200 on /api/x, Set-Cookie present").
+- FINAL message only (when you stop) use this structure:
+  ## Done
+  - bullet list of what you completed this turn
+  ## Evidence
+  - short bullets (status codes, paths, file refs) — no raw dumps
+  ## Next steps
+  - concrete next actions (1–5)
+- Mid-turn text stays short and chronological. Final = summary + next steps only.
+"""
+
 # Operator wants unattended batches until finding.
 _FULL_HUNT_RE = re.compile(
     r"(?i)("
@@ -74,7 +91,8 @@ def disable_step_mode(*, quiet: bool = False) -> None:
 
 
 def step_mode_preamble() -> str:
-    return STEP_MODE_BLOCK if step_mode_enabled() else FULL_HUNT_BLOCK
+    mode = STEP_MODE_BLOCK if step_mode_enabled() else FULL_HUNT_BLOCK
+    return mode + "\n" + REPORTING_STYLE_BLOCK
 
 
 def maybe_disable_from_prompt(text: str) -> bool:

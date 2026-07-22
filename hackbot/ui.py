@@ -617,8 +617,19 @@ def maybe_code_panel(code: str, *, title: str = "command", lexer: str = "bash") 
 
 
 def markdown_panel(md: str, *, title: str) -> None:
-    """Assistant bubble — plain markdown under a soft accent label (claude-hq)."""
+    """Assistant bubble — plain markdown under a soft accent label (claude-hq).
+
+    Also mirrors to the TUI live feed as ``note`` so mid-turn narration appears
+    chronologically (Cursor/Claude-style), not only as one final dump.
+    """
     body = normalize_agent_text(md or "")
+    if body.strip():
+        try:
+            from .live_feed import emit
+
+            emit("note", body)
+        except Exception:  # noqa: BLE001
+            pass
     soft = title.lower().startswith("hackbot")
     if soft:
         console.print()
@@ -826,3 +837,12 @@ class Stream:
         self._stop_wait()
         if self._started_reasoning or self._started_answer:
             console.print()
+        # Flush full answer as a chronological note (TUI mounts a bubble mid-turn).
+        full = "".join(self._answer).strip()
+        if full:
+            try:
+                from .live_feed import emit
+
+                emit("note", full)
+            except Exception:  # noqa: BLE001
+                pass

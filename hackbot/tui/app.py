@@ -324,6 +324,14 @@ class HackbotTUI(App[None]):
             return
         kind = (kind or "info").strip().lower()
         text = text or ""
+        # Mid-turn assistant narration (from markdown_panel) — durable bubble.
+        if kind in {"note", "answer", "assistant"}:
+            body = (text or "").strip()
+            if not body:
+                return
+            self._append_md(body)
+            self._ensure_live_line().update("◌ …")
+            return
         if kind in {"think", "thinking", "reasoning"}:
             if text.startswith("(thinking)"):
                 self._think_buf = text
@@ -357,7 +365,16 @@ class HackbotTUI(App[None]):
                 if len(body) > LIVE_OUT_CHARS:
                     omitted = len(body) - LIVE_OUT_CHARS
                     body = body[:LIVE_OUT_CHARS] + f"\n… (+{omitted} chars)"
-                self._append_live_pin(f"{label}  {body}")
+                # Cursor/Claude-style markers on tool lifecycle lines.
+                if label == "run" or body.startswith("[run]"):
+                    pin = f"▶ {label}  {body.removeprefix('[run]').strip()}"
+                elif body.startswith("[ok]"):
+                    pin = f"✓ {label}  {body.removeprefix('[ok]').strip()}"
+                elif body.startswith("[fail]"):
+                    pin = f"✗ {label}  {body.removeprefix('[fail]').strip()}"
+                else:
+                    pin = f"· {label}  {body}"
+                self._append_live_pin(pin, raw=True)
                 return
             body = plain_text(body)
             if len(body) > 500:
@@ -367,11 +384,11 @@ class HackbotTUI(App[None]):
         w.update(f"◌ {line}")
         self._maybe_scroll_end()
 
-    def _append_live_pin(self, line: str) -> None:
+    def _append_live_pin(self, line: str, *, raw: bool = False) -> None:
         chat = self._chat()
         old_id = self._live_widget_id
         self._msg_i += 1
-        pin = f"· {line}"
+        pin = line if raw else f"· {line}"
         chat.mount(
             CopyableStatic(
                 pin, plain=pin, classes="msg-live", id=f"pin{self._msg_i}"
@@ -657,7 +674,12 @@ class HackbotTUI(App[None]):
             self._refresh_status()
             self._prompt().focus()
             return
-        self._append_md(answer)
+        # Mid-turn notes already mounted the latest assistant text — skip duplicate.
+        final = (answer or "").strip()
+        if final and final != "(empty)":
+            last = (self._last_plain or "").strip()
+            if final != last:
+                self._append_md(final)
         self._refresh_status()
         self._prompt().focus()
 

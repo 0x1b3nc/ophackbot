@@ -373,7 +373,8 @@ def _tool_continue_prompt(
     if step_mode_enabled():
         instructions = [
             "Hackbot executed your hackbot-tool call(s). Results follow.",
-            "Summarize briefly for the operator + ONE next step, then STOP.",
+            "Write 2–5 lines on what the result means (no raw dump re-paste).",
+            "Then ONE next step suggestion and STOP for the operator.",
             "Do NOT claim tools are missing. Emit another hackbot-tool only if one "
             "more step is truly required this turn.",
         ]
@@ -381,10 +382,11 @@ def _tool_continue_prompt(
         instructions = [
             "Hackbot executed your hackbot-tool call(s). Results follow.",
             "FULL HUNT MODE is ON — do NOT stop to ask the operator to continue.",
-            "Immediately emit the NEXT hackbot-tool call(s) to keep hunting.",
-            "Only STOP and summarize for the operator when you have: a finding "
-            "candidate, a hard blocker (needs_setup/MFA/OOS), or it is no longer "
-            "worth continuing (budget/dead ends).",
+            "First: 2–5 lines on what THIS result means (no raw body re-paste).",
+            "Then immediately emit the NEXT hackbot-tool call(s) to keep hunting.",
+            "Only STOP with ## Done / ## Evidence / ## Next steps when you have: a "
+            "finding candidate, a hard blocker (needs_setup/MFA/OOS), or it is no "
+            "longer worth continuing (budget/dead ends).",
             "If a result includes saved_body / saved_path, use read_file on that "
             "path for the full JS/body — do not assume body_preview is complete.",
             "http_request results include a headers object — use it for Server/"
@@ -980,12 +982,14 @@ def run_codex_turn(
             _fileop_depth=_fileop_depth + 1,
             _orig_user_prompt=orig,
         )
-        combined = "\n\n".join(p for p in (answer, cont) if (p or "").strip()).strip()
+        # Mid-turn answer already shown via markdown_panel → live_feed note.
+        # Return only the continuation (latest segment) — do not concatenate
+        # into one megadump (Cursor/Claude/Codex CLI pattern).
         ui.turn_timing(
             time.perf_counter() - started,
             len(ops) + len(applied_tools),
         )
-        return combined or answer
+        return (cont or "").strip() or answer
 
     if (
         allow_file_ops
@@ -1007,9 +1011,8 @@ def run_codex_turn(
             _fileop_depth=_fileop_depth + 1,
             _orig_user_prompt=orig,
         )
-        combined = "\n\n".join(p for p in (answer, cont) if (p or "").strip()).strip()
         ui.turn_timing(time.perf_counter() - started, len(ops) + len(applied_tools))
-        return combined or answer
+        return (cont or "").strip() or answer
     if applied and not _should_continue_after_fileops(applied, answer=answer):
         ui.info("file ops done; turn complete (not auto-continuing)")
 

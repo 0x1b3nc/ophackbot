@@ -556,9 +556,9 @@ def run_cursor_turn(
             _fileop_depth=_fileop_depth + 1,
             _orig_user_prompt=orig,
         )
-        combined = "\n\n".join(p for p in (answer, cont) if (p or "").strip()).strip()
         ui.turn_timing(time.perf_counter() - started, len(ops))
-        return combined or answer
+        # Mid-turn answer already shown — return only the latest segment.
+        return (cont or "").strip() or answer
     if applied and not _should_continue_after_fileops(applied, answer=answer):
         ui.info("file ops done; turn complete (not auto-continuing)")
 

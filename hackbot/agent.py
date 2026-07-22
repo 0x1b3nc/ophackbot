@@ -101,8 +101,9 @@ with /force (YOLO turns it on), the operator owns OOS too.
 
 Use tools instead of guessing file contents. Prefer open_playbook for a bug class
 before inventing steps. Prefer set_target when the user names a program folder.
-Keep answers short, technical, first person as my agent. When done with tools,
-give a clear final answer.
+Keep answers short, technical, first person as my agent. Narrate chronologically:
+after each tool, a brief takeaway; when finished, ## Done / ## Evidence / ## Next steps
+(no megadump re-pasting tool output the UI already showed).
 """
 
 SYSTEM_CHAT = """You are Hackbot, a short, friendly authorized bounty/lab CLI agent.
