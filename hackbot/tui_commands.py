@@ -125,10 +125,10 @@ def handle_slash(text: str) -> CmdResult:
 
         arg = raw[len("/force") :].strip().lower()
         if arg in {"", "on", "1", "true", "yes"}:
-            enable_force()
+            enable_force(quiet=True)
             return CmdResult(messages=["force **on**"])
         if arg in {"off", "0", "false", "no"}:
-            disable_force()
+            disable_force(quiet=True)
             return CmdResult(messages=["force **off**"])
         return CmdResult(messages=[f"force is {'on' if is_forced() else 'off'}"])
 

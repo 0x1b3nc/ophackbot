@@ -35,16 +35,18 @@ def is_forced() -> bool:
     return _FORCE_ACTIVE
 
 
-def enable_force() -> None:
+def enable_force(*, quiet: bool = False) -> None:
     global _FORCE_ACTIVE
     _FORCE_ACTIVE = True
-    ui.markdown_panel(FORCE_BANNER, title="force")
+    if not quiet:
+        ui.markdown_panel(FORCE_BANNER, title="force")
 
 
-def disable_force() -> None:
+def disable_force(*, quiet: bool = False) -> None:
     global _FORCE_ACTIVE
     _FORCE_ACTIVE = False
-    ui.success("force OFF — SCOPE soft gates restored")
+    if not quiet:
+        ui.success("force OFF — SCOPE soft gates restored")
 
 
 def set_force(on: bool) -> None:

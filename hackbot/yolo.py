@@ -45,7 +45,7 @@ def enable_yolo(*, quiet: bool = False) -> None:
     _YOLO_ACTIVE = True
     os.environ["HACKBOT_YOLO"] = "1"
     if not is_forced():
-        enable_force()
+        enable_force(quiet=quiet)
         _YOLO_ENABLED_FORCE = True
     else:
         _YOLO_ENABLED_FORCE = False

@@ -1,4 +1,4 @@
-"""hackbot Textual TUI — our brand, our slash commands, Toad-like layout.
+"""hackbot Textual TUI — our brand, our slash commands.
 
 Run: ``python -m hackbot tui``
 """
@@ -6,6 +6,7 @@ Run: ``python -m hackbot tui``
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from .session import get_active, status_line
@@ -24,17 +25,27 @@ def _status_line() -> str:
 
 def start_tui() -> int:
     try:
+        from textual import work
         from textual.app import App, ComposeResult
         from textual.binding import Binding
         from textual.containers import Horizontal, Vertical
         from textual.widgets import Footer, Header, Input, OptionList, RichLog, Static
         from textual.widgets.option_list import Option
-        from textual.worker import get_current_worker
     except ImportError:
         from . import ui
 
         ui.error("Textual missing. Install:  pip install 'hackbot-kit[tui]'")
         return 1
+
+    # Keep Rich banners off stdout/stderr before the TUI owns the screen.
+    os.environ.setdefault("HACKBOT_PLAIN", "1")
+    try:
+        from . import ui
+
+        ui.console.file = sys.stderr  # type: ignore[misc]
+        ui.console.quiet = True
+    except Exception:  # noqa: BLE001
+        pass
 
     if not is_yolo():
         # Non-interactive approve in TUI until we add a modal.
@@ -43,12 +54,13 @@ def start_tui() -> int:
     class HackbotTUI(App[None]):
         TITLE = "hackbot"
         SUB_TITLE = str(Path.cwd())
+        ENABLE_COMMAND_PALETTE = False
         CSS = """
         Screen {
             background: #0a0a0c;
         }
         #sidebar {
-            width: 28;
+            width: 26;
             background: #141416;
             border-right: solid #232328;
             padding: 1 1;
@@ -72,6 +84,7 @@ def start_tui() -> int:
             background: #0a0a0c;
             border: none;
             padding: 0 1;
+            scrollbar-size-vertical: 1;
         }
         #picker {
             height: 10;
@@ -98,6 +111,7 @@ def start_tui() -> int:
         def __init__(self) -> None:
             super().__init__()
             self._busy = False
+            self._picker_cmds: list[str] = []
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=False)
@@ -106,20 +120,24 @@ def start_tui() -> int:
                 with Vertical(id="sidebar"):
                     yield Static("hackbot", id="brand")
                     yield Static(
-                        "Authorized hunt TUI\n\n"
-                        "/help  commands\n"
+                        "Authorized hunt\n\n"
+                        "/help\n"
                         "/target demo\n"
                         "/provider codex\n"
                         "/models\n"
                         "/yolo on\n\n"
-                        "Type natural language\n"
-                        "for hunt turns.\n\n"
-                        "No Toad branding —\n"
-                        "this is our app.",
+                        "Enter = send\n"
+                        "/ = commands",
                         id="side-help",
                     )
                 with Vertical():
-                    yield RichLog(id="chat", markup=True, wrap=True, highlight=True)
+                    yield RichLog(
+                        id="chat",
+                        markup=True,
+                        wrap=True,
+                        highlight=False,
+                        auto_scroll=True,
+                    )
                     yield OptionList(id="picker")
                     yield Input(
                         placeholder="Message hackbot…  (/ for commands)",
@@ -129,7 +147,8 @@ def start_tui() -> int:
 
         def on_mount(self) -> None:
             chat = self.query_one("#chat", RichLog)
-            chat.write("[bold #d4a574]hackbot[/] ready · slash commands are local")
+            chat.can_focus = False
+            chat.write("[bold #d4a574]hackbot[/] ready")
             chat.write(f"[dim]{_status_line()}[/]")
             self.query_one("#prompt", Input).focus()
 
@@ -167,12 +186,13 @@ def start_tui() -> int:
 
         def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
             idx = event.option_index
-            cmds = getattr(self, "_picker_cmds", [])
-            if not (0 <= idx < len(cmds)):
+            if not (0 <= idx < len(self._picker_cmds)):
                 return
-            cmd = cmds[idx].rstrip()
+            cmd = self._picker_cmds[idx].rstrip()
             prompt = self.query_one("#prompt", Input)
-            if cmd in {"/target", "/provider", "/model", "/effort", "/hunt"} or cmds[idx].endswith(" "):
+            if cmd in {"/target", "/provider", "/model", "/effort", "/hunt"} or self._picker_cmds[
+                idx
+            ].endswith(" "):
                 prompt.value = cmd + " "
             else:
                 prompt.value = cmd
@@ -207,21 +227,21 @@ def start_tui() -> int:
                         self._refresh_status()
                     return
             self._busy = True
-            self.run_worker(self._turn_worker(text), exclusive=True, thread=True)
+            # @work method — do NOT call it inline inside run_worker(...)
+            self.run_hunt_turn(text)
 
-        def _turn_worker(self, text: str) -> None:
-            worker = get_current_worker()
+        @work(thread=True, exclusive=True, exit_on_error=False)
+        def run_hunt_turn(self, text: str) -> None:
             try:
                 answer = run_bridged_turn(text)
             except Exception as exc:  # noqa: BLE001
                 answer = f"Error: {type(exc).__name__}: {exc}"
-            if not worker.is_cancelled:
-                self.call_from_thread(self._finish_turn, answer)
+            self.call_from_thread(self._finish_turn, answer or "(empty)")
 
         def _finish_turn(self, answer: str) -> None:
             self._busy = False
             chat = self.query_one("#chat", RichLog)
-            chat.write(answer or "(empty)")
+            chat.write(answer)
             self._refresh_status()
             self.query_one("#prompt", Input).focus()
 
@@ -233,17 +253,16 @@ def start_tui() -> int:
             except Exception:  # noqa: BLE001
                 pass
             self.query_one("#chat", RichLog).write("[yellow]stop requested[/]")
+            self._busy = False
 
         def action_show_help(self) -> None:
             self._submit("/help")
 
-    # Quiet Rich on stderr so it does not trash the TUI.
-    os.environ.setdefault("HACKBOT_PLAIN", "1")
+    # Re-enable console for any post-exit messages, keep stderr.
     try:
         from . import ui
-        import sys
 
-        ui.console.file = sys.stderr  # type: ignore[misc]
+        ui.console.quiet = False
     except Exception:  # noqa: BLE001
         pass
 
