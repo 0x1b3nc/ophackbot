@@ -58,4 +58,4 @@ where = ["."]
 include = ["hackbot*"]
 
 [tool.setuptools.package-data]
-hackbot = ["py.typed", "runners/frida_scripts/*.js"]
+hackbot = ["py.typed", "runners/frida_scripts/*.js", "web_static/*"]

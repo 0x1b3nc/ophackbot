@@ -20,10 +20,9 @@ from typing import Callable, Iterator
 _SESSION = None  # prompt_toolkit.PromptSession | None
 _PATCH = None
 
-# claude-hq dark: accent #d4a574, muted #6b6b76, surface #141416
+# claude-hq dark: accent #d4a574, muted #6b6b76
 _ACCENT = "#d4a574"
 _MUTED = "#6b6b76"
-_SURFACE = "#141416"
 
 
 def get_prompt_session():
@@ -63,7 +62,7 @@ def operator_input_session() -> Iterator[None]:
 
 
 def ask_operator_line(tag: str, *, fallback: Callable[[str], str] | None = None) -> str:
-    """Prompt styled like claude-hq ChatInput (warm accent, muted hint bar)."""
+    """Clean prompt — no bottom_toolbar (it paints a broken white bar on Kali)."""
     label = f"› {tag} "
     try:
         from prompt_toolkit.formatted_text import FormattedText
@@ -77,7 +76,7 @@ def ask_operator_line(tag: str, *, fallback: Callable[[str], str] | None = None)
         {
             "prompt": f"bold {_ACCENT}",
             "tag": _MUTED,
-            "hint": f"{_MUTED} bg:{_SURFACE}",
+            "rprompt": _MUTED,
         }
     )
     message = FormattedText(
@@ -86,17 +85,11 @@ def ask_operator_line(tag: str, *, fallback: Callable[[str], str] | None = None)
             ("class:tag", f"{tag} "),
         ]
     )
-    bottom = FormattedText(
-        [
-            (
-                "class:hint",
-                " Message hackbot…  ·  enter queues  ·  ctrl+c stop ",
-            )
-        ]
-    )
+    # Short right-side hint — never a full-width toolbar.
+    rprompt = FormattedText([("class:rprompt", "ctrl+c stop")])
     try:
         session = _SESSION
-        kwargs = {"style": style, "bottom_toolbar": bottom}
+        kwargs: dict = {"style": style, "rprompt": rprompt}
         if session is not None:
             text = session.prompt(message, **kwargs)
         else:
@@ -106,7 +99,6 @@ def ask_operator_line(tag: str, *, fallback: Callable[[str], str] | None = None)
     except (EOFError, KeyboardInterrupt):
         raise
     except TypeError:
-        # Older prompt_toolkit without bottom_toolbar
         try:
             session = _SESSION
             if session is not None:

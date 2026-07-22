@@ -49,7 +49,28 @@ Then:
 ```bash
 python -m hackbot demo    # fake target + dry-run smoke
 python -m hackbot         # REPL, stays open
+python -m hackbot ui      # browser chat UI (claude-hq look)
 ```
+
+### Web UI (`hackbot ui`)
+
+The good visual is a **local browser UI** (theme adapted from
+[claude-hq](https://github.com/sossost/claude-hq), MIT) talking to a Python SSE
+API that runs the same brains/tools as the REPL. The terminal CLI stays for
+SSH/headless.
+
+```bash
+# Kali / Linux (venv already on)
+cd ~/testhackbot/ophackbot
+source .venv/bin/activate
+export HACKBOT_PROVIDER=codex   # or cursor / offline
+python -m hackbot ui            # opens http://127.0.0.1:8765/
+# python -m hackbot ui --port 8777 --no-browser
+```
+
+Web sessions turn YOLO on for that process (no Confirm dialog in the browser);
+out-of-scope hosts are still blocked. Tool chatter also prints in the terminal
+running the server.
 
 ## Brains
 

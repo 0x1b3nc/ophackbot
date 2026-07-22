@@ -37,6 +37,7 @@ SUBCOMMANDS = frozenset(
         "cmd",
         "ask",
         "demo",
+        "ui",
     }
 )
 
@@ -386,6 +387,18 @@ def build_parser() -> argparse.ArgumentParser:
     ask_p.add_argument("prompt", nargs=argparse.REMAINDER)
     sub.add_parser("demo", help="Prepare targets/demo + dry-run smoke (proves the pitch)")
 
+    ui_p = sub.add_parser(
+        "ui",
+        help="Open local web chat UI (claude-hq visual + hackbot API)",
+    )
+    ui_p.add_argument("--host", default="127.0.0.1", help="Bind address (default 127.0.0.1)")
+    ui_p.add_argument("--port", type=int, default=8765, help="Port (default 8765)")
+    ui_p.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not open a browser tab",
+    )
+
     return parser
 
 
@@ -506,6 +519,14 @@ def _dispatch(args: argparse.Namespace) -> int:
         out = run_demo_smoke()
         ui.code_panel(json.dumps(out, indent=2), title="demo smoke", lexer="json")
         return 0 if out.get("ok") else 1
+    if args.subcommand == "ui":
+        from .web_server import start_web_ui
+
+        return start_web_ui(
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_browser,
+        )
     return 2
 
 

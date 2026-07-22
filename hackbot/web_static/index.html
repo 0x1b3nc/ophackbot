@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>hackbot</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">h</div>
+        <div class="brand-text">
+          <strong>hackbot</strong>
+          <span>authorized hunt UI</span>
+        </div>
+      </div>
+      <div class="side-section">
+        <label for="target">target</label>
+        <input id="target" type="text" placeholder="demo" autocomplete="off" />
+        <button type="button" id="set-target" class="ghost">set target</button>
+      </div>
+      <div class="side-section">
+        <label for="provider">provider</label>
+        <select id="provider">
+          <option value="">(env / default)</option>
+          <option value="offline">offline</option>
+          <option value="codex">codex</option>
+          <option value="cursor">cursor</option>
+          <option value="openai">openai</option>
+          <option value="anthropic">anthropic</option>
+          <option value="openrouter">openrouter</option>
+          <option value="deepseek">deepseek</option>
+          <option value="glm">glm</option>
+          <option value="ollama">ollama</option>
+        </select>
+        <button type="button" id="set-provider" class="ghost">apply</button>
+      </div>
+      <div class="status-card" id="status-card">
+        <div class="status-row"><span>mode</span><strong id="st-mode">…</strong></div>
+        <div class="status-row"><span>target</span><strong id="st-target">—</strong></div>
+        <div class="status-row"><span>yolo</span><strong id="st-yolo">—</strong></div>
+      </div>
+      <p class="side-foot">
+        Visual adapted from
+        <a href="https://github.com/sossost/claude-hq" target="_blank" rel="noreferrer">claude-hq</a>
+        (MIT). Brains &amp; tools = this kit.
+      </p>
+    </aside>
+
+    <main class="chat">
+      <header class="chat-header">
+        <div>
+          <h1>hackbot</h1>
+          <p id="header-sub">local API · SCOPE + approve rail</p>
+        </div>
+        <button type="button" id="clear-chat" class="ghost">clear</button>
+      </header>
+
+      <section id="messages" class="messages" aria-live="polite">
+        <div class="empty" id="empty">
+          <div class="empty-brand">hackbot</div>
+          <p>Talk natural. Hunt stays on the Python side — this is just the face.</p>
+          <ul>
+            <li>set target → ask scope / recon</li>
+            <li>provider codex or cursor when you want a model</li>
+            <li>web UI auto-YOLO (OOS still blocked)</li>
+          </ul>
+        </div>
+      </section>
+
+      <div class="input-fade"></div>
+      <div class="input-wrap">
+        <div class="input-shell">
+          <textarea
+            id="prompt"
+            rows="1"
+            placeholder="Message hackbot…"
+            aria-label="Chat message"
+          ></textarea>
+          <div class="input-bar">
+            <span class="hint" id="input-hint">Enter send · Shift+Enter newline</span>
+            <button type="button" id="send" class="send" aria-label="Send" disabled>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M8 12V4M8 4L4 8M8 4L12 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
