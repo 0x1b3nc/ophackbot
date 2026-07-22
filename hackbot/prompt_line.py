@@ -8,6 +8,8 @@ land in the buffer and wait for a real Enter.
 While a turn runs on a worker thread, the main thread keeps a PromptSession
 open under ``patch_stdout`` so the operator can type/queue; approve prompts
 from the worker use ``run_in_terminal`` so they do not race the input line.
+
+Prompt chrome colors follow sossost/claude-hq (MIT) dark theme tokens.
 """
 
 from __future__ import annotations
@@ -17,6 +19,11 @@ from typing import Callable, Iterator
 
 _SESSION = None  # prompt_toolkit.PromptSession | None
 _PATCH = None
+
+# claude-hq dark: accent #d4a574, muted #6b6b76, surface #141416
+_ACCENT = "#d4a574"
+_MUTED = "#6b6b76"
+_SURFACE = "#141416"
 
 
 def get_prompt_session():
@@ -56,21 +63,21 @@ def operator_input_session() -> Iterator[None]:
 
 
 def ask_operator_line(tag: str, *, fallback: Callable[[str], str] | None = None) -> str:
-    """Prompt ``› <tag> `` with a Cursor-like follow-up hint."""
+    """Prompt styled like claude-hq ChatInput (warm accent, muted hint bar)."""
     label = f"› {tag} "
     try:
         from prompt_toolkit.formatted_text import FormattedText
         from prompt_toolkit.styles import Style
     except ImportError:
         if fallback is not None:
-            return (fallback(f"[bold cyan]›[/] [dim]{tag}[/]") or "").strip()
+            return (fallback(f"[bold #d4a574]›[/] [dim]{tag}[/]") or "").strip()
         return input(label).strip()
 
     style = Style.from_dict(
         {
-            "prompt": "bold ansicyan",
-            "tag": "ansibrightblack",
-            "hint": "ansibrightblack",
+            "prompt": f"bold {_ACCENT}",
+            "tag": _MUTED,
+            "hint": f"{_MUTED} bg:{_SURFACE}",
         }
     )
     message = FormattedText(
@@ -83,7 +90,7 @@ def ask_operator_line(tag: str, *, fallback: Callable[[str], str] | None = None)
         [
             (
                 "class:hint",
-                " follow-up · enter queues · ctrl+c interrupt ",
+                " Message hackbot…  ·  enter queues  ·  ctrl+c stop ",
             )
         ]
     )
@@ -112,11 +119,11 @@ def ask_operator_line(tag: str, *, fallback: Callable[[str], str] | None = None)
             raise
         except Exception:
             if fallback is not None:
-                return (fallback(f"[bold cyan]›[/] [dim]{tag}[/]") or "").strip()
+                return (fallback(f"[bold #d4a574]›[/] [dim]{tag}[/]") or "").strip()
             return input(label).strip()
     except Exception:
         if fallback is not None:
-            return (fallback(f"[bold cyan]›[/] [dim]{tag}[/]") or "").strip()
+            return (fallback(f"[bold #d4a574]›[/] [dim]{tag}[/]") or "").strip()
         return input(label).strip()
     return (text or "").strip()
 

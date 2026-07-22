@@ -1,4 +1,8 @@
-"""Terminal UI. Claude/Codex-ish: muted chrome, clear status, markdown panels."""
+"""Terminal UI — visual language adapted from sossost/claude-hq (MIT).
+
+Web dashboard tokens (warm accent, muted surfaces, compact tool rows) mapped to
+Rich for the hackbot REPL. Logic stays ours; only look-and-feel was borrowed.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +25,16 @@ from rich.theme import Theme
 
 from . import __version__
 from .operator_gate import console_output_allowed
+
+# Palette from claude-hq dark theme (globals.css) — terminal adaptation.
+_ACCENT = "#d4a574"
+_FG = "#ececee"
+_MUTED = "#6b6b76"
+_SECONDARY = "#a0a0ab"
+_OK = "#34d399"
+_WARN = "#fbbf24"
+_BAD = "#f87171"
+_BORDER = "#232328"
 
 
 def _enable_windows_vt() -> None:
@@ -46,15 +60,17 @@ _enable_windows_vt()
 
 THEME = Theme(
     {
-        "hb.brand": "bold cyan",
-        "hb.muted": "dim",
-        "hb.ok": "bold green",
-        "hb.warn": "bold yellow",
-        "hb.bad": "bold red",
-        "hb.info": "bold bright_white",
-        "hb.label": "cyan",
-        "hb.path": "dim italic",
-        "hb.cmd": "bold white",
+        "hb.brand": f"bold {_FG}",
+        "hb.accent": _ACCENT,
+        "hb.muted": _MUTED,
+        "hb.ok": _OK,
+        "hb.warn": _WARN,
+        "hb.bad": _BAD,
+        "hb.info": _FG,
+        "hb.label": _SECONDARY,
+        "hb.path": f"italic {_MUTED}",
+        "hb.cmd": _FG,
+        "hb.border": _BORDER,
     }
 )
 
@@ -104,25 +120,25 @@ _COMMANDS = (
 def splash_agent() -> None:
     """Agent REPL home. Prompt in, tools out."""
     title = Text()
-    title.append("hackbot", style="hb.brand")
+    title.append("hackbot", style="hb.accent")
     title.append(f"  v{__version__}", style="hb.muted")
     body = Text.from_markup(
         "[hb.muted]authorized bounty agent[/]\n"
         "[hb.muted]type a task. I think, use tools, and answer.[/]\n"
         "\n"
         "[hb.label]examples[/]\n"
-        "[hb.muted]-[/] check if example.com is in scope for targets/demo\n"
-        "[hb.muted]-[/] open IDOR notes and draft a plan for /api/orders/1\n"
-        "[hb.muted]-[/] dry-run httpx on example.com for the demo target\n"
+        "[hb.muted]·[/] check if example.com is in scope for targets/demo\n"
+        "[hb.muted]·[/] open IDOR notes and draft a plan for /api/orders/1\n"
+        "[hb.muted]·[/] dry-run httpx on example.com for the demo target\n"
         "\n"
-        "[hb.muted]scope first  |  evidence redacted  |  active traffic needs your approve[/]\n"
-        "[hb.muted]/exit  /clear  /help[/]    low-level: [hb.cmd]hackbot cmd ...[/]"
+        "[hb.muted]scope first  ·  evidence redacted  ·  approve for active traffic[/]\n"
+        "[hb.muted]/exit  /clear  /help[/]"
     )
     console.print()
     console.print(
         Panel(
             Group(title, Text(""), body),
-            border_style="cyan",
+            border_style=_BORDER,
             padding=(1, 2),
         )
     )
@@ -193,7 +209,7 @@ def error(msg: str) -> None:
 
 
 def info(msg: str) -> None:
-    console.print(Text.from_markup(f"[hb.muted]-[/] {msg}"))
+    console.print(Text.from_markup(f"[hb.muted]·[/] {msg}"))
 
 
 def path_line(label: str, path: str) -> None:
@@ -211,7 +227,7 @@ def scope_result(host: str, status: str) -> None:
     table.add_row("host", Text(host, style="hb.info"))
     table.add_row("status", Text(status, style=style))
     console.print(
-        Panel(table, title="scope-check", border_style="cyan", padding=(1, 2))
+        Panel(table, title="scope-check", border_style=_BORDER, padding=(1, 2))
     )
 
 
@@ -409,6 +425,14 @@ def _prompt_session_open() -> bool:
         return False
 
 
+def working_line(label: str = "working") -> None:
+    """claude-hq RunningIndicator → muted pulse dots + label (scrollback)."""
+    label = (label or "working").strip()
+    console.print(
+        Text("··· ", style="hb.muted") + Text(label, style="hb.accent")
+    )
+
+
 @contextmanager
 def working(label: str = "working") -> Iterator[None]:
     """Show in-flight work without gluing a Rich Status onto the PromptSession line.
@@ -419,13 +443,13 @@ def working(label: str = "working") -> Iterator[None]:
     stop_live()
     label = (label or "working").strip()
     if _prompt_session_open():
-        console.print(Text.from_markup(f"[hb.muted]⠿[/] [cyan]{label}[/]"))
+        working_line(label)
         try:
             yield
         finally:
             stop_live()
         return
-    status = console.status(f"[cyan]{label}[/]", spinner="dots")
+    status = console.status(f"[{_ACCENT}]{label}[/]", spinner="dots")
     status.start()
     try:
         yield
@@ -435,6 +459,24 @@ def working(label: str = "working") -> Iterator[None]:
         except Exception:  # noqa: BLE001
             pass
         stop_live()
+
+
+def user_bubble(text: str) -> None:
+    """User message chrome (claude-hq UserBubble → terminal)."""
+    text = (text or "").strip()
+    if not text:
+        return
+    console.print()
+    console.print(Text("▌ ", style="hb.accent") + Text(text, style="hb.info"))
+    console.print()
+
+
+def thinking_label(*, streaming: bool = True) -> None:
+    """Collapsed thinking header style from claude-hq ThinkingBlock."""
+    console.print(
+        Text("▸ ", style="hb.muted")
+        + Text("Thinking..." if streaming else "Thinking", style="hb.muted")
+    )
 
 
 def ensure_prompt_line() -> None:
@@ -511,21 +553,21 @@ def format_http_action(
 
 
 def action_line(kind: str, detail: str, *, ok: bool | None = None) -> None:
-    """Cursor-style action row: ``http  HEAD api.example → 200``."""
+    """claude-hq ToolBubble: muted name + detail + trailing status mark."""
     kind = (kind or "·").strip()
     detail = (detail or "").strip()
     if not detail:
         return
+    line = Text()
+    line.append(f"{kind}  ", style="hb.label")
+    line.append(detail[:120], style="hb.muted")
     if ok is True:
-        mark, style = "✓", "hb.ok"
+        line.append("  ✓", style="hb.ok")
     elif ok is False:
-        mark, style = "✗", "hb.bad"
-    else:
-        mark, style = "·", "hb.muted"
-    console.print(
-        Text.from_markup(f"[{style}]{mark}[/] [hb.label]{kind}[/] ")
-        + Text(detail, style="hb.info")
-    )
+        line.append("  ✗", style="hb.bad")
+    elif ok is None:
+        line.append("  ·", style="hb.warn")
+    console.print(line)
 
 
 def maybe_code_panel(code: str, *, title: str = "command", lexer: str = "bash") -> None:
@@ -535,13 +577,12 @@ def maybe_code_panel(code: str, *, title: str = "command", lexer: str = "bash") 
 
 
 def markdown_panel(md: str, *, title: str) -> None:
-    """Render assistant markdown. Transcript-style for hackbot answers (less chrome)."""
+    """Assistant bubble — plain markdown under a soft accent label (claude-hq)."""
     body = normalize_agent_text(md or "")
     soft = title.lower().startswith("hackbot")
     if soft:
-        # Claude/Codex-ish: rule + markdown in scrollback, not a giant nested box.
         console.print()
-        console.print(Rule(title, style="cyan"))
+        console.print(Text(title, style="hb.accent"))
         console.print(Markdown(body))
         console.print()
         return
@@ -549,7 +590,7 @@ def markdown_panel(md: str, *, title: str) -> None:
         Panel(
             Markdown(body),
             title=title,
-            border_style="cyan",
+            border_style=_BORDER,
             padding=(1, 2),
         )
     )
@@ -563,7 +604,7 @@ def code_panel(code: str, *, title: str = "command", lexer: str = "bash") -> Non
         Panel(
             Syntax(body, lexer, theme="monokai", word_wrap=True),
             title=title,
-            border_style="bright_black",
+            border_style=_BORDER,
             padding=(1, 2),
         )
     )
@@ -620,7 +661,7 @@ def file_panel(path: str, text: str, *, title: str | None = None) -> None:
 
 
 def routes_table(routes_text: str) -> None:
-    table = Table(title="knowledge routes", border_style="cyan", show_lines=False)
+    table = Table(title="knowledge routes", border_style=_BORDER, show_lines=False)
     table.add_column("trigger", style="hb.label")
     table.add_column("notes", style="hb.muted")
     for line in routes_text.splitlines():
@@ -638,17 +679,20 @@ def plain(text: str) -> None:
 
 
 def tool_line(name: str, status: str = "ok", *, detail: str = "") -> None:
-    """One-line tool progress (compact UI)."""
+    """One-line tool progress — matches claude-hq ToolBubble density."""
     ok = status in {"ok", "done"}
     bad = status in {"fail", "error"}
-    style = "hb.ok" if ok else ("hb.bad" if bad else "hb.muted")
-    mark = "✓" if ok else ("✗" if bad else "·")
-    line = Text.from_markup(
-        f"[{style}]{mark}[/] [hb.muted]tool[/] [hb.cmd]{name}[/] [{style}]{status}[/]"
-    )
-    if detail:
-        line = line + Text(f" {detail}", style="hb.muted")
-    console.print(line)
+    running = status in {"running", "wait", "pending"}
+    flag: bool | None
+    if ok:
+        flag = True
+    elif bad:
+        flag = False
+    elif running:
+        flag = None
+    else:
+        flag = None
+    action_line(name, detail or status, ok=flag)
 
 
 def turn_timing(seconds: float, tools_used: int = 0) -> None:
@@ -690,7 +734,7 @@ class Stream:
             return
         self._stop_wait()
         if not self._started_reasoning:
-            console.print(Text("thinking", style="hb.label"))
+            thinking_label(streaming=True)
             self._started_reasoning = True
         console.print(Text(delta, style="hb.muted"), end="")
 
@@ -701,7 +745,7 @@ class Stream:
         if not self._started_answer:
             if self._started_reasoning:
                 console.print()  # close the reasoning block
-            console.print(Rule(self.title, style="dim"))
+            console.print(Text(self.title, style="hb.accent"))
             self._started_answer = True
         self._answer.append(delta)
         console.print(Text(delta, style="hb.info"), end="")

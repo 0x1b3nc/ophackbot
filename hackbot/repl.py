@@ -585,6 +585,7 @@ def _repl_loop(brain: dict, session: _Session, bus: TurnBus) -> int:
                 ui.error("no active target — /target <name> first")
                 continue
             # Long hunt runs on the turn worker so the prompt stays open.
+            ui.user_bubble(text)
             bus.submit(text)
             continue
 
@@ -915,4 +916,5 @@ def _repl_loop(brain: dict, session: _Session, bus: TurnBus) -> int:
 
         # Chat / hunt turns run on the background worker so the prompt stays open.
         _sync_brain()
+        ui.user_bubble(text)
         bus.submit(text)

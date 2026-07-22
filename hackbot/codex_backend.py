@@ -1387,7 +1387,7 @@ def _run_streaming(
         proc.stdin.write(prompt)
         proc.stdin.close()
         # Scrollback line (not Rich Live) so it never glues onto the prompt row.
-        ui.console.print(ui_text("⠿ working · codex", "hb.muted"))
+        ui.working_line("working · codex")
         for raw_line in proc.stdout:
             if codex_cancel_requested():
                 cancelled = True

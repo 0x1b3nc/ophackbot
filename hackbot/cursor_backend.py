@@ -286,7 +286,7 @@ def _run_send(agent: Any, prompt: str, *, selection: Any) -> tuple[str, str]:
     stream_answer = ""
     cancelled = False
     # Scrollback working line — never glue Rich Live onto the concurrent prompt.
-    ui.console.print(ui_text("⠿ working · cursor", "hb.muted"))
+    ui.working_line("working · cursor")
     try:
         if streaming_enabled():
             try:
