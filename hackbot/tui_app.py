@@ -6,7 +6,9 @@ Layout: status · scrollable chat · multiline composer · footer.
 Final replies use Markdown; live stream (think/tool/plan) stays plain text.
 
 Composer is a TextArea (not single-line Input) so multiline paste keeps the
-**full** prompt. Send with ``Enter``; ``Shift+Enter`` inserts a newline.
+**full** prompt. ``Enter`` sends. Newline: ``Ctrl+J`` or ``Alt+Enter``
+(``Shift+Enter`` only works if the terminal speaks Kitty keyboard protocol —
+most do not, so Shift+Enter looks like plain Enter).
 
 Copy: ``F2`` / ``Ctrl+Y`` / ``/copy`` / click message. ``/cleanclip`` after a
 messy native select. ``/paste`` loads the OS clipboard into the composer.
@@ -140,14 +142,20 @@ def start_tui() -> int:
                 copy_fn(self.plain_source, label="message")
 
     class PromptArea(TextArea):
-        """Multiline composer — Enter sends; Shift+Enter = newline."""
+        """Multiline composer — Enter sends; Ctrl+J / Alt+Enter = newline.
+
+        Shift+Enter is bound for Kitty-protocol terminals, but most terminals
+        (Windows Terminal default, many SSH clients) send the same bytes for
+        Enter and Shift+Enter — so Shift+Enter would submit. Use Ctrl+J there.
+        """
 
         BINDINGS = [
             Binding("enter", "submit_prompt", "send", show=True, priority=True),
-            Binding("shift+enter", "newline", "newline", show=True, priority=True),
-            # Fallbacks — some terminals map these oddly
-            Binding("ctrl+enter", "submit_prompt", "send", show=False, priority=True),
-            Binding("ctrl+j", "submit_prompt", "send", show=False, priority=True),
+            # Reliable newline keys (distinct bytes from bare Enter):
+            Binding("ctrl+j", "newline", "newline", show=True, priority=True),
+            Binding("alt+enter", "newline", "newline", show=True, priority=True),
+            # Only distinct when terminal enables Kitty keyboard protocol:
+            Binding("shift+enter", "newline", "newline", show=False, priority=True),
         ]
 
         def action_submit_prompt(self) -> None:
@@ -274,7 +282,6 @@ def start_tui() -> int:
             Binding("ctrl+c", "interrupt", "stop", show=True),
             Binding("ctrl+q", "quit", "quit", show=True),
             Binding("f1", "show_help", "help", show=True),
-            Binding("ctrl+enter", "submit_composer", "send", show=False, priority=True),
             # Prefer F2 / Ctrl+Y — Windows Terminal steals Ctrl+Shift+C for itself.
             Binding("f2", "copy_selection", "copy", show=True, priority=True),
             Binding("ctrl+y", "copy_last", "copy last", show=True, priority=True),
@@ -315,8 +322,7 @@ def start_tui() -> int:
                         tab_behavior="indent",
                         show_line_numbers=False,
                         placeholder=(
-                            "Message…  Enter send · Shift+Enter newline · "
-                            "F2 copy · /paste"
+                            "Message…  Enter send · Ctrl+J newline · F2 copy · /paste"
                         ),
                         id="prompt",
                     )
@@ -327,10 +333,10 @@ def start_tui() -> int:
             self.set_interval(0.1, self._pump_feed)
             self._append_md(
                 "**hackbot** — `/provider` `/model` `/effort` `/target`\n\n"
-                "_**Send:** `Enter` · **newline:** `Shift+Enter` (paste keeps all lines). "
-                "**Copy:** `F2` / click message / `/copy` (not terminal-cell select). "
-                "`/cleanclip` if a native select left padding spaces. "
-                "**Scroll:** wheel + scrollbar + PgUp/PgDn (always on). "
+                "_**Send:** `Enter`. **Newline:** `Ctrl+J` or `Alt+Enter` "
+                "(paste keeps all lines; `Shift+Enter` only works in Kitty-protocol terminals). "
+                "**Copy:** `F2` / click message / `/copy`. "
+                "**Scroll:** wheel + scrollbar + PgUp/PgDn. "
                 "Stop: `ctrl+c` then send a new prompt._"
             )
             self.query_one("#prompt", PromptArea).focus()
