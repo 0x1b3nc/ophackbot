@@ -71,11 +71,9 @@ Plain REPL stays for thin SSH. Optional external host: [docs/TOAD.md](docs/TOAD.
 (`toad acp` + `hackbot acp`) — that UI still says “Toad”; prefer `hackbot tui`
 if you want only our brand. `hackbot ui` (browser) is deprecated.
 
-**Copy in the TUI:** click a message, or `F2` / `Ctrl+Y` / `/copy` — copies the
-real stored text (no padding gaps). Native select can pad spaces → `/cleanclip`.
-**Paste long prompts:** composer is multiline — Ctrl+V keeps every line; send with
-`Ctrl+Enter` (or type `/paste` to load the clipboard). Scroll: mouse wheel +
-scrollbar (off with `HACKBOT_TUI_MOUSE=0`).
+**Copy in the TUI:** click a message, or `F2` / `Ctrl+Y` / `/copy`.
+**Paste:** multiline composer — Ctrl+V keeps every line; send with `Ctrl+Enter`
+(or `/paste`). **Scroll:** wheel + scrollbar + PgUp/PgDn always on.
 
 ## Brains
 

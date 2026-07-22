@@ -11,8 +11,8 @@ Composer is a TextArea (not single-line Input) so multiline paste keeps the
 Copy: ``F2`` / ``Ctrl+Y`` / ``/copy`` / click message. ``/cleanclip`` after a
 messy native select. ``/paste`` loads the OS clipboard into the composer.
 
-Mouse/wheel/scrollbar: on by default (``HACKBOT_TUI_MOUSE=0`` to disable).
-PgUp/PgDn always scroll the chat.
+Scroll (wheel + scrollbar + PgUp/PgDn) is **always** on. Copy does not
+toggle mouse — use F2/click, not terminal-cell select.
 """
 
 from __future__ import annotations
@@ -39,18 +39,6 @@ _PRIMARY = "#8A2BE2"
 _SECONDARY = "#7B68EE"
 _TEXT = "#E8E8FF"
 _INFO = "#64D9E8"
-
-
-def _tui_mouse_enabled() -> bool:
-    """Mouse on → wheel + scrollbar. Off → native terminal select (padded copy)."""
-    raw = (os.environ.get("HACKBOT_TUI_MOUSE") or "").strip().lower()
-    if raw in {"0", "false", "no", "off"}:
-        return False
-    if raw in {"1", "true", "yes", "on"}:
-        return True
-    # Default ON so scrollbar / wheel work; copy via F2 / click / /copy.
-    return True
-
 
 def _plain_text(text: str) -> str:
     """Strip Markdown markers for live stream lines only (think/tool/plan pins)."""
@@ -329,18 +317,13 @@ def start_tui() -> int:
         def on_mount(self) -> None:
             live_feed.set_feed_sink(self._mark_feed)
             self.set_interval(0.1, self._pump_feed)
-            mouse_on = _tui_mouse_enabled()
             self._append_md(
                 "**hackbot** — `/provider` `/model` `/effort` `/target`\n\n"
                 "_**Send:** `Ctrl+Enter` (Enter = newline; paste keeps **all** lines). "
-                "**Copy:** `F2` / click message / `/copy`. "
-                "Native select pads spaces → `/cleanclip`. "
-                + (
-                    "Scroll: wheel + scrollbar + PgUp/PgDn. "
-                    if mouse_on
-                    else "Scroll: PgUp/PgDn (mouse off — `HACKBOT_TUI_MOUSE=1` for wheel). "
-                )
-                + "Stop: `ctrl+c` then send a new prompt._"
+                "**Copy:** `F2` / click message / `/copy` (not terminal-cell select). "
+                "`/cleanclip` if a native select left padding spaces. "
+                "**Scroll:** wheel + scrollbar + PgUp/PgDn (always on). "
+                "Stop: `ctrl+c` then send a new prompt._"
             )
             self.query_one("#prompt", PromptArea).focus()
 
@@ -773,8 +756,8 @@ def start_tui() -> int:
             self._submit("/help")
 
     try:
-        # mouse on by default → wheel + scrollbar; HACKBOT_TUI_MOUSE=0 to disable.
-        HackbotTUI().run(mouse=_tui_mouse_enabled())
+        # Mouse always on — scroll/wheel/scrollbar must not depend on copy mode.
+        HackbotTUI().run(mouse=True)
     finally:
         live_feed.set_feed_sink(None)
         set_tui_console_mute(False)
