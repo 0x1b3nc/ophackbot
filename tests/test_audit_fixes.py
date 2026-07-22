@@ -122,17 +122,22 @@ class ForceArgTests(unittest.TestCase):
 class RunnerOkShapeTests(unittest.TestCase):
     def test_timeout_not_ok(self) -> None:
         from hackbot.runners.base import RunnerResult
-        from hackbot.tools import _runner_result_ok
+        from hackbot.tools import _runner_json, _runner_result_ok
 
         bad = RunnerResult(
             command=["x"],
             executed=True,
-            returncode=-1,
+            returncode=1,
             stdout="",
             stderr="",
             message="timeout",
         )
         self.assertFalse(_runner_result_ok(bad))
+        import json
+
+        data = json.loads(_runner_json(bad, {"signal": False}))
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["message"], "timeout")
         dry = RunnerResult(
             command=["x"],
             executed=False,

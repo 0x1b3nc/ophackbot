@@ -3572,15 +3572,14 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
             payload = json.loads(result.stdout) if result.stdout else {}
         except json.JSONDecodeError:
             payload = {}
-        return json.dumps(
-            {
-                "ok": True,
-                "executed": result.executed,
-                "signal": bool(payload.get("signal")),
-                "detail": payload,
-                "message": result.message,
-            }
-        )
+        return _runner_json(
+        result,
+        {
+            "signal": bool(payload.get("signal")),
+            "detail": payload,
+            "message": result.message,
+        },
+    )
     if name == "learn_record":
         from .learning import record_technique
 
@@ -4100,10 +4099,9 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
             )
         else:
             return json.dumps({"ok": False, "error": f"unknown tool {tool}"})
-        return json.dumps(
+        return _runner_json(
+            result,
             {
-                "ok": True,
-                "executed": result.executed,
                 "message": result.message,
                 "returncode": result.returncode,
                 "command": result.command,
@@ -4111,7 +4109,7 @@ def _execute(name: str, args: dict[str, Any], *, approve_fn: ApproveFn | None) -
                 "aggression": gate.get("aggression"),
                 "stdout": (result.stdout or "")[:4000],
                 "stderr": (result.stderr or "")[:2000],
-            }
+            },
         )
 
     from .elite_dispatch import dispatch_elite
@@ -4160,6 +4158,29 @@ def _runner_result_ok(result: Any) -> bool:
         return False
     code = getattr(result, "returncode", None)
     return code in {0, None}
+
+
+def _runner_json(result: Any, extra: dict[str, Any] | None = None) -> str:
+    """Build tool JSON with honest ``ok`` from a RunnerResult (+ optional payload)."""
+    body: dict[str, Any] = dict(extra or {})
+    runner_ok = _runner_result_ok(result)
+    nested = body.get("ok")
+    if nested is False:
+        ok = False
+    elif isinstance(nested, bool):
+        ok = nested and runner_ok
+    else:
+        ok = runner_ok
+    body["ok"] = ok
+    body.setdefault("executed", bool(getattr(result, "executed", False)))
+    if "message" not in body:
+        body["message"] = getattr(result, "message", "") or ""
+    code = getattr(result, "returncode", None)
+    if code is not None:
+        body.setdefault("returncode", code)
+    if not ok and not body.get("error"):
+        body["error"] = body.get("message") or "runner failed"
+    return json.dumps(body)
 
 
 def _target_path(value: str) -> Path:
@@ -4279,7 +4300,7 @@ def _tool_http_request(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
     headers = _headers_for_model(payload.get("headers"))
     return json.dumps(
         {
-            "ok": result.returncode in (None, 0) or not result.executed,
+            "ok": _runner_result_ok(result),
             "executed": result.executed,
             "message": result.message if not result.executed else "executed",
             "label": label,
@@ -4358,16 +4379,16 @@ def _tool_idor_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
             "body": payload.get("preview_b") or "",
             "url": payload.get("url_b"),
         }
-    return json.dumps(
+    return _runner_json(
+        result,
         {
             "ok": payload.get("ok", True) if isinstance(payload, dict) else True,
-            "executed": result.executed,
             "signal": bool(payload.get("signal")) if isinstance(payload, dict) else False,
             "verdict": payload.get("verdict") if isinstance(payload, dict) else None,
             "reason": payload.get("reason") if isinstance(payload, dict) else "",
             "detail": payload,
             "message": result.message,
-        }
+        },
     )
 
 
@@ -4406,8 +4427,8 @@ def _tool_extract_page(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
     if isinstance(payload, dict):
-        return json.dumps({"ok": payload.get("ok", True), "executed": result.executed, **payload})
-    return json.dumps({"ok": True, "executed": result.executed, "detail": payload})
+        return _runner_json(result, payload if isinstance(payload, dict) else {"detail": payload})
+    return _runner_json(result, {"detail": payload})
 
 
 def _tool_detect_login(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
@@ -4494,16 +4515,16 @@ def _tool_session_bootstrap(args: dict[str, Any], *, approve_fn: ApproveFn | Non
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps(
+    return _runner_json(
+        result,
         {
             "ok": payload.get("ok", True) if isinstance(payload, dict) else True,
-            "executed": result.executed,
             "signal": bool(payload.get("signal")) if isinstance(payload, dict) else False,
             "needs_setup": bool(payload.get("needs_setup")) if isinstance(payload, dict) else False,
             "reason": payload.get("reason") if isinstance(payload, dict) else "",
             "detail": payload,
             "message": result.message,
-        }
+        },
     )
 
 
@@ -4536,15 +4557,14 @@ def _tool_discover_paths(args: dict[str, Any], *, approve_fn: ApproveFn | None) 
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps(
+    return _runner_json(
+        result,
         {
-            "ok": True,
-            "executed": result.executed,
             "signal": bool(payload.get("signal")),
             "reason": payload.get("reason") or "",
             "detail": payload,
             "message": result.message,
-        }
+        },
     )
 
 
@@ -4929,15 +4949,14 @@ def _tool_xxe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps(
+    return _runner_json(
+        result,
         {
-            "ok": True,
-            "executed": result.executed,
             "signal": bool(payload.get("signal")),
             "reason": payload.get("reason") or "",
             "detail": payload,
             "message": result.message,
-        }
+        },
     )
 
 
@@ -4966,7 +4985,7 @@ def _tool_jwt_active(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps({"ok": True, "executed": result.executed, **payload})
+    return _runner_json(result, payload if isinstance(payload, dict) else {"detail": payload})
 
 
 def _tool_oauth(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
@@ -4993,7 +5012,7 @@ def _tool_oauth(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps({"ok": True, "executed": result.executed, **payload})
+    return _runner_json(result, payload if isinstance(payload, dict) else {"detail": payload})
 
 
 def _tool_race_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
@@ -5032,15 +5051,14 @@ def _tool_race_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps(
+    return _runner_json(
+        result,
         {
-            "ok": True,
-            "executed": result.executed,
             "signal": bool(payload.get("signal")),
             "reason": payload.get("reason") or "",
             "detail": payload,
             "message": result.message,
-        }
+        },
     )
 
 
@@ -5072,15 +5090,14 @@ def _tool_websocket_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None)
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps(
+    return _runner_json(
+        result,
         {
-            "ok": True,
-            "executed": result.executed,
             "signal": bool(payload.get("signal")),
             "reason": payload.get("reason") or "",
             "detail": payload,
             "message": result.message,
-        }
+        },
     )
 
 
@@ -5105,7 +5122,7 @@ def _tool_mobsf_upload(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps({"ok": payload.get("ok", True), "executed": result.executed, **payload})
+    return _runner_json(result, payload if isinstance(payload, dict) else {"detail": payload})
 
 
 def _tool_mobsf_scan(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
@@ -5128,7 +5145,7 @@ def _tool_mobsf_scan(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps({"ok": payload.get("ok", True), "executed": result.executed, **payload})
+    return _runner_json(result, payload if isinstance(payload, dict) else {"detail": payload})
 
 
 def _tool_frida_run_script(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
@@ -5156,7 +5173,7 @@ def _tool_frida_run_script(args: dict[str, Any], *, approve_fn: ApproveFn | None
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps({"ok": payload.get("ok", True), "executed": result.executed, **payload})
+    return _runner_json(result, payload if isinstance(payload, dict) else {"detail": payload})
 
 
 def _tool_objection_explore(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
@@ -5177,7 +5194,7 @@ def _tool_objection_explore(args: dict[str, Any], *, approve_fn: ApproveFn | Non
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps({"ok": payload.get("ok", True), "executed": result.executed, **payload})
+    return _runner_json(result, payload if isinstance(payload, dict) else {"detail": payload})
 
 
 def _tool_browser_capture_session(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
@@ -5216,8 +5233,8 @@ def _tool_browser_capture_session(args: dict[str, Any], *, approve_fn: ApproveFn
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
     if isinstance(payload, dict):
-        return json.dumps({"ok": payload.get("ok", True), "executed": result.executed, **payload})
-    return json.dumps({"ok": True, "executed": result.executed, "detail": payload})
+        return _runner_json(result, payload if isinstance(payload, dict) else {"detail": payload})
+    return _runner_json(result, {"detail": payload})
 
 
 def _tool_browser(
@@ -5325,7 +5342,7 @@ def _tool_browser(
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps({"ok": payload.get("ok", True), "executed": result.executed, **payload})
+    return _runner_json(result, payload if isinstance(payload, dict) else {"detail": payload})
 
 
 def _tool_import_burp_xml(args: dict[str, Any]) -> str:
@@ -5509,7 +5526,7 @@ def _tool_analyze_js(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
             eps.append(Endpoint(url=u, source="js", params=[]))
     if eps:
         HuntMemory(target).upsert_endpoints(eps[:120], host=host_from_target(source) if is_url else "")
-    return json.dumps({"ok": True, "executed": result.executed, **payload})
+    return _runner_json(result, payload if isinstance(payload, dict) else {"detail": payload})
 
 
 def _tool_mine_params(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
@@ -5534,7 +5551,7 @@ def _tool_mine_params(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> 
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps({"ok": True, "executed": result.executed, **payload})
+    return _runner_json(result, payload if isinstance(payload, dict) else {"detail": payload})
 
 
 def _tool_graphql_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
@@ -5561,7 +5578,7 @@ def _tool_graphql_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps({"ok": True, "executed": result.executed, **payload})
+    return _runner_json(result, payload if isinstance(payload, dict) else {"detail": payload})
 
 
 def _tool_import_har(args: dict[str, Any]) -> str:
@@ -5604,7 +5621,7 @@ def _tool_cors_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps({"ok": True, "executed": result.executed, **payload})
+    return _runner_json(result, payload if isinstance(payload, dict) else {"detail": payload})
 
 
 def _tool_open_redirect(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
@@ -5631,7 +5648,7 @@ def _tool_open_redirect(args: dict[str, Any], *, approve_fn: ApproveFn | None) -
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps({"ok": True, "executed": result.executed, **payload})
+    return _runner_json(result, payload if isinstance(payload, dict) else {"detail": payload})
 
 
 def _tool_analyze_headers(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
@@ -5656,7 +5673,7 @@ def _tool_analyze_headers(args: dict[str, Any], *, approve_fn: ApproveFn | None)
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps({"ok": True, "executed": result.executed, **payload})
+    return _runner_json(result, payload if isinstance(payload, dict) else {"detail": payload})
 
 
 def _tool_read_image(args: dict[str, Any]) -> str:
@@ -5781,15 +5798,14 @@ def _tool_secrets_scan(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
             EvidenceStore(target).save("secrets_scan.json", json.dumps(payload, indent=2))
         except StrictRedactError:
             pass
-    return json.dumps(
+    return _runner_json(
+        result,
         {
-            "ok": True,
-            "executed": result.executed,
             "hit_count": payload.get("hit_count", 0),
             "kinds": payload.get("kinds") or [],
             "findings": payload.get("findings") or [],
             "message": result.message,
-        }
+        },
     )
 
 
@@ -5818,15 +5834,14 @@ def _tool_sqli_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> s
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps(
+    return _runner_json(
+        result,
         {
-            "ok": True,
-            "executed": result.executed,
             "signal": bool(payload.get("signal")),
             "reason": payload.get("reason") or "",
             "detail": payload,
             "message": result.message,
-        }
+        },
     )
 
 
@@ -5855,15 +5870,14 @@ def _tool_xss_probe(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> st
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps(
+    return _runner_json(
+        result,
         {
-            "ok": True,
-            "executed": result.executed,
             "signal": bool(payload.get("signal")),
             "reason": payload.get("reason") or "",
             "detail": payload,
             "message": result.message,
-        }
+        },
     )
 
 
@@ -5900,15 +5914,14 @@ def _tool_second_order_xss(args: dict[str, Any], *, approve_fn: ApproveFn | None
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps(
+    return _runner_json(
+        result,
         {
-            "ok": True,
-            "executed": result.executed,
             "signal": bool(payload.get("signal")),
             "reason": payload.get("reason") or "",
             "detail": payload,
             "message": result.message,
-        }
+        },
     )
 
 
@@ -5986,15 +5999,14 @@ def _tool_brute_login(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> 
         payload = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
         payload = {"raw": result.stdout}
-    return json.dumps(
+    return _runner_json(
+        result,
         {
-            "ok": True,
-            "executed": result.executed,
             "success": bool(payload.get("success")),
             "tried": payload.get("tried"),
             "message": result.message,
             "detail": payload,
-        }
+        },
     )
 
 

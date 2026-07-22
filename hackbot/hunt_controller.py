@@ -873,33 +873,36 @@ def run_hunt(
 
     if state.stop_reason not in {"paused_for_operator", "needs_setup", "paused"}:
         state.phase = "done"
-    # Always attempt chain suggestions from whatever we learned
-    try:
-        from .chain_builder import build_chains
 
-        chains = build_chains(target_dir)
-        acts.append({"module": "build_chains", "result": {"count": chains.get("count")}})
-        for ch in _hypotheses_from_chains(target_dir, host)[:5]:
-            # Record as suggested next acts in summary only (budget done)
-            acts.append({"module": "chain_hyp", "result": {"module": ch.module, "url": ch.url}})
-    except Exception:  # noqa: BLE001
-        chains = {}
+    operator_stopped = bool(_STOP_REQUESTED) or (
+        (state.stop_reason or "") == "operator /hunt stop"
+    )
+    chains: dict[str, Any] = {}
+    learned: dict[str, Any] = {}
+    if not operator_stopped:
+        # Skip post-loop mutating/side work when the operator hit stop.
+        try:
+            from .chain_builder import build_chains
 
-    try:
-        from .learning import ingest_from_hunt
+            chains = build_chains(target_dir)
+            acts.append({"module": "build_chains", "result": {"count": chains.get("count")}})
+            for ch in _hypotheses_from_chains(target_dir, host)[:5]:
+                acts.append(
+                    {"module": "chain_hyp", "result": {"module": ch.module, "url": ch.url}}
+                )
+        except Exception:  # noqa: BLE001
+            chains = {}
 
-        learned = ingest_from_hunt(target_dir, program=Path(target_dir).name)
-        acts.append({"module": "learn_ingest", "result": learned})
-    except Exception:  # noqa: BLE001
-        learned = {}
+        try:
+            from .learning import ingest_from_hunt
+
+            learned = ingest_from_hunt(target_dir, program=Path(target_dir).name)
+            acts.append({"module": "learn_ingest", "result": learned})
+        except Exception:  # noqa: BLE001
+            learned = {}
 
     # Auto submit-ready drafts (Bugcrowd/VRT by default) — skip if operator stopped.
-    if (
-        findings_logged
-        and approve_session
-        and not _STOP_REQUESTED
-        and (state.stop_reason or "") != "operator /hunt stop"
-    ):
+    if findings_logged and approve_session and not operator_stopped:
         report_plat = (os.environ.get("HACKBOT_REPORT_PLATFORM") or "bugcrowd").strip().lower()
         for fid in findings_logged[:3]:
             try:

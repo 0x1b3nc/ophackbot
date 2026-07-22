@@ -17,29 +17,49 @@ from urllib.request import (
     build_opener,
 )
 
-def _gate(target_dir: Path, host_or_url: str, *, action: str, force: bool) -> None:
-    # Local import avoids import cycles with runners.*
+def _cancel_requested() -> bool:
     try:
         from .turn_bus import turn_cancel_requested
 
         if turn_cancel_requested():
-            raise PermissionError("cancelled — HTTP request aborted")
-    except PermissionError:
-        raise
+            return True
     except Exception:  # noqa: BLE001
         pass
     try:
         from . import hunt_controller
 
         if bool(getattr(hunt_controller, "_STOP_REQUESTED", False)):
-            raise PermissionError("hunt stop — HTTP request aborted")
-    except PermissionError:
-        raise
+            return True
     except Exception:  # noqa: BLE001
         pass
+    return False
+
+
+def _gate(target_dir: Path, host_or_url: str, *, action: str, force: bool) -> None:
+    if _cancel_requested():
+        raise PermissionError("cancelled — HTTP request aborted")
+    # Local import avoids import cycles with runners.*
     from .runners.base import require_in_scope
 
     require_in_scope(target_dir, host_or_url, action=action, force=force)
+
+
+def _read_body_cancellable(fp: Any, *, max_bytes: int | None = None, chunk: int = 65536) -> bytes:
+    """Read response body in chunks so cancel/stop can abort mid-download."""
+    buf = bytearray()
+    while True:
+        if _cancel_requested():
+            raise PermissionError("cancelled — HTTP read aborted")
+        try:
+            piece = fp.read(chunk)
+        except Exception:  # noqa: BLE001
+            break
+        if not piece:
+            break
+        buf.extend(piece)
+        if max_bytes is not None and len(buf) >= max_bytes:
+            return bytes(buf[:max_bytes])
+    return bytes(buf)
 
 
 @dataclass
@@ -132,8 +152,10 @@ def scoped_urlopen(
     opener = build_opener(handler)
     try:
         with opener.open(req, timeout=timeout) as resp:
+            if _cancel_requested():
+                raise PermissionError("cancelled — HTTP request aborted")
             status = int(getattr(resp, "status", None) or resp.getcode())
-            raw = resp.read()
+            raw = _read_body_cancellable(resp)
             final = getattr(resp, "geturl", lambda: url)()
             return ScopedResponse(
                 status=status,
@@ -150,7 +172,9 @@ def scoped_urlopen(
             raise
         raw = b""
         try:
-            raw = exc.read()
+            raw = _read_body_cancellable(exc)
+        except PermissionError:
+            raise
         except Exception:  # noqa: BLE001
             raw = b""
         return ScopedResponse(
@@ -234,25 +258,26 @@ def scoped_fetch_no_redirect(
     )
     try:
         with opener.open(req, timeout=timeout) as resp:
+            if _cancel_requested():
+                raise PermissionError("cancelled — HTTP request aborted")
             status = int(getattr(resp, "status", None) or resp.getcode())
-            raw = resp.read()
+            raw = _read_body_cancellable(resp, max_bytes=max_bytes)
             final = getattr(resp, "geturl", lambda: full)()
-            body = raw[:max_bytes] if max_bytes is not None else raw
             return ScopedResponse(
                 status=status,
                 headers=resp.headers,
-                body=body,
+                body=raw,
                 url=str(final or full),
                 hops=list(hops),
             )
     except HTTPError as exc:
         raw = b""
         try:
-            raw = exc.read()
+            raw = _read_body_cancellable(exc, max_bytes=max_bytes)
+        except PermissionError:
+            raise
         except Exception:  # noqa: BLE001
             raw = b""
-        if max_bytes is not None:
-            raw = raw[:max_bytes]
         return ScopedResponse(
             status=int(exc.code),
             headers=exc.headers,
@@ -312,6 +337,10 @@ def attach_playwright_scope_guard(
         req_url = str(getattr(route.request, "url", "") or "")
         if not req_url or req_url.startswith(("data:", "blob:", "about:", "chrome:")):
             route.continue_()
+            return
+        if _cancel_requested():
+            hits.append({"url": req_url, "error": "cancelled"})
+            route.abort("blockedbyclient")
             return
         try:
             _gate(target_dir, req_url, action=action or "browser request", force=force)
