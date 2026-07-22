@@ -5,11 +5,12 @@ Run: ``python -m hackbot tui``
 Layout: status · scrollable chat · full-width input · footer.
 Final replies use Markdown; live stream (think/tool/plan) stays plain text.
 
-Copy (important):
-  - Default ``mouse=False`` so the **terminal** can select + Ctrl+Shift+C / right-click
-    (Textual mouse capture was eating native copy in Windows Terminal / Cursor).
-  - Wheel scroll: ``HACKBOT_TUI_MOUSE=1`` (then use F2 / Ctrl+Y / ``/copy`` — WT steals Ctrl+Shift+C).
-  - Always: ``F2`` or ``Ctrl+Y`` copies last reply; ``Ctrl+Shift+Y`` copies full chat; ``/copy``.
+Copy:
+  Prefer **click a message**, ``F2`` / ``Ctrl+Y``, or ``/copy`` — these use the
+  stored plain text (no terminal cell-padding gaps, full content even if the
+  window wrapped the display). Native terminal select+copy still works with
+  mouse off, but pads short lines with spaces; run ``/cleanclip`` after that.
+  Wheel: ``HACKBOT_TUI_MOUSE=1``.
 
 After Ctrl+C stop, cancel flags clear so the next prompt runs again.
 PgUp/PgDn work even while the input is focused. Auto-scroll only when already at bottom.
@@ -111,6 +112,7 @@ def start_tui() -> int:
         from textual.app import App, ComposeResult
         from textual.binding import Binding
         from textual.containers import Vertical, VerticalScroll
+        from textual.events import Click
         from textual.widgets import Footer, Input, Markdown, OptionList, Static
         from textual.widgets.option_list import Option
     except ImportError:
@@ -118,6 +120,36 @@ def start_tui() -> int:
         return 1
 
     import io
+
+    from .clipboard import clean_clipboard
+
+    class CopyableStatic(Static):
+        """Static that stores plain source text for clean click-to-copy."""
+
+        def __init__(self, renderable: str, *, plain: str, **kwargs) -> None:  # noqa: ANN003
+            super().__init__(renderable, **kwargs)
+            self.plain_source = plain
+
+        def on_click(self, event: Click) -> None:
+            event.stop()
+            app = self.app
+            copy_fn = getattr(app, "copy_plain", None)
+            if callable(copy_fn):
+                copy_fn(self.plain_source, label="message")
+
+    class CopyableMarkdown(Markdown):
+        """Markdown bubble with plain source for clean click-to-copy."""
+
+        def __init__(self, markdown: str, *, plain: str, **kwargs) -> None:  # noqa: ANN003
+            super().__init__(markdown, **kwargs)
+            self.plain_source = plain
+
+        def on_click(self, event: Click) -> None:
+            event.stop()
+            app = self.app
+            copy_fn = getattr(app, "copy_plain", None)
+            if callable(copy_fn):
+                copy_fn(self.plain_source, label="message")
 
     os.environ.setdefault("HACKBOT_PLAIN", "1")
     set_tui_console_mute(True)
@@ -226,6 +258,7 @@ def start_tui() -> int:
             Binding("ctrl+shift+y", "copy_all", "copy all", show=True, priority=True),
             Binding("ctrl+shift+c", "copy_selection", "copy sel", show=False, priority=True),
             Binding("ctrl+insert", "copy_selection", "copy", show=False, priority=True),
+            Binding("f3", "cleanclip", "cleanclip", show=False, priority=True),
             # priority=True → works even when Input has focus
             Binding("pageup", "scroll_up", "PgUp", show=True, priority=True),
             Binding("pagedown", "scroll_down", "PgDn", show=True, priority=True),
@@ -256,7 +289,7 @@ def start_tui() -> int:
                 with Vertical(id="composer"):
                     yield OptionList(id="picker")
                     yield Input(
-                        placeholder="Message…  (/ cmds · PgUp/PgDn · F2 copy · /copy)",
+                        placeholder="Message…  (click msg to copy · F2 · /copy · /cleanclip)",
                         id="prompt",
                     )
             yield Footer()
@@ -264,20 +297,19 @@ def start_tui() -> int:
         def on_mount(self) -> None:
             live_feed.set_feed_sink(self._mark_feed)
             self.set_interval(0.1, self._pump_feed)
-            mouse_on = _tui_mouse_enabled()
-            copy_hint = (
-                "Mouse **on** (wheel) — copy with `F2` / `Ctrl+Y` / `/copy` "
-                "(Windows Terminal steals Ctrl+Shift+C). "
-                "Native select: `HACKBOT_TUI_MOUSE=0`."
-                if mouse_on
-                else "Mouse **off** — select text with the terminal, then copy "
-                "(Ctrl+Shift+C / right-click). Wheel: `HACKBOT_TUI_MOUSE=1`. "
-                "Or press `F2` / `Ctrl+Y` / type `/copy`."
-            )
             self._append_md(
                 "**hackbot** — `/provider` `/model` `/effort` `/target`\n\n"
-                f"_Scroll: PgUp/PgDn. {copy_hint} "
-                "Stop: `ctrl+c` then type a new prompt — it will start again._"
+                "_**Copy (clean):** `F2` / `Ctrl+Y` / `/copy` — full stored text, "
+                "no padding gaps, no wrap cut-off. "
+                "Native select+copy pads empty cells → then run `/cleanclip` (or `F3`). "
+                + (
+                    "Click a message also copies. "
+                    if _tui_mouse_enabled()
+                    else "Click-to-copy: `HACKBOT_TUI_MOUSE=1`. "
+                )
+                + "Scroll: PgUp/PgDn"
+                + (" · wheel on" if _tui_mouse_enabled() else "")
+                + ". Stop: `ctrl+c` then send a new prompt._"
             )
             self.query_one("#prompt", Input).focus()
 
@@ -413,7 +445,9 @@ def start_tui() -> int:
             chat = self._chat()
             self._msg_i += 1
             line = f"› {text}"
-            chat.mount(Static(line, classes="msg-user", id=f"u{self._msg_i}"))
+            chat.mount(
+                CopyableStatic(line, plain=line, classes="msg-user", id=f"u{self._msg_i}")
+            )
             self._chat_plain.append(line)
             self._maybe_scroll_end(force=True)
 
@@ -422,7 +456,11 @@ def start_tui() -> int:
             chat = self._chat()
             self._msg_i += 1
             plain = text or "(empty)"
-            chat.mount(Markdown(plain, classes="msg-md", id=f"m{self._msg_i}"))
+            chat.mount(
+                CopyableMarkdown(
+                    plain, plain=plain, classes="msg-md", id=f"m{self._msg_i}"
+                )
+            )
             self._last_plain = plain
             self._chat_plain.append(plain)
             if len(self._chat_plain) > 300:
@@ -431,6 +469,17 @@ def start_tui() -> int:
 
         def _append_bot(self, text: str) -> None:
             self._append_md(text)
+
+        def copy_plain(self, text: str, *, label: str = "text") -> None:
+            """Copy stored plain source (not terminal cells)."""
+            if self._copy_text(text):
+                self.notify(
+                    f"copied {len((text or '').strip())} chars ({label})",
+                    severity="information",
+                    timeout=2,
+                )
+            else:
+                self.notify("copy failed", severity="error", timeout=3)
 
         def _copy_text(self, text: str) -> bool:
             """Best-effort clipboard (OS-native first, then OSC-52, then file)."""
@@ -447,22 +496,31 @@ def start_tui() -> int:
             return ok
 
         def action_copy_selection(self) -> None:
+            # Prefer Textual selection (clean) → else last stored reply (full plain).
             selected = None
             try:
                 selected = self.screen.get_selected_text()
             except Exception:  # noqa: BLE001
                 selected = None
-            text = (selected or "").strip() or (self._last_plain or "").strip()
-            if not text:
+            if (selected or "").strip():
+                text = selected or ""
+                kind = "selection"
+            else:
+                text = self._last_plain or ""
+                kind = "last reply"
+            if not (text or "").strip():
                 self.notify(
-                    "nothing to copy — select text, or use F2/Ctrl+Y after a reply",
+                    "nothing to copy — click a message, or F2 after a reply",
                     severity="warning",
                     timeout=4,
                 )
                 return
             if self._copy_text(text):
-                kind = "selection" if (selected or "").strip() else "last reply"
-                self.notify(f"copied {len(text)} chars ({kind})", severity="information", timeout=2)
+                self.notify(
+                    f"copied {len(text.strip())} chars ({kind})",
+                    severity="information",
+                    timeout=2,
+                )
             else:
                 self.notify("copy failed", severity="error", timeout=3)
 
@@ -478,6 +536,17 @@ def start_tui() -> int:
                 self.notify("copied full chat", severity="information", timeout=2)
             else:
                 self.notify("copy failed", severity="warning", timeout=3)
+
+        def action_cleanclip(self) -> None:
+            ok, method, before, after = clean_clipboard()
+            if ok:
+                self.notify(
+                    f"cleaned clipboard {before}→{after} chars ({method})",
+                    severity="information",
+                    timeout=3,
+                )
+            else:
+                self.notify("cleanclip: clipboard empty or unreadable", severity="warning", timeout=3)
 
         def _hide_picker(self) -> None:
             picker = self.query_one("#picker", OptionList)
@@ -552,6 +621,9 @@ def start_tui() -> int:
                 return
             if low in {"/copy sel", "/copy selection", "/copy s"}:
                 self.action_copy_selection()
+                return
+            if low in {"/cleanclip", "/clipclean", "/copy clean"}:
+                self.action_cleanclip()
                 return
 
             self._append_user(text)
