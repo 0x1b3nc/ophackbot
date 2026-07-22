@@ -387,6 +387,8 @@ def _tool_continue_prompt(
             "worth continuing (budget/dead ends).",
             "If a result includes saved_body / saved_path, use read_file on that "
             "path for the full JS/body — do not assume body_preview is complete.",
+            "http_request results include a headers object — use it for Server/"
+            "tech disclosure; do not invent that headers were missing.",
             "Do NOT claim tools are missing.",
         ]
     chunks: list[str] = [*instructions, ""]
@@ -524,7 +526,9 @@ curl/wget/httpx against bounty targets — that skips SCOPE/approve/redaction.
 {"tool": "http_request", "args": {"url": "https://example.com/api/", "method": "GET", "approve": true}}
 ```
 
-Hackbot runs the block and feeds you the result. target_dir is auto-filled when a
+Hackbot runs the block and feeds you the result (status, headers with secrets
+redacted, body_preview, optional saved_body). HEAD returns headers even with an
+empty body — do not claim headers were omitted. target_dir is auto-filled when a
 target is active.
 
 Common tools: http_request, map_surface, scope_check, capabilities, run_tool,

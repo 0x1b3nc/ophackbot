@@ -18,6 +18,29 @@ from .base import RunnerResult, require_in_scope
 
 MAX_BODY_STORE = 200_000
 PREVIEW_CHARS = 2000
+_SENSITIVE_RESPONSE_HEADERS = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "x-auth-token",
+    }
+)
+
+
+def mask_response_headers(headers: dict[str, str], *, limit: int = 60) -> dict[str, str]:
+    """Redact secrets; keep Server/X-Powered-By/etc. for disclosure hunts."""
+    out: dict[str, str] = {}
+    for i, (key, value) in enumerate((headers or {}).items()):
+        if i >= limit:
+            break
+        if str(key).lower() in _SENSITIVE_RESPONSE_HEADERS:
+            out[str(key)] = "***"
+        else:
+            out[str(key)] = redact_text(str(value)[:800])
+    return out
 
 
 def http_request(
@@ -143,6 +166,7 @@ def http_request(
         except Exception:  # noqa: BLE001
             pass
 
+    masked_response_headers = mask_response_headers(resp_headers)
     result_obj: dict[str, Any] = {
         "ok": not err_msg,
         "method": method,
@@ -155,7 +179,8 @@ def http_request(
         "elapsed_ms": round(elapsed_ms, 1),
         "length": len(resp_body),
         "sha256": body_hash,
-        "headers": redact_text(json.dumps(dict(list(resp_headers.items())[:40]))),
+        # Dict (not JSON string) so tools/models can read Server / tech headers.
+        "headers": masked_response_headers,
         "body_preview": redact_text(resp_body[:PREVIEW_CHARS]),
         "body": resp_body,
         "error": err_msg,

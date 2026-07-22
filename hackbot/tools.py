@@ -243,7 +243,10 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "http_request",
         "description": (
             "Authenticated HTTP request using program headers + session A/B. "
-            "Default approve=false (dry-run). Stores response for assert_diff by label."
+            "Returns status, response headers (secrets redacted), body_preview, "
+            "and optional saved_body path. Default approve=false (dry-run). "
+            "Stores response for assert_diff by label. Prefer GET when you need "
+            "headers+body; HEAD still returns headers."
         ),
         "parameters": {
             "type": "object",
@@ -3500,6 +3503,20 @@ def _cache_key(target_dir: Path, label: str) -> str:
     return f"{target_dir.resolve()}::{label}"
 
 
+def _headers_for_model(raw: Any) -> dict[str, str]:
+    """Normalize runner headers (dict or legacy JSON string) for tool results."""
+    if isinstance(raw, dict):
+        return {str(k): str(v)[:800] for k, v in list(raw.items())[:60]}
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, dict):
+            return {str(k): str(v)[:800] for k, v in list(parsed.items())[:60]}
+    return {}
+
+
 def _tool_http_request(args: dict[str, Any], *, approve_fn: ApproveFn | None) -> str:
     target = _target_path(args["target_dir"])
     url = args["url"]
@@ -3551,8 +3568,9 @@ def _tool_http_request(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
                 safe_name,
                 json.dumps(
                     {k: payload.get(k) for k in (
-                        "method", "url", "session", "label", "status",
-                        "elapsed_ms", "length", "sha256", "body_preview", "error",
+                        "method", "url", "final_url", "session", "label", "status",
+                        "elapsed_ms", "length", "sha256", "headers",
+                        "body_preview", "error",
                     )},
                     indent=2,
                 ),
@@ -3563,8 +3581,9 @@ def _tool_http_request(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
         # truncates and made Codex think the file was incomplete).
         body_full = str(payload.get("body") or "")
         url_l = str(payload.get("url") or url or "").lower()
+        hdrs_blob = payload.get("headers") or {}
         looks_js = url_l.endswith(".js") or ".js?" in url_l or (
-            "javascript" in str(payload.get("headers") or "").lower()
+            "javascript" in str(hdrs_blob).lower()
         )
         if body_full and (looks_js or len(body_full) > 4000):
             try:
@@ -3584,21 +3603,37 @@ def _tool_http_request(args: dict[str, Any], *, approve_fn: ApproveFn | None) ->
                 saved_body = ""
 
     preview_cap = 4000 if looks_js or saved_body else 1500
+    hops = payload.get("redirect_hops") or []
+    if isinstance(hops, list) and len(hops) > 6:
+        hops = hops[:6]
+    headers = _headers_for_model(payload.get("headers"))
     return json.dumps(
         {
             "ok": result.returncode in (None, 0) or not result.executed,
             "executed": result.executed,
             "message": result.message if not result.executed else "executed",
             "label": label,
+            "method": payload.get("method") or args.get("method") or "GET",
+            "url": payload.get("url") or url,
+            "final_url": payload.get("final_url") or payload.get("url") or url,
             "status": payload.get("status"),
+            "elapsed_ms": payload.get("elapsed_ms"),
             "length": payload.get("length"),
             "sha256": payload.get("sha256"),
+            "headers": headers,
+            "redirect_hops": hops,
             "body_preview": (payload.get("body_preview") or "")[:preview_cap],
             "saved_body": saved_body,
             "hint": (
                 f"full body saved — call read_file path={saved_body}"
                 if saved_body
-                else ""
+                else (
+                    "HEAD has no body; headers are in the headers field. "
+                    "Use GET if you also need a response body."
+                    if str(payload.get("method") or args.get("method") or "GET").upper()
+                    == "HEAD"
+                    else ""
+                )
             ),
             "error": payload.get("error") or result.stderr,
         }
