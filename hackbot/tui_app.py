@@ -4,14 +4,18 @@ Run: ``python -m hackbot tui``
 
 Layout: status · scrollable chat · full-width input · footer.
 Final replies use Markdown; live stream (think/tool/plan) stays plain text.
-Wheel scroll works (``mouse=True``). ``ctrl+y`` / ``ctrl+shift+y`` copy text.
+Wheel scroll works (``mouse=True``). Copy: select + ``ctrl+shift+c`` / ``ctrl+y``.
+After Ctrl+C stop, cancel flags clear so the next prompt runs again.
 PgUp/PgDn work even while the input is focused. Auto-scroll only when already at bottom.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, TextIO
@@ -202,6 +206,9 @@ def start_tui() -> int:
             Binding("f1", "show_help", "help", show=True),
             Binding("ctrl+y", "copy_last", "copy last", show=True),
             Binding("ctrl+shift+y", "copy_all", "copy all", show=True),
+            # Terminal "copy selection" often fails under Textual — bind our own.
+            Binding("ctrl+shift+c", "copy_selection", "copy sel", show=True, priority=True),
+            Binding("ctrl+insert", "copy_selection", "copy", show=False, priority=True),
             # priority=True → works even when Input has focus
             Binding("pageup", "scroll_up", "PgUp", show=True, priority=True),
             Binding("pagedown", "scroll_down", "PgDn", show=True, priority=True),
@@ -214,6 +221,8 @@ def start_tui() -> int:
         def __init__(self) -> None:
             super().__init__()
             self._busy = False
+            self._turn_gen = 0
+            self._stop_shown = False
             self._picker_cmds: list[str] = []
             self._msg_i = 0
             self._last_plain: str = ""
@@ -240,9 +249,9 @@ def start_tui() -> int:
             self.set_interval(0.1, self._pump_feed)
             self._append_md(
                 "**hackbot** — `/provider` `/model` `/effort` `/target`\n\n"
-                "_Scroll: mouse wheel · PgUp/PgDn · Ctrl+U/D. "
-                "Copy: `ctrl+y` last reply · `ctrl+shift+y` full chat. "
-                "Auto-scroll pauses while you read history._"
+                "_Scroll: mouse wheel · PgUp/PgDn. "
+                "Copy: select text then `ctrl+shift+c` (or `ctrl+y` last / `ctrl+shift+y` all). "
+                "Stop: `ctrl+c` then type a new prompt — it will start again._"
             )
             self.query_one("#prompt", Input).focus()
 
@@ -398,9 +407,16 @@ def start_tui() -> int:
             self._append_md(text)
 
         def _copy_text(self, text: str) -> bool:
-            data = (text or "").strip()
-            if not data:
+            """Best-effort clipboard for Linux/Windows terminals under Textual."""
+            data = text or ""
+            if not data.strip():
                 return False
+            # 1) Textual OSC-52 (works in many modern terminals / Windows Terminal)
+            try:
+                self.copy_to_clipboard(data)
+            except Exception:  # noqa: BLE001
+                pass
+            # 2) pyperclip
             try:
                 import pyperclip
 
@@ -408,37 +424,67 @@ def start_tui() -> int:
                 return True
             except Exception:  # noqa: BLE001
                 pass
+            # 3) OS clipboard CLIs (Kali / Linux desktop)
+            for cmd in (
+                ["xclip", "-selection", "clipboard"],
+                ["xsel", "--clipboard", "--input"],
+                ["wl-copy"],
+                ["clip.exe"],  # WSL
+            ):
+                if not shutil.which(cmd[0]):
+                    continue
+                try:
+                    subprocess.run(
+                        cmd,
+                        input=data.encode("utf-8"),
+                        check=True,
+                        timeout=3,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return True
+                except Exception:  # noqa: BLE001
+                    continue
+            # 4) Always persist a fallback file the operator can open/cat
             try:
-                import base64
-
-                b64 = base64.b64encode(data.encode("utf-8")).decode("ascii")
-                # Write to the real tty, not redirected stdout
-                sys.__stdout__.write(f"\033]52;c;{b64}\a")  # type: ignore[union-attr]
-                sys.__stdout__.flush()  # type: ignore[union-attr]
+                path = Path(tempfile.gettempdir()) / "hackbot-clipboard.txt"
+                path.write_text(data, encoding="utf-8")
+                self.notify(f"saved copy file: {path}", severity="warning", timeout=6)
                 return True
             except Exception:  # noqa: BLE001
                 return False
+
+        def action_copy_selection(self) -> None:
+            selected = None
+            try:
+                selected = self.screen.get_selected_text()
+            except Exception:  # noqa: BLE001
+                selected = None
+            text = (selected or "").strip() or (self._last_plain or "").strip()
+            if not text:
+                self.notify("nothing selected — select text or use ctrl+y", severity="warning", timeout=3)
+                return
+            if self._copy_text(text):
+                self.notify(
+                    f"copied {len(text)} chars" + (" (selection)" if selected else " (last reply)"),
+                    severity="information",
+                    timeout=2,
+                )
+            else:
+                self.notify("copy failed", severity="error", timeout=3)
 
         def action_copy_last(self) -> None:
             if self._copy_text(self._last_plain):
                 self.notify("copied last reply", severity="information", timeout=2)
             else:
-                self.notify(
-                    "clipboard failed — use ctrl+shift+y or copy from saved evidence files",
-                    severity="warning",
-                    timeout=4,
-                )
+                self.notify("copy failed", severity="warning", timeout=3)
 
         def action_copy_all(self) -> None:
             blob = "\n\n".join(self._chat_plain).strip()
             if self._copy_text(blob):
                 self.notify("copied full chat", severity="information", timeout=2)
             else:
-                self.notify(
-                    "clipboard failed — use ctrl+y on shorter replies",
-                    severity="warning",
-                    timeout=4,
-                )
+                self.notify("copy failed", severity="warning", timeout=3)
 
         def _hide_picker(self) -> None:
             picker = self.query_one("#picker", OptionList)
@@ -486,9 +532,21 @@ def start_tui() -> int:
             text = (event.value or "").strip()
             event.input.value = ""
             self._hide_picker()
-            if not text or self._busy:
+            if not text:
                 return
+            # If a turn is running, Ctrl+C-style interrupt then queue this prompt.
+            if self._busy:
+                self.action_interrupt()
             self._submit(text)
+
+        def _reset_cancel_rails(self) -> None:
+            """Must run before every new turn — otherwise post-Ctrl+C stays cancelled."""
+            try:
+                from .turn_bus import clear_turn_cancel
+
+                clear_turn_cancel()
+            except Exception:  # noqa: BLE001
+                pass
 
         def _submit(self, text: str) -> None:
             self._append_user(text)
@@ -512,47 +570,80 @@ def start_tui() -> int:
                     if result.refresh_status:
                         self._refresh_status()
                     return
+            self._reset_cancel_rails()
+            self._stop_shown = False
+            self._turn_gen += 1
+            gen = self._turn_gen
             self._busy = True
             self._clear_live()
             self._ensure_live_line().update("◌ working…")
             self.query_one("#topbar", Static).update(f"{_status_line()} · working…")
-            self.run_hunt_turn(text)
+            # exclusive=False so a new turn can start after interrupt (stale finish ignored)
+            self.run_hunt_turn(text, gen)
 
-        @work(thread=True, exclusive=True, exit_on_error=False)
-        def run_hunt_turn(self, text: str) -> None:
+        @work(thread=True, exclusive=False, exit_on_error=False)
+        def run_hunt_turn(self, text: str, gen: int) -> None:
             with _silence_stdio():
                 try:
                     answer = run_bridged_turn(text)
                 except Exception as exc:  # noqa: BLE001
                     answer = f"Error: {type(exc).__name__}: {exc}"
-            self.call_from_thread(self._finish_turn, answer or "(empty)")
+            self.call_from_thread(self._finish_turn, answer or "(empty)", gen)
 
-        def _finish_turn(self, answer: str) -> None:
+        def _finish_turn(self, answer: str, gen: int) -> None:
+            # Ignore stale worker after Ctrl+C + new prompt
+            if gen != self._turn_gen:
+                return
             for kind, text in live_feed.drain_pending():
                 self._ingest_live(kind, text)
             self._busy = False
             self._clear_live()
+            # Don't re-print cancelled if we already showed **stop**
+            if self._stop_shown and (answer or "").strip() in {"(cancelled)", "(empty)"}:
+                self._refresh_status()
+                self.query_one("#prompt", Input).focus()
+                return
             self._append_md(answer)
             self._refresh_status()
             self.query_one("#prompt", Input).focus()
 
         def action_interrupt(self) -> None:
             try:
-                from .codex_backend import request_codex_cancel
+                from .turn_bus import get_bus
 
-                request_codex_cancel()
+                bus = get_bus()
+                if bus is not None:
+                    bus.request_interrupt()
+                else:
+                    from . import turn_bus as tb
+                    from .codex_backend import request_codex_cancel
+                    from .hunt_controller import request_stop
+
+                    request_codex_cancel()
+                    request_stop()
+                    tb._GLOBAL_CANCEL.set()
             except Exception:  # noqa: BLE001
-                pass
+                try:
+                    from .codex_backend import request_codex_cancel
+
+                    request_codex_cancel()
+                except Exception:  # noqa: BLE001
+                    pass
+            # Invalidate in-flight finish + free the composer for a new prompt
+            self._turn_gen += 1
             self._busy = False
             self._clear_live()
-            self._append_md("**stop** requested")
+            if not self._stop_shown:
+                self._append_md("**stop** requested — send a new message to continue")
+                self._stop_shown = True
+            self.query_one("#topbar", Static).update(f"{_status_line()} · stopped")
+            self.query_one("#prompt", Input).focus()
 
         def action_show_help(self) -> None:
             self._submit("/help")
 
     try:
-        # mouse=True → wheel scrolls the chat. Copy with ctrl+y (selection is flaky in Textual).
-        # Sticky auto-scroll: only follow new lines when already near the bottom.
+        # mouse=True → wheel + Textual text selection; copy via ctrl+shift+c / ctrl+y.
         HackbotTUI().run(mouse=True)
     finally:
         live_feed.set_feed_sink(None)

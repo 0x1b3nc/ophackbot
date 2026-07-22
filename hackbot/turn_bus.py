@@ -168,3 +168,23 @@ def turn_cancel_requested() -> bool:
         return True
     bus = _BUS
     return bool(bus and bus.cancel_requested())
+
+
+def clear_turn_cancel() -> None:
+    """Clear interrupt flags so the next prompt can run after Ctrl+C / stop."""
+    _GLOBAL_CANCEL.clear()
+    bus = _BUS
+    if bus is not None:
+        bus.clear_cancel()
+    try:
+        from .codex_backend import clear_codex_cancel
+
+        clear_codex_cancel()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from .hunt_controller import clear_stop
+
+        clear_stop()
+    except Exception:  # noqa: BLE001
+        pass
