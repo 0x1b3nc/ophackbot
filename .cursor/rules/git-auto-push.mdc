@@ -1,0 +1,31 @@
+---
+description: This project only — commit and push when a task is finished (no ask)
+alwaysApply: true
+---
+
+# Git — ophackbot / hackbot-kit only
+
+This rule applies **only** to this workspace (`hackbot-kit` / `ophackbot`).
+
+## After finishing a task
+
+When the requested work is done and there are relevant changes:
+
+1. Commit (concise message; exclude secrets and unrelated junk like demo report noise).
+2. Push to the tracked remote branch.
+3. Do **not** ask “quer que eu faça commit/push?” first.
+
+## Still forbidden (same as global rules)
+
+- `git config`, force-push to main/master, `--no-verify` unless explicitly requested
+- Committing secrets / credentials
+- Amending unless the usual amend safety conditions are met
+
+## Other projects
+
+Outside this repo, ignore this file. Follow global rules:
+
+- `C:\Users\boyzi\OneDrive\Documentos\claude-cursor\CURSOR-RULES.md`
+- User rules / `.cursor/rules` in that other workspace
+
+There: **commit/push only when Boyzi asks explicitly** (including the 3-option commit flow when that file applies).
