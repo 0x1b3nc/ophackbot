@@ -1,6 +1,9 @@
-"""hackbot Textual TUI — single scrollable chat (no sidebar, one live stream).
+"""hackbot Textual TUI — full-width chat + native terminal select/copy.
 
 Run: ``python -m hackbot tui``
+
+Layout: status · scrollable chat · full-width input · footer.
+``mouse=False`` so the terminal can select/copy bot output (PgUp/PgDn scroll).
 """
 
 from __future__ import annotations
@@ -95,48 +98,56 @@ def start_tui() -> int:
         TITLE = "hackbot"
         SUB_TITLE = str(Path.cwd())
         ENABLE_COMMAND_PALETTE = False
+        # Full-bleed column: nothing side-padded, input width 100%.
         CSS = f"""
         Screen {{
             background: {_BG};
             color: {_TEXT};
+            layout: vertical;
+            overflow: hidden;
         }}
         #topbar {{
-            dock: top;
             height: 1;
+            width: 100%;
             background: {_PANEL};
             color: {_INFO};
             padding: 0 1;
         }}
         #chat {{
             height: 1fr;
+            width: 100%;
             background: {_BG};
             padding: 0 1;
-            scrollbar-size: 1 1;
+            scrollbar-size-vertical: 1;
             scrollbar-background: {_BG};
             scrollbar-color: {_BORDER};
             scrollbar-color-hover: {_PRIMARY};
-            scrollbar-color-active: {_PRIMARY};
         }}
         .msg-user {{
+            width: 100%;
             color: {_INFO};
             text-style: bold;
             margin-top: 1;
         }}
         .msg-md {{
+            width: 100%;
             color: {_TEXT};
             margin-bottom: 1;
         }}
         .msg-live {{
+            width: 100%;
             color: {_SECONDARY};
         }}
         #composer {{
-            dock: bottom;
+            width: 100%;
             height: auto;
             background: {_PANEL};
             border-top: tall {_BORDER};
-            padding: 0 1;
+            padding: 0;
+            layout: vertical;
         }}
         #picker {{
+            width: 100%;
             height: 5;
             max-height: 5;
             border: tall {_BORDER};
@@ -147,16 +158,20 @@ def start_tui() -> int:
             display: block;
         }}
         #prompt {{
+            width: 100%;
             height: 3;
+            min-width: 100%;
             background: {_BG};
             border: tall {_PRIMARY};
             color: {_TEXT};
             padding: 0 1;
+            margin: 0;
         }}
         #prompt:focus {{
             border: tall {_SECONDARY};
         }}
         Footer {{
+            width: 100%;
             background: {_PANEL};
             color: {_SECONDARY};
         }}
@@ -165,11 +180,12 @@ def start_tui() -> int:
             Binding("ctrl+c", "interrupt", "stop", show=True),
             Binding("ctrl+q", "quit", "quit", show=True),
             Binding("f1", "show_help", "help", show=True),
-            Binding("ctrl+y", "copy_last", "copy", show=True),
-            Binding("pageup", "scroll_up", "scroll↑", show=False),
-            Binding("pagedown", "scroll_down", "scroll↓", show=False),
-            Binding("ctrl+u", "scroll_up", "scroll↑", show=False),
-            Binding("ctrl+d", "scroll_down", "scroll↓", show=False),
+            Binding("ctrl+y", "copy_last", "copy last", show=True),
+            Binding("ctrl+shift+y", "copy_all", "copy all", show=True),
+            Binding("pageup", "scroll_up", "PgUp", show=False),
+            Binding("pagedown", "scroll_down", "PgDn", show=False),
+            Binding("ctrl+u", "scroll_up", "scroll", show=False),
+            Binding("ctrl+d", "scroll_down", "scroll", show=False),
         ]
 
         def __init__(self) -> None:
@@ -178,24 +194,31 @@ def start_tui() -> int:
             self._picker_cmds: list[str] = []
             self._msg_i = 0
             self._last_plain: str = ""
+            self._chat_plain: list[str] = []
             self._think_buf: str = ""
-            self._live_widget_id: str | None = None  # single updating live line in chat
+            self._live_widget_id: str | None = None
             self._feed_dirty = False
 
         def compose(self) -> ComposeResult:
-            yield Static(_status_line(), id="topbar")
-            yield VerticalScroll(id="chat")
-            with Vertical(id="composer"):
-                yield OptionList(id="picker")
-                yield Input(placeholder="Message…  (/ cmds · PgUp/PgDn scroll)", id="prompt")
+            # No dock stacking — Vertical fill avoids centered/narrow Input.
+            with Vertical():
+                yield Static(_status_line(), id="topbar")
+                yield VerticalScroll(id="chat")
+                with Vertical(id="composer"):
+                    yield OptionList(id="picker")
+                    yield Input(
+                        placeholder="Message…  (/ cmds · select text to copy · ctrl+y last · ctrl+shift+y all)",
+                        id="prompt",
+                    )
             yield Footer()
 
         def on_mount(self) -> None:
             live_feed.set_feed_sink(self._mark_feed)
             self.set_interval(0.1, self._pump_feed)
             self._append_md(
-                "**hackbot** — `/provider` `/model` `/effort` `/target` · "
-                "PgUp/PgDn or mouse wheel to scroll · `ctrl+y` copy last"
+                "**hackbot** — `/provider` `/model` `/effort` `/target`\n\n"
+                "_Select text with the mouse to copy (mouse capture off). "
+                "`ctrl+y` = last reply · `ctrl+shift+y` = full chat · PgUp/PgDn scroll._"
             )
             self.query_one("#prompt", Input).focus()
 
@@ -237,7 +260,6 @@ def start_tui() -> int:
             return w
 
         def _ingest_live(self, kind: str, text: str) -> None:
-            """One place only: update a single live line inside the chat scroll."""
             if not self._busy:
                 return
             kind = (kind or "info").strip().lower()
@@ -270,7 +292,6 @@ def start_tui() -> int:
                     "plan": "plan",
                     "err": "err",
                 }.get(kind, kind[:8] or "·")
-                # Sticky lines for tools/runs — append new Static; think/draft reuse one widget
                 if label in {"tool", "run", "out", "err"}:
                     self._append_live_pin(f"{label}  {text.strip()[:200]}")
                     return
@@ -280,12 +301,12 @@ def start_tui() -> int:
             self._chat().scroll_end(animate=False)
 
         def _append_live_pin(self, line: str) -> None:
-            """Pin a completed tool/run line, then keep the updating live widget below."""
             chat = self._chat()
-            # Detach updating widget id so the next ensure creates a fresh one under pins
             old_id = self._live_widget_id
             self._msg_i += 1
-            chat.mount(Static(f"· {line}", classes="msg-live", id=f"pin{self._msg_i}"))
+            pin = f"· {line}"
+            chat.mount(Static(pin, classes="msg-live", id=f"pin{self._msg_i}"))
+            self._chat_plain.append(pin)
             if old_id:
                 try:
                     self.query_one(f"#{old_id}", Static).remove()
@@ -312,7 +333,9 @@ def start_tui() -> int:
         def _append_user(self, text: str) -> None:
             chat = self._chat()
             self._msg_i += 1
-            chat.mount(Static(f"› {text}", classes="msg-user", id=f"u{self._msg_i}"))
+            line = f"› {text}"
+            chat.mount(Static(line, classes="msg-user", id=f"u{self._msg_i}"))
+            self._chat_plain.append(line)
             chat.scroll_end(animate=False)
 
         def _append_md(self, text: str) -> None:
@@ -321,6 +344,9 @@ def start_tui() -> int:
             plain = text or "(empty)"
             chat.mount(Markdown(plain, classes="msg-md", id=f"m{self._msg_i}"))
             self._last_plain = plain
+            self._chat_plain.append(plain)
+            if len(self._chat_plain) > 300:
+                self._chat_plain = self._chat_plain[-300:]
             chat.scroll_end(animate=False)
 
         def _copy_text(self, text: str) -> bool:
@@ -338,17 +364,33 @@ def start_tui() -> int:
                 import base64
 
                 b64 = base64.b64encode(data.encode("utf-8")).decode("ascii")
-                sys.stdout.write(f"\033]52;c;{b64}\a")
-                sys.stdout.flush()
+                # Write to the real tty, not redirected stdout
+                sys.__stdout__.write(f"\033]52;c;{b64}\a")  # type: ignore[union-attr]
+                sys.__stdout__.flush()  # type: ignore[union-attr]
                 return True
             except Exception:  # noqa: BLE001
                 return False
 
         def action_copy_last(self) -> None:
             if self._copy_text(self._last_plain):
-                self.notify("copied", severity="information", timeout=2)
+                self.notify("copied last reply", severity="information", timeout=2)
             else:
-                self.notify("copy failed", severity="warning", timeout=3)
+                self.notify(
+                    "clipboard failed — select text with mouse (capture off)",
+                    severity="warning",
+                    timeout=4,
+                )
+
+        def action_copy_all(self) -> None:
+            blob = "\n\n".join(self._chat_plain).strip()
+            if self._copy_text(blob):
+                self.notify("copied full chat", severity="information", timeout=2)
+            else:
+                self.notify(
+                    "clipboard failed — select text with mouse",
+                    severity="warning",
+                    timeout=4,
+                )
 
         def _hide_picker(self) -> None:
             picker = self.query_one("#picker", OptionList)
@@ -412,6 +454,7 @@ def start_tui() -> int:
                     for child in list(chat.children):
                         child.remove()
                     self._live_widget_id = None
+                    self._chat_plain = []
                     self._append_md("_cleared_")
                     self._refresh_status()
                     return
@@ -460,8 +503,9 @@ def start_tui() -> int:
             self._submit("/help")
 
     try:
-        # mouse=True → wheel scroll works. Copy last reply with ctrl+y.
-        HackbotTUI().run(mouse=True)
+        # mouse=False → OS/terminal text selection + copy of bot output works.
+        # Scroll with PgUp/PgDn (wheel is owned by terminal when mouse capture is off).
+        HackbotTUI().run(mouse=False)
     finally:
         live_feed.set_feed_sink(None)
         set_tui_console_mute(False)
