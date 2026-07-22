@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, TextIO
 
+from . import live_feed
 from .operator_gate import set_tui_console_mute
 from .session import get_active, status_line
 from .tui_commands import filter_slash_commands, handle_slash
@@ -141,8 +142,10 @@ def start_tui() -> int:
         }}
         #main {{
             background: {_BG};
+            height: 1fr;
         }}
         #chat {{
+            height: 1fr;
             background: {_BG};
             padding: 0 1 1 1;
             scrollbar-background: {_BG};
@@ -159,8 +162,22 @@ def start_tui() -> int:
             background: {_BG};
             color: {_TEXT};
         }}
+        #live-wrap {{
+            height: 10;
+            background: {_PANEL};
+            border-top: tall {_BORDER};
+            padding: 0 1;
+        }}
+        #live-title {{
+            height: 1;
+            color: {_SECONDARY};
+            text-style: bold;
+        }}
+        #live {{
+            height: 8;
+            color: {_TEXT};
+        }}
         #composer {{
-            dock: bottom;
             height: auto;
             background: {_PANEL};
             border-top: tall {_BORDER};
@@ -194,6 +211,8 @@ def start_tui() -> int:
             Binding("ctrl+c", "interrupt", "stop", show=True),
             Binding("ctrl+q", "quit", "quit", show=True),
             Binding("f1", "show_help", "help", show=True),
+            Binding("ctrl+y", "copy_last", "copy last", show=True),
+            Binding("ctrl+shift+c", "copy_last", "copy last", show=False),
         ]
 
         def __init__(self) -> None:
@@ -201,6 +220,10 @@ def start_tui() -> int:
             self._busy = False
             self._picker_cmds: list[str] = []
             self._msg_i = 0
+            self._last_plain: str = ""
+            self._chat_plain: list[str] = []
+            self._live_lines: list[str] = []
+            self._think_buf: str = ""
 
         def compose(self) -> ComposeResult:
             with Vertical(id="topbar"):
@@ -217,11 +240,16 @@ def start_tui() -> int:
                         "/effort high fast\n"
                         "/fast on\n"
                         "/yolo on\n\n"
+                        "mouse off → select/copy\n"
+                        "ctrl+y → copy last\n"
                         "Enter send · / cmds",
                         id="side-help",
                     )
                 with Vertical(id="main"):
                     yield VerticalScroll(id="chat")
+                    with Vertical(id="live-wrap"):
+                        yield Static("live · think / tools / cmds", id="live-title")
+                        yield Static("idle", id="live")
                     with Vertical(id="composer"):
                         yield OptionList(id="picker")
                         yield Input(
@@ -231,11 +259,76 @@ def start_tui() -> int:
             yield Footer()
 
         def on_mount(self) -> None:
+            live_feed.set_feed_sink(self._on_feed)
             self._append_md(
                 f"**hackbot** ready\n\n`{_status_line()}`\n\n"
-                f"Try `/model grok-4.5` then `/effort high fast`."
+                f"Try `/model grok-4.5` then `/effort high fast`.\n\n"
+                f"_Select text with the mouse (capture off). `ctrl+y` copies last reply._"
             )
             self.query_one("#prompt", Input).focus()
+
+        def on_unmount(self) -> None:
+            live_feed.set_feed_sink(None)
+
+        def _on_feed(self, kind: str, text: str) -> None:
+            """Called from worker threads — hop onto the UI thread."""
+            try:
+                self.call_from_thread(self._apply_feed, kind, text)
+            except Exception:  # noqa: BLE001
+                pass
+
+        def _apply_feed(self, kind: str, text: str) -> None:
+            kind = (kind or "info").strip().lower()
+            text = (text or "").rstrip()
+            if not text:
+                return
+            if kind in {"think", "thinking", "reasoning"}:
+                # Coalesce think tokens into one rolling line.
+                if text.startswith("(thinking)"):
+                    self._think_buf = text
+                else:
+                    self._think_buf = (self._think_buf + text)[-900:]
+                display = self._think_buf.replace("\n", " ")
+                if len(display) > 220:
+                    display = "…" + display[-217:]
+                line = f"think  {display}"
+                if self._live_lines and self._live_lines[-1].startswith("think  "):
+                    self._live_lines[-1] = line
+                else:
+                    self._live_lines.append(line)
+            elif kind == "draft":
+                line = f"draft  {text}"
+                if self._live_lines and self._live_lines[-1].startswith("draft  "):
+                    self._live_lines[-1] = line
+                else:
+                    self._live_lines.append(line)
+            else:
+                label = {
+                    "tool": "tool",
+                    "run": "run",
+                    "out": "out",
+                    "working": "···",
+                    "info": "·",
+                    "log": "log",
+                    "dbg": "dbg",
+                    "plan": "plan",
+                }.get(kind, kind[:8] or "·")
+                self._live_lines.append(f"{label}  {text}")
+            self._live_lines = self._live_lines[-40:]
+            body = "\n".join(self._live_lines[-12:])
+            try:
+                self.query_one("#live", Static).update(body or "idle")
+            except Exception:  # noqa: BLE001
+                pass
+
+        def _reset_live(self) -> None:
+            self._live_lines = []
+            self._think_buf = ""
+            live_feed.clear()
+            try:
+                self.query_one("#live", Static).update("working…")
+            except Exception:  # noqa: BLE001
+                pass
 
         def _refresh_status(self) -> None:
             self.query_one("#status", Static).update(_status_line())
@@ -245,14 +338,52 @@ def start_tui() -> int:
             chat = self.query_one("#chat", VerticalScroll)
             self._msg_i += 1
             chat.mount(Static(f"› {text}", classes="msg-user", id=f"u{self._msg_i}"))
+            self._chat_plain.append(f"> {text}")
             chat.scroll_end(animate=False)
 
         def _append_md(self, text: str) -> None:
             chat = self.query_one("#chat", VerticalScroll)
             self._msg_i += 1
             mid = f"m{self._msg_i}"
-            chat.mount(Markdown(text or "(empty)", classes="msg-md", id=mid))
+            plain = text or "(empty)"
+            chat.mount(Markdown(plain, classes="msg-md", id=mid))
+            self._last_plain = plain
+            self._chat_plain.append(plain)
+            if len(self._chat_plain) > 200:
+                self._chat_plain = self._chat_plain[-200:]
             chat.scroll_end(animate=False)
+
+        def _copy_text(self, text: str) -> bool:
+            data = (text or "").strip()
+            if not data:
+                return False
+            try:
+                import pyperclip
+
+                pyperclip.copy(data)
+                return True
+            except Exception:  # noqa: BLE001
+                pass
+            # OSC 52 clipboard (works in many SSH/tmux terminals).
+            try:
+                import base64
+
+                b64 = base64.b64encode(data.encode("utf-8")).decode("ascii")
+                sys.stdout.write(f"\033]52;c;{b64}\a")
+                sys.stdout.flush()
+                return True
+            except Exception:  # noqa: BLE001
+                return False
+
+        def action_copy_last(self) -> None:
+            if self._copy_text(self._last_plain):
+                self.notify("copied last reply", severity="information", timeout=2)
+            else:
+                self.notify(
+                    "copy failed — select with mouse (capture off)",
+                    severity="warning",
+                    timeout=3,
+                )
 
         def _hide_picker(self) -> None:
             picker = self.query_one("#picker", OptionList)
@@ -326,6 +457,7 @@ def start_tui() -> int:
                         self._refresh_status()
                     return
             self._busy = True
+            self._reset_live()
             self.query_one("#status", Static).update(f"{_status_line()} · working…")
             self.run_hunt_turn(text)
 
@@ -342,6 +474,18 @@ def start_tui() -> int:
         def _finish_turn(self, answer: str) -> None:
             self._busy = False
             self._append_md(answer)
+            if self._live_lines:
+                try:
+                    self.query_one("#live", Static).update(
+                        "\n".join(self._live_lines[-12:]) + "\n· done"
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                try:
+                    self.query_one("#live", Static).update("idle")
+                except Exception:  # noqa: BLE001
+                    pass
             self._refresh_status()
             self.query_one("#prompt", Input).focus()
 
@@ -359,8 +503,10 @@ def start_tui() -> int:
             self._submit("/help")
 
     try:
-        HackbotTUI().run()
+        # mouse=False → terminal native select/copy (Textual won't eat clicks).
+        HackbotTUI().run(mouse=False)
     finally:
+        live_feed.set_feed_sink(None)
         set_tui_console_mute(False)
         try:
             from . import ui

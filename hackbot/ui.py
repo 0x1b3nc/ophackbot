@@ -209,6 +209,12 @@ def error(msg: str) -> None:
 
 
 def info(msg: str) -> None:
+    try:
+        from .live_feed import emit
+
+        emit("info", msg)
+    except Exception:  # noqa: BLE001
+        pass
     console.print(Text.from_markup(f"[hb.muted]·[/] {msg}"))
 
 
@@ -374,6 +380,12 @@ def activity(kind: str, detail: str, *, style: str = "hb.muted") -> None:
     detail = detail or ""
     if not detail.strip():
         return
+    try:
+        from .live_feed import emit
+
+        emit(kind, detail if len(detail) < 400 else detail[:397] + "…")
+    except Exception:  # noqa: BLE001
+        pass
     # Codex/Claude-CLI style: "run: /usr/bin/zsh -lc '…'" — plain text, wraps.
     if (
         kind.startswith("run")
@@ -393,6 +405,12 @@ def think_delta(text: str, *, first: bool = False) -> None:
     """Append-only reasoning stream (dim), Claude Code style."""
     if not text:
         return
+    try:
+        from .live_feed import emit
+
+        emit("think", text if not first else f"(thinking)\n{text}")
+    except Exception:  # noqa: BLE001
+        pass
     if first:
         console.print(Text("think", style="hb.label"))
     console.print(Text(text, style="hb.muted"), end="")
@@ -428,6 +446,12 @@ def _prompt_session_open() -> bool:
 def working_line(label: str = "working") -> None:
     """claude-hq RunningIndicator → muted pulse dots + label (scrollback)."""
     label = (label or "working").strip()
+    try:
+        from .live_feed import emit
+
+        emit("working", label)
+    except Exception:  # noqa: BLE001
+        pass
     console.print(
         Text("··· ", style="hb.muted") + Text(label, style="hb.accent")
     )
@@ -473,6 +497,12 @@ def user_bubble(text: str) -> None:
 
 def thinking_label(*, streaming: bool = True) -> None:
     """Collapsed thinking header style from claude-hq ThinkingBlock."""
+    try:
+        from .live_feed import emit
+
+        emit("think", "Thinking..." if streaming else "Thinking")
+    except Exception:  # noqa: BLE001
+        pass
     console.print(
         Text("▸ ", style="hb.muted")
         + Text("Thinking..." if streaming else "Thinking", style="hb.muted")
@@ -558,6 +588,13 @@ def action_line(kind: str, detail: str, *, ok: bool | None = None) -> None:
     detail = (detail or "").strip()
     if not detail:
         return
+    mark = "ok" if ok is True else ("fail" if ok is False else "run")
+    try:
+        from .live_feed import emit
+
+        emit("tool", f"[{mark}] {kind}  {detail[:160]}")
+    except Exception:  # noqa: BLE001
+        pass
     line = Text()
     line.append(f"{kind}  ", style="hb.label")
     line.append(detail[:120], style="hb.muted")
@@ -736,6 +773,12 @@ class Stream:
         if not self._started_reasoning:
             thinking_label(streaming=True)
             self._started_reasoning = True
+        try:
+            from .live_feed import emit
+
+            emit("think", delta)
+        except Exception:  # noqa: BLE001
+            pass
         console.print(Text(delta, style="hb.muted"), end="")
 
     def answer(self, delta: str) -> None:
@@ -748,6 +791,12 @@ class Stream:
             console.print(Text(self.title, style="hb.accent"))
             self._started_answer = True
         self._answer.append(delta)
+        try:
+            from .live_feed import emit
+
+            emit("draft", delta if len(delta) < 200 else delta[:197] + "…")
+        except Exception:  # noqa: BLE001
+            pass
         console.print(Text(delta, style="hb.info"), end="")
 
     def has_reasoning(self) -> bool:

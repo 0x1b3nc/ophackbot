@@ -45,7 +45,6 @@ from .cursor_tools import (
 )
 from .intent import is_chat_prompt, resolve_effort_for_prompt
 from .llm import streaming_enabled
-from .operator_gate import stream_output_allowed
 from .session import get_active
 from .tool_packs import resolve_packs
 
@@ -308,15 +307,49 @@ def _run_send(agent: Any, prompt: str, *, selection: Any) -> tuple[str, str]:
                             or len(piece) >= len(stream_answer)
                         ):
                             stream_answer = piece
-                    elif mtype == "tool_call":
-                        name = getattr(message, "name", "?")
+                            try:
+                                from .live_feed import emit
+
+                                preview = piece.replace("\n", " ").strip()
+                                if len(preview) > 180:
+                                    preview = "…" + preview[-177:]
+                                emit("draft", preview)
+                            except Exception:  # noqa: BLE001
+                                pass
+                    elif mtype in {"tool_call", "tool_result", "thinking", "reasoning"}:
+                        name = getattr(message, "name", None) or getattr(
+                            message, "type", mtype
+                        )
                         tstatus = str(getattr(message, "status", "") or "")
-                        if stream_output_allowed():
+                        text = getattr(message, "text", None) or getattr(
+                            message, "content", None
+                        )
+                        if mtype in {"thinking", "reasoning"}:
+                            chunk = str(text or tstatus or "").strip()
+                            if chunk:
+                                try:
+                                    from .live_feed import emit
+
+                                    emit(
+                                        "think",
+                                        chunk if len(chunk) < 400 else chunk[:397] + "…",
+                                    )
+                                except Exception:  # noqa: BLE001
+                                    pass
+                        else:
+                            # Always emit (TUI live_feed); Rich stays gated by console mute.
+                            detail = f"{name} {tstatus}".strip()
+                            if text and not tstatus:
+                                detail = f"{name} {str(text)[:80]}".strip()
                             ok = tstatus.lower() in {"completed", "done", "ok"}
-                            bad = tstatus.lower() in {"error", "failed", "cancelled"}
+                            bad = tstatus.lower() in {
+                                "error",
+                                "failed",
+                                "cancelled",
+                            }
                             ui.action_line(
                                 "tool",
-                                f"{name} {tstatus}".strip(),
+                                detail,
                                 ok=True if ok else (False if bad else None),
                             )
             except Exception:
