@@ -2,18 +2,17 @@
 
 Run: ``python -m hackbot tui``
 
-Layout: status · scrollable chat · full-width input · footer.
+Layout: status · scrollable chat · multiline composer · footer.
 Final replies use Markdown; live stream (think/tool/plan) stays plain text.
 
-Copy:
-  Prefer **click a message**, ``F2`` / ``Ctrl+Y``, or ``/copy`` — these use the
-  stored plain text (no terminal cell-padding gaps, full content even if the
-  window wrapped the display). Native terminal select+copy still works with
-  mouse off, but pads short lines with spaces; run ``/cleanclip`` after that.
-  Wheel: ``HACKBOT_TUI_MOUSE=1``.
+Composer is a TextArea (not single-line Input) so multiline paste keeps the
+**full** prompt. Send with ``Ctrl+Enter`` (Enter inserts a newline).
 
-After Ctrl+C stop, cancel flags clear so the next prompt runs again.
-PgUp/PgDn work even while the input is focused. Auto-scroll only when already at bottom.
+Copy: ``F2`` / ``Ctrl+Y`` / ``/copy`` / click message. ``/cleanclip`` after a
+messy native select. ``/paste`` loads the OS clipboard into the composer.
+
+Mouse/wheel/scrollbar: on by default (``HACKBOT_TUI_MOUSE=0`` to disable).
+PgUp/PgDn always scroll the chat.
 """
 
 from __future__ import annotations
@@ -26,6 +25,7 @@ from typing import Iterator, TextIO
 
 from . import live_feed
 from .clipboard import copy_text as clipboard_copy
+from .clipboard import read_text as clipboard_read
 from .operator_gate import set_tui_console_mute
 from .session import get_active, status_line
 from .tui_commands import filter_slash_commands, handle_slash
@@ -42,14 +42,14 @@ _INFO = "#64D9E8"
 
 
 def _tui_mouse_enabled() -> bool:
-    """Mouse capture enables wheel + Textual selection but breaks native terminal copy."""
+    """Mouse on → wheel + scrollbar. Off → native terminal select (padded copy)."""
     raw = (os.environ.get("HACKBOT_TUI_MOUSE") or "").strip().lower()
-    if raw in {"1", "true", "yes", "on"}:
-        return True
     if raw in {"0", "false", "no", "off"}:
         return False
-    # Default OFF — operators expect select+copy in WT / Cursor / SSH.
-    return False
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    # Default ON so scrollbar / wheel work; copy via F2 / click / /copy.
+    return True
 
 
 def _plain_text(text: str) -> str:
@@ -113,7 +113,7 @@ def start_tui() -> int:
         from textual.binding import Binding
         from textual.containers import Vertical, VerticalScroll
         from textual.events import Click
-        from textual.widgets import Footer, Input, Markdown, OptionList, Static
+        from textual.widgets import Footer, Markdown, OptionList, Static, TextArea
         from textual.widgets.option_list import Option
     except ImportError:
         sys.stderr.write("Textual missing. Install:  pip install 'hackbot-kit[tui]'\n")
@@ -151,6 +151,30 @@ def start_tui() -> int:
             if callable(copy_fn):
                 copy_fn(self.plain_source, label="message")
 
+    class PromptArea(TextArea):
+        """Multiline composer — full paste (Input only kept the first line)."""
+
+        BINDINGS = [
+            Binding("ctrl+enter", "submit_prompt", "send", show=True, priority=True),
+            Binding("ctrl+j", "submit_prompt", "send", show=False, priority=True),
+        ]
+
+        def action_submit_prompt(self) -> None:
+            submit = getattr(self.app, "submit_composer", None)
+            if callable(submit):
+                submit()
+
+        def action_paste(self) -> None:
+            """Prefer OS clipboard — app.clipboard is often empty / truncated."""
+            if self.read_only:
+                return
+            text = clipboard_read()
+            if text is None:
+                text = self.app.clipboard or ""
+            if not text:
+                return
+            if result := self._replace_via_keyboard(text, *self.selection):
+                self.move_cursor(result.end_location)
     os.environ.setdefault("HACKBOT_PLAIN", "1")
     set_tui_console_mute(True)
     sink = io.StringIO()
@@ -189,10 +213,12 @@ def start_tui() -> int:
             width: 100%;
             background: {_BG};
             padding: 0 1;
-            scrollbar-size-vertical: 1;
+            overflow-y: auto;
+            scrollbar-size-vertical: 2;
             scrollbar-background: {_BG};
             scrollbar-color: {_BORDER};
             scrollbar-color-hover: {_PRIMARY};
+            scrollbar-color-active: {_SECONDARY};
         }}
         .msg-user {{
             width: 100%;
@@ -230,8 +256,9 @@ def start_tui() -> int:
         }}
         #prompt {{
             width: 100%;
-            height: 3;
-            min-width: 100%;
+            height: 7;
+            min-height: 5;
+            max-height: 12;
             background: {_BG};
             border: tall {_PRIMARY};
             color: {_TEXT};
@@ -251,6 +278,7 @@ def start_tui() -> int:
             Binding("ctrl+c", "interrupt", "stop", show=True),
             Binding("ctrl+q", "quit", "quit", show=True),
             Binding("f1", "show_help", "help", show=True),
+            Binding("ctrl+enter", "submit_composer", "send", show=True, priority=True),
             # Prefer F2 / Ctrl+Y — Windows Terminal steals Ctrl+Shift+C for itself.
             Binding("f2", "copy_selection", "copy", show=True, priority=True),
             Binding("ctrl+y", "copy_last", "copy last", show=True, priority=True),
@@ -259,7 +287,6 @@ def start_tui() -> int:
             Binding("ctrl+shift+c", "copy_selection", "copy sel", show=False, priority=True),
             Binding("ctrl+insert", "copy_selection", "copy", show=False, priority=True),
             Binding("f3", "cleanclip", "cleanclip", show=False, priority=True),
-            # priority=True → works even when Input has focus
             Binding("pageup", "scroll_up", "PgUp", show=True, priority=True),
             Binding("pagedown", "scroll_down", "PgDn", show=True, priority=True),
             Binding("ctrl+u", "scroll_up", "Half↑", show=False, priority=True),
@@ -282,14 +309,19 @@ def start_tui() -> int:
             self._feed_dirty = False
 
         def compose(self) -> ComposeResult:
-            # No dock stacking — Vertical fill avoids centered/narrow Input.
             with Vertical():
                 yield Static(_status_line(), id="topbar")
                 yield VerticalScroll(id="chat")
                 with Vertical(id="composer"):
                     yield OptionList(id="picker")
-                    yield Input(
-                        placeholder="Message…  (click msg to copy · F2 · /copy · /cleanclip)",
+                    yield PromptArea(
+                        soft_wrap=True,
+                        tab_behavior="indent",
+                        show_line_numbers=False,
+                        placeholder=(
+                            "Message…  Ctrl+Enter send · paste full multiline OK · "
+                            "F2 copy · /paste from clipboard"
+                        ),
                         id="prompt",
                     )
             yield Footer()
@@ -297,24 +329,26 @@ def start_tui() -> int:
         def on_mount(self) -> None:
             live_feed.set_feed_sink(self._mark_feed)
             self.set_interval(0.1, self._pump_feed)
+            mouse_on = _tui_mouse_enabled()
             self._append_md(
                 "**hackbot** — `/provider` `/model` `/effort` `/target`\n\n"
-                "_**Copy (clean):** `F2` / `Ctrl+Y` / `/copy` — full stored text, "
-                "no padding gaps, no wrap cut-off. "
-                "Native select+copy pads empty cells → then run `/cleanclip` (or `F3`). "
+                "_**Send:** `Ctrl+Enter` (Enter = newline; paste keeps **all** lines). "
+                "**Copy:** `F2` / click message / `/copy`. "
+                "Native select pads spaces → `/cleanclip`. "
                 + (
-                    "Click a message also copies. "
-                    if _tui_mouse_enabled()
-                    else "Click-to-copy: `HACKBOT_TUI_MOUSE=1`. "
+                    "Scroll: wheel + scrollbar + PgUp/PgDn. "
+                    if mouse_on
+                    else "Scroll: PgUp/PgDn (mouse off — `HACKBOT_TUI_MOUSE=1` for wheel). "
                 )
-                + "Scroll: PgUp/PgDn"
-                + (" · wheel on" if _tui_mouse_enabled() else "")
-                + ". Stop: `ctrl+c` then send a new prompt._"
+                + "Stop: `ctrl+c` then send a new prompt._"
             )
-            self.query_one("#prompt", Input).focus()
+            self.query_one("#prompt", PromptArea).focus()
 
         def on_unmount(self) -> None:
             live_feed.set_feed_sink(None)
+
+        def _prompt(self) -> PromptArea:
+            return self.query_one("#prompt", PromptArea)
 
         def _chat(self) -> VerticalScroll:
             return self.query_one("#chat", VerticalScroll)
@@ -567,11 +601,14 @@ def start_tui() -> int:
             picker.display = True
             picker.add_class("visible")
 
-        def on_input_changed(self, event: Input.Changed) -> None:
-            if event.input.id != "prompt":
+        def on_text_area_changed(self, event: TextArea.Changed) -> None:
+            if event.text_area.id != "prompt":
                 return
-            if event.value.startswith("/"):
-                self._show_picker(event.value)
+            # Slash picker only for a single-line /command draft
+            val = (event.text_area.text or "")
+            first = val.splitlines()[0] if val else ""
+            if first.startswith("/") and "\n" not in val.strip():
+                self._show_picker(first)
             else:
                 self._hide_picker()
 
@@ -580,26 +617,39 @@ def start_tui() -> int:
             if not (0 <= idx < len(self._picker_cmds)):
                 return
             cmd = self._picker_cmds[idx].rstrip()
-            prompt = self.query_one("#prompt", Input)
+            prompt = self._prompt()
             if cmd in {"/target", "/provider", "/model", "/effort", "/hunt"} or self._picker_cmds[
                 idx
             ].endswith(" "):
-                prompt.value = cmd + " "
+                prompt.load_text(cmd + " ")
             else:
-                prompt.value = cmd
+                prompt.load_text(cmd)
             prompt.focus()
             self._hide_picker()
 
-        def on_input_submitted(self, event: Input.Submitted) -> None:
-            text = (event.value or "").strip()
-            event.input.value = ""
+        def action_submit_composer(self) -> None:
+            self.submit_composer()
+
+        def submit_composer(self) -> None:
+            prompt = self._prompt()
+            text = (prompt.text or "").strip()
+            prompt.load_text("")
             self._hide_picker()
             if not text:
                 return
-            # If a turn is running, Ctrl+C-style interrupt then queue this prompt.
             if self._busy:
                 self.action_interrupt()
             self._submit(text)
+
+        def action_load_clipboard(self) -> None:
+            """Fill composer from OS clipboard (full multiline)."""
+            text = clipboard_read()
+            if not text:
+                self.notify("clipboard empty / unreadable", severity="warning", timeout=3)
+                return
+            self._prompt().load_text(text)
+            self._prompt().focus()
+            self.notify(f"pasted {len(text)} chars into composer", severity="information", timeout=2)
 
         def _reset_cancel_rails(self) -> None:
             """Must run before every new turn — otherwise post-Ctrl+C stays cancelled."""
@@ -625,9 +675,12 @@ def start_tui() -> int:
             if low in {"/cleanclip", "/clipclean", "/copy clean"}:
                 self.action_cleanclip()
                 return
+            if low in {"/paste", "/clip"}:
+                self.action_load_clipboard()
+                return
 
             self._append_user(text)
-            if text.startswith("/"):
+            if text.startswith("/") and "\n" not in text.strip():
                 result = handle_slash(text)
                 if result.exit_app:
                     self.exit()
@@ -678,11 +731,11 @@ def start_tui() -> int:
             # Don't re-print cancelled if we already showed **stop**
             if self._stop_shown and (answer or "").strip() in {"(cancelled)", "(empty)"}:
                 self._refresh_status()
-                self.query_one("#prompt", Input).focus()
+                self._prompt().focus()
                 return
             self._append_md(answer)
             self._refresh_status()
-            self.query_one("#prompt", Input).focus()
+            self._prompt().focus()
 
         def action_interrupt(self) -> None:
             try:
@@ -714,14 +767,13 @@ def start_tui() -> int:
                 self._append_md("**stop** requested — send a new message to continue")
                 self._stop_shown = True
             self.query_one("#topbar", Static).update(f"{_status_line()} · stopped")
-            self.query_one("#prompt", Input).focus()
+            self._prompt().focus()
 
         def action_show_help(self) -> None:
             self._submit("/help")
 
     try:
-        # mouse=False (default): native terminal select+copy works.
-        # HACKBOT_TUI_MOUSE=1: wheel + Textual selection; use F2/Ctrl+Y to copy.
+        # mouse on by default → wheel + scrollbar; HACKBOT_TUI_MOUSE=0 to disable.
         HackbotTUI().run(mouse=_tui_mouse_enabled())
     finally:
         live_feed.set_feed_sink(None)

@@ -57,6 +57,7 @@ HACKBOT_SLASH: list[tuple[str, str]] = [
     ("/copy", "Copy last reply to clipboard"),
     ("/copy all", "Copy full chat to clipboard"),
     ("/cleanclip", "Strip terminal padding spaces from clipboard"),
+    ("/paste", "Load OS clipboard into composer (full multiline)"),
 ]
 
 
